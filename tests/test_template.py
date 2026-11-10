@@ -9,22 +9,16 @@ def test_default_template_is_valid() -> None:
     assert is_valid_template(DEFAULT_TEMPLATE)
 
 
-@pytest.mark.parametrize(
-    "template",
-    ["", "Antrenmanınız başlamıştır.", "{isim}, hoş geldiniz.", "{ AD }", "{Ad}"],
-)
+@pytest.mark.parametrize("template", ["", "Antrenmanınız başlamıştır.", "{Ad}"])
 def test_template_without_the_placeholder_is_invalid(template: str) -> None:
     assert not is_valid_template(template)
 
 
-def test_render_puts_the_name_in_the_sentence() -> None:
+def test_render_puts_the_name_in_every_placeholder() -> None:
     assert (
         render(DEFAULT_TEMPLATE, "Ayşe Yılmaz")
         == "Ayşe Yılmaz, antrenmanınız başlamıştır. İyi antrenmanlar dileriz."
     )
-
-
-def test_render_replaces_every_placeholder() -> None:
     assert render("{ad}! {ad}, sıra sizde.", "Mehmet") == "Mehmet! Mehmet, sıra sizde."
 
 

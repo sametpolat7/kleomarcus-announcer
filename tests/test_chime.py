@@ -20,24 +20,14 @@ def read_samples(data: bytes) -> array.array[int]:
     return samples
 
 
-def test_chime_is_a_short_mono_wav() -> None:
+def test_chime_is_short_audible_and_free_of_clicks() -> None:
     samples = read_samples(render_chime())
 
     assert 1.5 < len(samples) / SAMPLE_RATE < 2.5
-
-
-def test_chime_starts_and_ends_on_silence() -> None:
-    samples = read_samples(render_chime())
-
+    # It starts and ends on silence, and is loud without clipping.
     assert abs(samples[0]) <= 1
     assert abs(samples[-1]) <= 1
-
-
-def test_chime_is_clearly_audible_without_clipping() -> None:
-    samples = read_samples(render_chime())
-
-    peak = max(abs(sample) for sample in samples)
-    assert 0.5 * 32767 < peak < 0.7 * 32767
+    assert 0.5 * 32767 < max(abs(sample) for sample in samples) < 0.7 * 32767
 
 
 def test_bundled_chime_is_the_generated_one() -> None:

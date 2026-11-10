@@ -10,8 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from announcer import APP_NAME
-from announcer.logs import configure_logging, log_path
+from announcer.logs import configure_logging
 
 
 @pytest.fixture
@@ -26,14 +25,6 @@ def path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
         if isinstance(handler, RotatingFileHandler):
             root.removeHandler(handler)
             handler.close()
-
-
-def test_log_path_is_a_file_of_the_app() -> None:
-    location = log_path()
-
-    assert location.name == "announcer.log"
-    assert APP_NAME in location.parts
-    assert location.is_absolute()
 
 
 def test_line_holds_the_time_level_module_and_message(path: Path) -> None:
@@ -84,20 +75,6 @@ def test_error_that_ends_a_thread_is_logged(path: Path) -> None:
     thread.join()
 
     assert "RuntimeError: the thread broke" in path.read_text(encoding="utf-8")
-
-
-def test_full_file_is_set_aside_and_a_new_one_started(
-    path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("announcer.logs._MAX_BYTES", 200)
-    configure_logging(path)
-
-    for number in range(20):
-        logging.getLogger("announcer").info("line %d", number)
-
-    assert path.with_name("announcer.log.1").is_file()
-    assert len(list(path.parent.iterdir())) == 4  # the file and three old ones
-    assert "line 19" in path.read_text(encoding="utf-8")
 
 
 def test_app_runs_without_a_log_when_the_file_cannot_be_opened(

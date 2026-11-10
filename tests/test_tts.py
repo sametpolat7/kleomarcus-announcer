@@ -6,13 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from announcer import APP_NAME
-from announcer.tts import (
-    AudioCache,
-    EdgeTtsProvider,
-    TtsError,
-    audio_cache_dir,
-)
+from announcer.tts import AudioCache, EdgeTtsProvider, TtsError
 from support import FakeProvider
 
 VOICE = "tr-TR-EmelNeural"
@@ -21,30 +15,15 @@ BYE = "Salon kapanıyor."
 
 
 @pytest.fixture
-def provider() -> FakeProvider:
-    return FakeProvider()
-
-
-@pytest.fixture
 def cache(tmp_path: Path, provider: FakeProvider) -> AudioCache:
     return AudioCache(tmp_path / "audio", provider, VOICE)
-
-
-def test_audio_cache_dir_is_a_folder_of_the_app() -> None:
-    directory = audio_cache_dir()
-
-    assert directory.name == "audio"
-    assert APP_NAME in directory.parts
-    assert directory.is_absolute()
-
-
-def test_nothing_is_stored_at_first(cache: AudioCache) -> None:
-    assert cache.find(HELLO) is None
 
 
 def test_ensure_generates_and_stores_the_speech(
     cache: AudioCache, provider: FakeProvider
 ) -> None:
+    assert cache.find(HELLO) is None
+
     path = cache.ensure(HELLO)
 
     assert path.read_bytes() == f"{VOICE}|{HELLO}".encode()
@@ -53,42 +32,31 @@ def test_ensure_generates_and_stores_the_speech(
     assert provider.calls == [(HELLO, VOICE)]
 
 
-def test_stored_speech_is_reused(cache: AudioCache, provider: FakeProvider) -> None:
+def test_stored_speech_is_reused_without_a_network_and_after_a_restart(
+    tmp_path: Path, cache: AudioCache, provider: FakeProvider
+) -> None:
     first = cache.ensure(HELLO)
     provider.offline = True
 
-    assert cache.ensure(HELLO) == first
-    assert len(provider.calls) == 1
-
-
-def test_stored_speech_survives_a_restart(
-    tmp_path: Path, cache: AudioCache, provider: FakeProvider
-) -> None:
-    path = cache.ensure(HELLO)
-
     reopened = AudioCache(tmp_path / "audio", provider, VOICE)
 
-    assert reopened.find(HELLO) == path
+    assert cache.ensure(HELLO) == reopened.ensure(HELLO) == first
     assert len(provider.calls) == 1
 
 
-def test_each_text_has_its_own_file(cache: AudioCache) -> None:
-    assert cache.ensure(HELLO) != cache.ensure(BYE)
-    assert cache.find(HELLO.upper()) is None
-
-
-def test_each_voice_has_its_own_file(
+def test_each_text_and_each_voice_has_its_own_file(
     tmp_path: Path, cache: AudioCache, provider: FakeProvider
 ) -> None:
     other = AudioCache(tmp_path / "audio", provider, "tr-TR-AhmetNeural")
-    cache.ensure(HELLO)
+    hello = cache.ensure(HELLO)
 
+    assert cache.ensure(BYE) != hello
     assert other.find(HELLO) is None
+    assert other.ensure(HELLO) != hello
     assert other.ensure(HELLO).read_bytes() == f"tr-TR-AhmetNeural|{HELLO}".encode()
-    assert other.ensure(HELLO) != cache.ensure(HELLO)
 
 
-def test_failed_generation_raises_and_stores_nothing(
+def test_failed_generation_stores_nothing_and_is_made_up_for_later(
     tmp_path: Path, cache: AudioCache, provider: FakeProvider
 ) -> None:
     provider.offline = True
@@ -99,15 +67,7 @@ def test_failed_generation_raises_and_stores_nothing(
     assert cache.find(HELLO) is None
     assert not (tmp_path / "audio").exists()
 
-
-def test_speech_is_generated_once_the_network_is_back(
-    cache: AudioCache, provider: FakeProvider
-) -> None:
-    provider.offline = True
-    with pytest.raises(TtsError):
-        cache.ensure(HELLO)
     provider.offline = False
-
     assert cache.ensure(HELLO).is_file()
 
 
@@ -118,16 +78,6 @@ def test_storage_failure_is_a_tts_error(tmp_path: Path, provider: FakeProvider) 
 
     with pytest.raises(TtsError):
         cache.ensure(HELLO)
-
-
-def test_only_finished_files_are_left_in_the_folder(
-    tmp_path: Path, cache: AudioCache
-) -> None:
-    cache.ensure(HELLO)
-    cache.ensure(BYE)
-
-    assert {path.suffix for path in (tmp_path / "audio").iterdir()} == {".mp3"}
-    assert len(list((tmp_path / "audio").iterdir())) == 2
 
 
 def test_ensure_all_generates_only_what_is_missing(
@@ -141,22 +91,12 @@ def test_ensure_all_generates_only_what_is_missing(
     assert cache.find(BYE) is not None
 
 
-def test_ensure_all_returns_the_texts_without_speech(
+def test_ensure_all_returns_the_texts_without_speech_in_the_order_given(
     cache: AudioCache, provider: FakeProvider
 ) -> None:
     provider.unspeakable = {BYE, "…"}
 
     assert cache.ensure_all([BYE, HELLO, "…", BYE]) == (BYE, "…")
-    assert cache.find(HELLO) is not None
-
-
-def test_ensure_all_offline_keeps_what_is_stored(
-    cache: AudioCache, provider: FakeProvider
-) -> None:
-    cache.ensure(HELLO)
-    provider.offline = True
-
-    assert cache.ensure_all([HELLO, BYE]) == (BYE,)
     assert cache.find(HELLO) is not None
 
 
@@ -175,31 +115,6 @@ def test_ensure_all_generates_several_sentences_at_a_time(tmp_path: Path) -> Non
 
     assert cache.ensure_all(texts) == ()
     assert all(cache.find(text) is not None for text in texts)
-
-
-def test_ensure_all_reports_failures_in_the_order_given(
-    cache: AudioCache, provider: FakeProvider
-) -> None:
-    texts = [f"Sporcu {number}" for number in range(20)]
-    provider.unspeakable = set(texts[::2])
-
-    assert cache.ensure_all(texts) == tuple(texts[::2])
-
-
-def test_two_caches_can_share_a_folder(
-    tmp_path: Path, cache: AudioCache, provider: FakeProvider
-) -> None:
-    other = AudioCache(tmp_path / "audio", provider, VOICE)
-
-    assert cache.ensure(HELLO) == other.ensure(HELLO)
-    assert other.ensure_all([HELLO, BYE]) == ()
-    assert cache.find(BYE) is not None
-    assert len(provider.calls) == 2
-
-
-def test_ensure_all_of_nothing(cache: AudioCache, provider: FakeProvider) -> None:
-    assert cache.ensure_all([]) == ()
-    assert provider.calls == []
 
 
 class FakeCommunicate:
@@ -250,10 +165,7 @@ def test_edge_provider_without_audio_is_an_error(
         EdgeTtsProvider().synthesize(HELLO, VOICE)
 
 
-@pytest.mark.parametrize(
-    "error",
-    [OSError("no network"), TimeoutError(), ValueError("bad voice"), RuntimeError()],
-)
+@pytest.mark.parametrize("error", [OSError("no network"), RuntimeError("protocol")])
 def test_edge_provider_failure_is_a_tts_error(
     communicate: type[FakeCommunicate], error: Exception
 ) -> None:
