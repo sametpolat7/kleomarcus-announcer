@@ -42,6 +42,7 @@ class FakeOutput:
         self.unplayable: set[Path] = set()
         self.endless = False
         self.while_playing: Callable[[Path], None] = lambda path: None
+        self.while_closing: Callable[[], None] = lambda: None
         self._busy = False
 
     def open(self) -> None:
@@ -64,6 +65,7 @@ class FakeOutput:
 
     def close(self) -> None:
         self.closed += 1
+        self.while_closing()
 
 
 @pytest.fixture(autouse=True)
@@ -225,6 +227,21 @@ def test_sleep_during_the_last_text_makes_only_it_late(
     assert outcomes[0].late == ("Mehmet",)
 
 
+def test_unplayable_file_is_still_reported_after_a_sleep(
+    player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
+) -> None:
+    output.unplayable = {AYSE}
+    sleep_while_playing(output, clock, ZEYNEP)
+
+    player.play(["Ayşe", "Mehmet", "Zeynep"])
+
+    assert outcomes == [
+        Playback(
+            ("Ayşe", "Mehmet", "Zeynep"), missing=(), late=("Zeynep",), failed=True
+        )
+    ]
+
+
 def test_a_short_stall_is_not_a_sleep(
     player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
 ) -> None:
@@ -258,13 +275,18 @@ def test_time_between_two_announcements_is_not_a_sleep(
     assert [playback.late for playback in outcomes] == [(), ()]
 
 
+def wait_for(condition: Callable[[], bool]) -> None:
+    """Wait until ``condition`` holds, for five seconds at most."""
+    deadline = time.monotonic() + 5
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
 def run_queue(player: Player, outcomes: list[Playback], expected: int) -> None:
     """Run the player's thread until it has reported ``expected`` outcomes."""
     player.start()
     try:
-        deadline = time.monotonic() + 5
-        while len(outcomes) < expected and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_for(lambda: len(outcomes) >= expected)
     finally:
         player.stop()
 
@@ -295,9 +317,48 @@ def test_texts_queued_before_a_sleep_are_skipped_as_late(
     assert output.played == [CHIME, AYSE]
     assert outcomes == [
         Playback(("Ayşe",), missing=(), late=("Ayşe",), failed=False),
-        Playback(("Mehmet", "Can"), missing=(), late=("Mehmet", "Can"), failed=False),
+        Playback(("Mehmet", "Can"), missing=("Can",), late=("Mehmet",), failed=False),
         Playback(("Zeynep",), missing=(), late=("Zeynep",), failed=False),
     ]
+
+
+def test_sleep_between_two_announcements_makes_the_next_one_late(
+    player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
+) -> None:
+    def while_closing() -> None:
+        if output.closed == 1:
+            clock.now += 3 * 3600
+
+    output.while_closing = while_closing
+    player.enqueue(["Ayşe"])
+    player.enqueue(["Mehmet"])
+
+    run_queue(player, outcomes, expected=2)
+
+    assert output.played == [CHIME, AYSE]
+    assert outcomes == [
+        Playback(("Ayşe",), missing=(), late=(), failed=False),
+        Playback(("Mehmet",), missing=(), late=("Mehmet",), failed=False),
+    ]
+
+
+def test_clock_set_back_after_a_sleep_does_not_skip_new_texts(
+    player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
+) -> None:
+    sleep_while_playing(output, clock, AYSE, seconds=8 * 3600)
+    player.enqueue(["Ayşe"])
+    player.start()
+    try:
+        wait_for(lambda: len(outcomes) == 1)
+        time.sleep(0.05)  # let the player find its queue empty
+        clock.now -= 5 * 3600
+        player.enqueue(["Mehmet"])
+        wait_for(lambda: len(outcomes) == 2)
+    finally:
+        player.stop()
+
+    assert output.played == [CHIME, AYSE, CHIME, MEHMET]
+    assert outcomes[1] == Playback(("Mehmet",), missing=(), late=(), failed=False)
 
 
 def test_texts_queued_after_the_wake_are_played(
@@ -406,6 +467,17 @@ def test_stop_drops_what_is_still_queued(
 
 def test_stopping_a_player_that_never_started_is_harmless(player: Player) -> None:
     player.stop()
+
+
+def test_nothing_is_played_after_stop(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    player.stop()
+
+    player.play(["Ayşe"])
+
+    assert output.opened == 0
+    assert outcomes == []
 
 
 def write_silence(path: Path, seconds: float) -> Path:

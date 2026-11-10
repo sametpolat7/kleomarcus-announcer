@@ -85,15 +85,7 @@ class Playback:
     texts: tuple[str, ...]  # everything that was due
     missing: tuple[str, ...]  # the texts skipped for lack of stored speech
     late: tuple[str, ...]  # the texts skipped because the computer was asleep
-    failed: bool  # the audio output could not play some or all of the rest
-
-
-class _AsleepError(Exception):
-    """The computer slept while a file was playing or about to play."""
-
-    def __init__(self, file_index: int) -> None:
-        super().__init__(f"Slept at file {file_index}")
-        self.file_index = file_index
+    failed: bool  # the audio output could not play some or all of the others
 
 
 class Player:
@@ -155,6 +147,16 @@ class Player:
         The chime sounds once, before the first text. If no text has stored
         speech, nothing is played at all.
         """
+        self._looked_at = self._clock()
+        self._announce(tuple(texts), skip=False)
+
+    def _announce(self, texts: tuple[str, ...], skip: bool) -> None:
+        """Announce ``texts`` and report the outcome.
+
+        With ``skip`` nothing is played, because the texts are already late.
+        """
+        if self._stopped.is_set():
+            return
         spoken: list[tuple[str, Path]] = []
         missing: list[str] = []
         for text in texts:
@@ -164,38 +166,38 @@ class Player:
             else:
                 spoken.append((text, path))
 
-        late: tuple[str, ...] = ()
         failed = False
-        if spoken:
+        finished = 0  # how many files, the chime included, were played out
+        if spoken and not skip:
+            files = [self._chime, *(path for _, path in spoken)]
             try:
-                failed = self._play_files([self._chime, *(path for _, path in spoken)])
+                failed, finished = self._play_files(files)
             except PlaybackError:
                 _log.exception("Cannot play an announcement")
-                failed = True
-            except _AsleepError as woke:
-                # File 0 is the chime, so file n belongs to the text n - 1. The
-                # text that was cut off counts as late, like those after it.
-                first_late = max(woke.file_index - 1, 0)
-                late = tuple(text for text, _ in spoken[first_late:])
+                failed, finished = True, len(files)
         if self._stopped.is_set():
             return  # cut off by ``stop``, so there is nothing true to report
-        self._on_played(Playback(tuple(texts), tuple(missing), late, failed))
+        # File 0 is the chime, so file n belongs to text n - 1. A text that
+        # was cut off by a sleep counts as late, like those after it.
+        late = tuple(text for text, _ in spoken[max(finished - 1, 0) :])
+        self._on_played(Playback(texts, tuple(missing), late, failed))
 
-    def _play_files(self, paths: Sequence[Path]) -> bool:
-        """Play the files in order; return whether any of them could not be.
+    def _play_files(self, paths: Sequence[Path]) -> tuple[bool, int]:
+        """Play the files in order until the last has ended.
 
-        Raises ``PlaybackError`` if there is no audio device, and ``_AsleepError``
-        if the computer slept before the last file ended.
+        Returns whether any file could not be played, and how many files were
+        dealt with before the player was stopped or the computer slept: all of
+        them if neither happened. Raises ``PlaybackError`` if there is no
+        audio device.
         """
         unplayable = False
         # The device is opened for each announcement and closed again, so
         # speakers that were plugged in or switched since are used.
         self._output.open()
         try:
-            self._looked_at = self._clock()
             for index, path in enumerate(paths):
-                if index and not self._wait(self._GAP, index):
-                    return unplayable
+                if index and not self._wait(self._GAP):
+                    return unplayable, index
                 try:
                     self._output.start(path)
                 except PlaybackError:
@@ -204,40 +206,47 @@ class Player:
                     unplayable = True
                     continue
                 while self._output.busy():
-                    if not self._wait(self._POLL, index):
-                        return unplayable
+                    if not self._wait(self._POLL):
+                        return unplayable, index
         finally:
             self._output.close()
-        return unplayable
+        return unplayable, len(paths)
 
-    def _wait(self, seconds: float, file_index: int) -> bool:
-        """Wait a moment; return False if the player was stopped meanwhile.
+    def _wait(self, seconds: float) -> bool:
+        """Wait a moment; return False if playing has to end here.
 
-        Raises ``_AsleepError`` if far more time has passed than was waited for.
+        That is the case when the player was stopped or the computer slept.
         """
         stopped = self._stopped.wait(seconds)
+        return not (self._slept() or stopped)
+
+    def _slept(self) -> bool:
+        """Look at the clock; return whether the computer slept since the last look."""
         before, now = self._looked_at, self._clock()
         self._looked_at = now
-        if now - before > self._SLEEP:
-            # The sleep fills all but a moment of the gap, so whatever was
-            # queued in its first half was queued before the computer slept.
-            self._asleep_until = before + (now - before) / 2
-            raise _AsleepError(file_index)
-        return not stopped
+        if now - before <= self._SLEEP:
+            return False
+        # The sleep fills all but a moment of the gap, so whatever was queued
+        # in its first half was queued before the computer slept.
+        self._asleep_until = before + (now - before) / 2
+        return True
 
     def _run(self) -> None:
+        self._looked_at = self._clock()
         while True:
-            item = self._queue.get()
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                # Nothing was waiting, so nothing can be late: start afresh.
+                self._asleep_until = float("-inf")
+                item = self._queue.get()
+                self._looked_at = self._clock()
             if item is None or self._stopped.is_set():
                 break
             queued_at, texts = item
             try:
-                if queued_at < self._asleep_until:
-                    self._on_played(
-                        Playback(texts, missing=(), late=texts, failed=False)
-                    )
-                else:
-                    self.play(texts)
+                self._slept()  # a sleep between two announcements counts too
+                self._announce(texts, skip=queued_at < self._asleep_until)
             except Exception:
                 # One failed announcement must not silence every later one.
                 _log.exception("Announcing failed")
