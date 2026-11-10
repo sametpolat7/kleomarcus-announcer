@@ -99,14 +99,14 @@ def choose(
 
 def test_fresh_window_asks_for_a_schedule(window: MainWindow) -> None:
     assert window.schedule_path.get() == ""
-    assert window.refreshed.get() == "Son yenileme: —"
+    assert window.loaded.get() == "Son Yüklenme Tarihi: —"
     assert window.today_title.get() == "9 Kasım 2026 Pazartesi"
     assert today(window) == [("", "", "Bugün için anons yok.", "")]
     assert announcements(window) == [("", "", "Özel anons yok.")]
     assert window.time.get() == "08:00:00"
     assert window.last_announcement.get() == "Son anons: —"
     assert window.template.get() == DEFAULT_TEMPLATE
-    assert warnings(window).startswith("• Program dosyası seçilmedi.")
+    assert warnings(window).startswith("• Sporcu listesi seçilmedi.")
 
 
 def test_choosing_a_schedule_shows_todays_announcements(
@@ -115,9 +115,9 @@ def test_choosing_a_schedule_shows_todays_announcements(
     choose(window, schedule, monkeypatch)
 
     assert window.schedule_path.get() == str(schedule)
-    assert window.refreshed.get() == "Son yenileme: 09.11.2026 08:00:00"
+    assert window.loaded.get() == "Son Yüklenme Tarihi: 09.11.2026 08:00:00"
     assert today(window) == [
-        ("18:00", "2 sporcu", "Ayşe Yılmaz, Mehmet Demir", "Sıradaki")
+        ("Pazartesi", "18:00", "Ayşe Yılmaz, Mehmet Demir", "Sıradaki")
     ]
     pump(window, lambda: warnings(window) == "")
     assert not window.warning_box.winfo_manager()  # the box is taken away
@@ -133,32 +133,37 @@ def test_schedule_that_cannot_be_used_gives_an_alert(
     choose(window, None, monkeypatch)  # the file dialog is cancelled
     assert (window.schedule_path.get(), alerts) == ("", [])
     choose(window, schedule, monkeypatch)
-    broken = tmp_path / "broken.xlsx"
+    broken, notes = tmp_path / "broken.xlsx", tmp_path / "notes.txt"
     broken.write_text("not a workbook")
+    notes.write_text("Ayşe Yılmaz")
 
     choose(window, broken, monkeypatch)
+    choose(window, notes, monkeypatch)
 
     assert alerts == [
-        "Program dosyası okunamadı. Geçerli bir Excel (.xlsx) dosyası olmalıdır."
+        "Sporcu listesi okunamadı. Geçerli bir Excel (.xlsx) dosyası olmalıdır.",
+        "Bu dosya yüklenemez. Sporcu listesi bir Excel (.xlsx) dosyası olmalıdır.",
     ]
     assert window.schedule_path.get() == str(schedule)
     assert len(today(window)) == 1
 
 
-def test_refresh_button_reads_the_file_again(
+def test_saved_schedule_file_is_shown_by_itself(
     window: MainWindow,
+    app: App,
     schedule: Path,
     clock: FakeClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    app.start()
     choose(window, schedule, monkeypatch)
-    write_schedule(schedule, [*ROWS, ("Elif Şahin", "Pazartesi", "20:30")])
     clock.now = at(9, 15)
 
-    window.refresh_button.invoke()
+    write_schedule(schedule, [*ROWS, ("Elif Şahin", "Pazartesi", "20:30")])
 
-    assert today(window)[1] == ("20:30", "Sporcu", "Elif Şahin", "Bekliyor")
-    assert window.refreshed.get() == "Son yenileme: 09.11.2026 09:15:00"
+    pump(window, lambda: len(today(window)) == 2)
+    assert today(window)[1] == ("Pazartesi", "20:30", "Elif Şahin", "Bekliyor")
+    assert window.loaded.get() == "Son Yüklenme Tarihi: 09.11.2026 09:15:00"
 
 
 def test_status_follows_the_clock(
@@ -177,7 +182,7 @@ def test_status_follows_the_clock(
     clock.now = at(0, 0) + datetime.timedelta(days=1)
     pump(window, lambda: window.today_title.get() == "10 Kasım 2026 Salı")
 
-    assert today(window) == [("20:00", "Sporcu", "Zeynep Kaya", "Sıradaki")]
+    assert today(window) == [("Salı", "20:00", "Zeynep Kaya", "Sıradaki")]
 
 
 def test_due_slot_is_shown_as_played(
@@ -214,7 +219,7 @@ def test_speech_that_cannot_be_generated_is_shown_as_a_warning(
     assert warnings(window).startswith("• 3 anonsun sesi oluşturulamadı.")
 
 
-def test_warnings_show_in_a_box_that_grows_to_four_lines(
+def test_warnings_show_in_a_box_that_grows_to_three_lines(
     window: MainWindow, app: App, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     assert window.warning_box.winfo_manager() == "grid"
@@ -224,7 +229,7 @@ def test_warnings_show_in_a_box_that_grows_to_four_lines(
     choose(window, write_schedule(tmp_path / "typos.xlsx", typos), monkeypatch)
 
     assert warnings(window).count("satır atlandı") == 6
-    assert window.warnings.cget("height") == 4
+    assert window.warnings.cget("height") == 3
 
 
 def test_template_can_be_saved_only_while_it_is_changed(
@@ -232,11 +237,11 @@ def test_template_can_be_saved_only_while_it_is_changed(
 ) -> None:
     assert window.save_template_button.instate(["disabled"])
 
-    window.template.set("  Hoş geldiniz, {ad}.  ")
+    window.template.set("  Hoş geldiniz, {ad_soyad}.  ")
     assert window.save_template_button.instate(["!disabled"])
 
     window.save_template_button.invoke()
-    assert app.settings.template == "Hoş geldiniz, {ad}."
+    assert app.settings.template == "Hoş geldiniz, {ad_soyad}."
     assert window.save_template_button.instate(["disabled"])
 
     window.template.set(f"  {app.settings.template}  ")
@@ -295,7 +300,7 @@ def test_template_without_the_placeholder_gives_an_alert(
     window.save_template_button.invoke()
     window.test_button.invoke()
 
-    assert alerts == ["Şablonda “{ad}” yer tutucusu bulunmalıdır."] * 2
+    assert alerts == ["Şablonda “{ad_soyad}” yer tutucusu bulunmalıdır."] * 2
     assert app.settings.template == DEFAULT_TEMPLATE
     assert app.test_status is None
     # What was typed stays in the box, to be corrected.
@@ -306,7 +311,7 @@ def test_test_button_announces_what_is_typed_without_saving_it(
     window: MainWindow, app: App, provider: FakeProvider
 ) -> None:
     app.start()
-    window.template.set("Merhaba {ad}.")
+    window.template.set("Merhaba {ad_soyad}.")
 
     window.test_button.invoke()
     assert window.activity.get() == "Test anonsu hazırlanıyor…"
@@ -314,7 +319,7 @@ def test_test_button_announces_what_is_typed_without_saving_it(
 
     assert [text for text, _ in provider.calls] == ["Merhaba Ayşe Yılmaz."]
     assert app.settings.template == DEFAULT_TEMPLATE
-    assert window.template.get() == "Merhaba {ad}."
+    assert window.template.get() == "Merhaba {ad_soyad}."
 
 
 def test_custom_announcements_are_listed_by_time(window: MainWindow, app: App) -> None:
@@ -409,17 +414,17 @@ def test_error_in_an_action_is_logged_and_told(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    def fail() -> None:
-        raise RuntimeError("the refresh broke")
+    def fail(template: str) -> None:
+        raise RuntimeError("the test broke")
 
-    monkeypatch.setattr(app, "refresh", fail)
+    monkeypatch.setattr(app, "test", fail)
 
     with caplog.at_level(logging.ERROR):
-        window.refresh_button.invoke()
+        window.test_button.invoke()
 
     assert alerts == ["Beklenmeyen bir hata oluştu. Ayrıntılar kayıt dosyasındadır."]
     assert "An action in the window failed" in caplog.text
-    assert "RuntimeError: the refresh broke" in caplog.text
+    assert "RuntimeError: the test broke" in caplog.text
 
 
 def test_window_keeps_following_the_app_after_a_failed_update(

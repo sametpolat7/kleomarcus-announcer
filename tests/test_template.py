@@ -19,8 +19,11 @@ def test_render_puts_the_name_in_every_placeholder() -> None:
         render(DEFAULT_TEMPLATE, "Ayşe Yılmaz")
         == "Ayşe Yılmaz, antrenmanınız başlamıştır. İyi antrenmanlar dileriz."
     )
-    assert render("{ad}! {ad}, sıra sizde.", "Mehmet") == "Mehmet! Mehmet, sıra sizde."
+    assert (
+        render("{ad_soyad}! {ad_soyad}, sıra sizde.", "Mehmet")
+        == "Mehmet! Mehmet, sıra sizde."
+    )
 
 
 def test_render_leaves_other_braces_alone() -> None:
-    assert render("{ad} {salon} {} {", "Zeynep") == "Zeynep {salon} {} {"
+    assert render("{ad_soyad} {salon} {} {", "Zeynep") == "Zeynep {salon} {} {"

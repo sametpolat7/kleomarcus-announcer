@@ -45,7 +45,7 @@ def test_round_trip(path: Path) -> None:
     settings = Settings(
         voice="tr-TR-AhmetNeural",
         schedule_path=Path("program") / "haftalık.xlsx",
-        template="Sayın {ad}, dersiniz başlıyor.",
+        template="Sayın {ad_soyad}, dersiniz başlıyor.",
         custom_announcements=(CLOSING, CLEANING),
     )
 
@@ -84,6 +84,12 @@ def test_file_edited_by_hand_loads(path: Path) -> None:
     assert load_settings(path).settings == Settings(voice="tr-TR-AhmetNeural")
 
 
+def test_template_stored_with_the_old_placeholder_keeps_working(path: Path) -> None:
+    write_json(path, {"template": "Sayın {ad}, hoş geldiniz."})
+
+    assert load_settings(path).settings.template == "Sayın {ad_soyad}, hoş geldiniz."
+
+
 @pytest.mark.parametrize(
     "content",
     [b"{", b"[]", b"\xff\xfe\x00", b"[" * 200_000],
@@ -111,7 +117,7 @@ def test_folder_in_place_of_the_file_is_an_error(path: Path) -> None:
         ("schedule_path", ""),
         ("schedule_path", {"path": "a.xlsx"}),
         ("template", "Hoş geldiniz."),
-        ("template", ["{ad}"]),
+        ("template", ["{ad_soyad}"]),
         ("custom_announcements", {"text": "Duyuru"}),
     ],
 )

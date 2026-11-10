@@ -30,7 +30,6 @@ class Row:
     """One line of today's preview."""
 
     time: datetime.time
-    athletes: int  # how many athletes it names; none for a custom announcement
     summary: str  # the athletes' names, or the custom announcement's text
     status: Status
 
@@ -69,19 +68,15 @@ def todays_rows(
     upcoming = Status.NEXT
     for slot in timetable.slots_on(now.weekday()):
         due = datetime.datetime.combine(now.date(), slot.time)
-        status = outcomes.get((due, summary(slot)))
+        text = summary(slot)
+        status = outcomes.get((due, text))
         if status is None and now - due > LATE:
             status = Status.PASSED  # too late for the scheduler to announce it
         elif status is None:
             status, upcoming = upcoming, Status.WAITING
-        rows.append(Row(slot.time, len(slot.names), summary(slot), status))
+        rows.append(Row(slot.time, text, status))
     rows.extend(
-        Row(
-            conflict.announcement.time,
-            0,
-            conflict.announcement.text,
-            Status.CONFLICT,
-        )
+        Row(conflict.announcement.time, conflict.announcement.text, Status.CONFLICT)
         for conflict in timetable.conflicts
         if conflict.weekday == now.weekday()
     )

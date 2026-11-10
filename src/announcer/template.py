@@ -1,7 +1,9 @@
 """The sentence announced for each athlete."""
 
-PLACEHOLDER = "{ad}"
-DEFAULT_TEMPLATE = "{ad}, antrenmanınız başlamıştır. İyi antrenmanlar dileriz."
+PLACEHOLDER = "{ad_soyad}"
+DEFAULT_TEMPLATE = (
+    f"{PLACEHOLDER}, antrenmanınız başlamıştır. İyi antrenmanlar dileriz."
+)
 
 
 def is_valid_template(template: str) -> bool:

@@ -15,6 +15,7 @@ from announcer import APP_NAME
 from announcer.app import App
 from announcer.loader import ScheduleFileError
 from announcer.logo import ICON_SIZES, icon_path
+from announcer.models import WEEKDAY_NAMES
 from announcer.scheduler import LATE
 from announcer.today import Status
 from announcer.ui import texts
@@ -44,7 +45,8 @@ _BLUE = "#2e86de"
 # The warnings stand on a colour of their own, so their text has one too.
 _WARNING_BACKGROUND = "#fff3cd"
 _WARNING_TEXT = "#4d3b00"
-_WARNING_LINES = 4  # how many are shown before the rest has to be scrolled to
+_WARNING_LINES = 3  # how many are shown before the rest has to be scrolled to
+_TEMPLATE_TITLE = "Varsayılan Anons Şablonu"
 _NO_ROW = "none"  # the id of the line that says that a table is empty
 _MAC_QUIT = "::tk::mac::Quit"  # what macOS calls for Quit in the menu and the Dock
 
@@ -104,6 +106,7 @@ class MainWindow:
         self._shown_rows: list[tuple[str, str, str, str]] | None = None
         self._shown_announcements: list[tuple[str, tuple[str, str, str]]] | None = None
         self._shown_warnings: list[str] | None = None
+        self._current_row: str | None = None  # of today's table: sounding, or next
         self._update_failed = False  # the last look at the app raised an error
         self.closed = False
 
@@ -113,8 +116,8 @@ class MainWindow:
         # Small enough for a laptop screen; the tables take up the difference.
         height = min(800, self.root.winfo_screenheight() - 120)
         self.root.geometry(f"860x{height}")
-        # At this size everything still fits, with four lines of warnings.
-        self.root.minsize(720, 680)
+        # At this size everything still fits, with three lines of warnings.
+        self.root.minsize(720, 720)
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         self.root.protocol("WM_DELETE_WINDOW", self.ask_to_close)
@@ -127,7 +130,7 @@ class MainWindow:
         self.root.report_callback_exception = self._report_error
 
         self.schedule_path = tk.StringVar()
-        self.refreshed = tk.StringVar()
+        self.loaded = tk.StringVar()
         self.today_title = tk.StringVar()
         self.time = tk.StringVar()
         self.last_announcement = tk.StringVar()
@@ -151,9 +154,9 @@ class MainWindow:
         self.warning_box = self._build_warnings(frame)
         self.warning_box.grid(row=1, sticky="ew", pady=(_PAD, 0))
         self._build_today(frame).grid(row=2, sticky="nsew", pady=(_PAD, 0))
-        self._build_schedule(frame).grid(row=3, sticky="ew", pady=(_PAD, 0))
-        self._build_template(frame).grid(row=4, sticky="ew", pady=(_PAD, 0))
-        self._build_announcements(frame).grid(row=5, sticky="ew", pady=(_PAD, 0))
+        self._build_template(frame).grid(row=3, sticky="ew", pady=(_PAD, 0))
+        self._build_announcements(frame).grid(row=4, sticky="ew", pady=(_PAD, 0))
+        self._build_schedule(frame).grid(row=5, sticky="ew", pady=(_PAD, 0))
         self._build_footer(frame).grid(row=6, sticky="ew", pady=(_PAD, 0))
 
         self.show()
@@ -190,8 +193,8 @@ class MainWindow:
         self._shown_at = _moment(now)
         path = app.settings.schedule_path
         self.schedule_path.set("" if path is None else str(path))
-        self._schedule_entry.xview_moveto(1)  # the file's name is at the end
-        self.refreshed.set(texts.refreshed(app.refreshed_at))
+        self._schedule_entry.xview_moveto(1)
+        self.loaded.set(texts.last_loaded(app.refreshed_at))
         self.today_title.set(texts.today_title(now))
         self.time.set(f"{now:%H:%M:%S}")
         self.last_announcement.set(texts.last_announcement(app.last_announcement))
@@ -215,16 +218,23 @@ class MainWindow:
         return header
 
     def _build_schedule(self, parent: ttk.Frame) -> ttk.LabelFrame:
-        box = ttk.LabelFrame(parent, text="Program Dosyası", padding=8)
+        box = ttk.LabelFrame(parent, text="Sporcu Listesi", padding=8)
         box.columnconfigure(0, weight=1)
         self._schedule_entry = ttk.Entry(
             box, textvariable=self.schedule_path, state="readonly"
         )
         self._schedule_entry.grid(row=0, column=0, sticky="ew")
+        # The file's name is at the end of the path, so that end is kept in
+        # view, also once the window is laid out and whenever it is resized.
+        self._schedule_entry.bind(
+            "<Configure>", lambda event: self._schedule_entry.xview_moveto(1)
+        )
         self.choose_button = ttk.Button(box, text="Dosya Seç…", command=self.choose)
         self.choose_button.grid(row=0, column=1, padx=(8, 0))
-        self.refresh_button = ttk.Button(box, text="Yenile", command=self.refresh)
-        self.refresh_button.grid(row=0, column=2, padx=(8, 0))
+        # There is no button to read the file again: saving it does that.
+        ttk.Label(box, textvariable=self.loaded).grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(6, 0)
+        )
         return box
 
     def _build_today(self, parent: ttk.Frame) -> ttk.LabelFrame:
@@ -234,10 +244,17 @@ class MainWindow:
         self.today = self._table(
             box,
             height=6,
-            columns={"time": "Saat", "kind": "Tür", "text": "Anons", "status": "Durum"},
-            widths={"time": 60, "kind": 90, "text": 360, "status": 150},
+            columns={
+                "day": "Gün",
+                "time": "Saat",
+                "text": "İsim Soyisim",
+                "status": "Durum",
+            },
+            widths={"day": 90, "time": 60, "text": 360, "status": 150},
             select=False,  # there is nothing to do with a row but read it
         )
+        # Also once the window is laid out, and whenever it is resized.
+        self.today.bind("<Configure>", lambda event: self._see_current())
         self.today.tag_configure(Status.NEXT.name, font=self._bold)
         self.today.tag_configure(Status.PLAYING.name, font=self._bold, foreground=_BLUE)
         for status in _DONE:
@@ -245,17 +262,13 @@ class MainWindow:
         for status in _PROBLEMS:
             self.today.tag_configure(status.name, foreground=_RED)
         self.today.tag_configure(_NO_ROW, foreground=_GREY)
-        notes = ttk.Frame(box)
-        notes.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        notes.columnconfigure(0, weight=1)
-        ttk.Label(notes, textvariable=self.last_announcement).grid(
-            row=0, column=0, sticky="w"
+        ttk.Label(box, textvariable=self.last_announcement).grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(6, 0)
         )
-        ttk.Label(notes, textvariable=self.refreshed).grid(row=0, column=1, sticky="e")
         return box
 
     def _build_template(self, parent: ttk.Frame) -> ttk.LabelFrame:
-        box = ttk.LabelFrame(parent, text="Anons Şablonu", padding=8)
+        box = ttk.LabelFrame(parent, text=_TEMPLATE_TITLE, padding=8)
         box.columnconfigure(0, weight=1)
         entry = ttk.Entry(box, textvariable=self.template)
         entry.grid(row=0, column=0, sticky="ew")
@@ -379,13 +392,9 @@ class MainWindow:
 
     def _show_today(self) -> None:
         rows = self._app.rows()
+        day = WEEKDAY_NAMES[self._clock().weekday()]
         shown = [
-            (
-                f"{row.time:%H:%M}",
-                texts.kind(row.athletes),
-                row.summary,
-                texts.STATUS[row.status],
-            )
+            (day, f"{row.time:%H:%M}", row.summary, texts.STATUS[row.status])
             for row in rows
         ]
         if shown == self._shown_rows:
@@ -400,14 +409,18 @@ class MainWindow:
             self.today.insert(
                 "", "end", iid=_NO_ROW, values=("", "", texts.NO_ROWS, ""), tags=_NO_ROW
             )
-        # Bring what is sounding now, or comes next, into view.
         current = [
-            index
+            str(index)
             for index, row in enumerate(rows)
             if row.status in (Status.PLAYING, Status.NEXT)
         ]
-        if current:
-            self.today.see(str(current[0]))
+        self._current_row = current[0] if current else None
+        self._see_current()
+
+    def _see_current(self) -> None:
+        """Bring what is sounding now, or comes next, into view."""
+        if self._current_row is not None:
+            self.today.see(self._current_row)
 
     def _show_announcements(self) -> None:
         """List the custom announcements by time; a row's id is its index."""
@@ -515,7 +528,7 @@ class MainWindow:
         current = self._app.settings.schedule_path
         chosen = filedialog.askopenfilename(
             parent=self.root,
-            title="Program Dosyasını Seç",
+            title="Sporcu Listesini Seç",
             filetypes=[("Excel dosyası", "*.xlsx")],
             initialdir=None if current is None else current.parent,
         )
@@ -525,16 +538,10 @@ class MainWindow:
             self._app.choose_schedule(Path(chosen))
         except ScheduleFileError as error:
             _log.warning("Cannot use %s: %s (%r)", chosen, error, error.__cause__)
-            self._alert("Program Dosyası", texts.schedule_error(error))
+            self._alert("Sporcu Listesi", texts.schedule_error(error))
         except OSError:
             _log.exception("Cannot save the choice of schedule file")
-            self._alert("Program Dosyası", texts.CANNOT_SAVE)
-        self.show()
-
-    def refresh(self) -> None:
-        """Read the schedule file again."""
-        _log.info("Refresh requested")
-        self._app.refresh()
+            self._alert("Sporcu Listesi", texts.CANNOT_SAVE)
         self.show()
 
     def save_template(self) -> None:
@@ -545,10 +552,10 @@ class MainWindow:
         try:
             self._app.set_template(template)
         except ValueError:
-            self._alert("Anons Şablonu", texts.TEMPLATE_NEEDS_PLACEHOLDER)
+            self._alert(_TEMPLATE_TITLE, texts.TEMPLATE_NEEDS_PLACEHOLDER)
         except OSError:
             _log.exception("Cannot save the template")
-            self._alert("Anons Şablonu", texts.CANNOT_SAVE)
+            self._alert(_TEMPLATE_TITLE, texts.CANNOT_SAVE)
         self.show()
 
     def test(self) -> None:
@@ -556,7 +563,7 @@ class MainWindow:
         try:
             self._app.test(self.template.get().strip())
         except ValueError:
-            self._alert("Anons Şablonu", texts.TEMPLATE_NEEDS_PLACEHOLDER)
+            self._alert(_TEMPLATE_TITLE, texts.TEMPLATE_NEEDS_PLACEHOLDER)
         self.show()
 
     def add(self) -> None:
