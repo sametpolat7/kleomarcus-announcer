@@ -7,7 +7,12 @@ import datetime
 from collections.abc import Iterable
 
 from announcer.app import App, LastAnnouncement, backup_copy
-from announcer.loader import MissingColumnsError, RowProblem, ScheduleFileError
+from announcer.loader import (
+    MissingColumnsError,
+    RowProblem,
+    ScheduleFileError,
+    WrongFileTypeError,
+)
 from announcer.models import ALL_WEEKDAYS, WEEKDAY_NAMES
 from announcer.template import PLACEHOLDER
 from announcer.timetable import Conflict, SlotHolder
@@ -18,7 +23,10 @@ NO_ROWS = "Bugün için anons yok."
 NO_ANNOUNCEMENTS = "Özel anons yok."
 CLOSE_QUESTION = "Uygulama kapatılırsa anonslar okunmaz. Kapatılsın mı?"
 ALREADY_RUNNING = "Uygulama zaten çalışıyor."
-TEMPLATE_HINT = f"“{PLACEHOLDER}” yerine sporcunun adı ve soyadı okunur."
+TEMPLATE_HINT = (
+    f"“{PLACEHOLDER}” bir değişkendir: yerine sporcunun adı ve soyadı okunur.\n"
+    "Cümlede istediğiniz yere taşıyabilirsiniz, ancak aynen bu şekilde yazılmalıdır."
+)
 TEMPLATE_NEEDS_PLACEHOLDER = f"Şablonda “{PLACEHOLDER}” yer tutucusu bulunmalıdır."
 CANNOT_SAVE = "Değişiklik kaydedilemedi. Ayrıntılar kayıt dosyasındadır."
 
@@ -71,15 +79,6 @@ _MONTHS = (
 )
 
 
-def kind(athletes: int) -> str:
-    """Return what a row of today's table is: a custom announcement, or one
-    for the given number of athletes."""
-    if not athletes:
-        return "Özel"
-    # A long list of names is cut off by the table, so their number is said.
-    return "Sporcu" if athletes == 1 else f"{athletes} sporcu"
-
-
 def days(weekdays: Iterable[int]) -> str:
     """Return the weekdays of a custom announcement, in order."""
     chosen = sorted(weekdays)
@@ -94,9 +93,9 @@ def today_title(now: datetime.datetime) -> str:
     return f"{now.day} {month} {now.year} {weekday}"
 
 
-def refreshed(moment: datetime.datetime | None) -> str:
+def last_loaded(moment: datetime.datetime | None) -> str:
     """Return the line that says when the schedule file was last read."""
-    return f"Son yenileme: {moment:%d.%m.%Y %H:%M:%S}" if moment else "Son yenileme: —"
+    return f"Son Yüklenme Tarihi: {f'{moment:%d.%m.%Y %H:%M:%S}' if moment else '—'}"
 
 
 def last_announcement(last: LastAnnouncement | None) -> str:
@@ -118,8 +117,12 @@ def activity(generating: bool, test: Status | None) -> str:
 def schedule_error(error: ScheduleFileError) -> str:
     """Return why a schedule file cannot be used."""
     if isinstance(error, MissingColumnsError):
-        return f"Program dosyasında şu sütunlar eksik: {', '.join(error.columns)}."
-    return "Program dosyası okunamadı. Geçerli bir Excel (.xlsx) dosyası olmalıdır."
+        return f"Sporcu listesinde şu sütunlar eksik: {', '.join(error.columns)}."
+    if isinstance(error, WrongFileTypeError):
+        return (
+            "Bu dosya yüklenemez. Sporcu listesi bir Excel (.xlsx) dosyası olmalıdır."
+        )
+    return "Sporcu listesi okunamadı. Geçerli bir Excel (.xlsx) dosyası olmalıdır."
 
 
 def conflict_alert(conflicts: Iterable[Conflict]) -> str:
@@ -152,14 +155,14 @@ def warnings(app: App) -> list[str]:
         )
     if app.settings.schedule_path is None:
         lines.append(
-            "Program dosyası seçilmedi. “Dosya Seç” ile bir Excel dosyası seçin."
+            "Sporcu listesi seçilmedi. “Dosya Seç” ile bir Excel dosyası seçin."
         )
     if app.schedule_error is not None:
-        last = " Son okunan program kullanılıyor." if app.refreshed_at else ""
+        last = " Son yüklenen liste kullanılıyor." if app.refreshed_at else ""
         lines.append(schedule_error(app.schedule_error) + last)
     for skipped in app.skipped_rows:
         problems = ", ".join(_ROW_PROBLEMS[problem] for problem in skipped.problems)
-        lines.append(f"Program dosyasında {skipped.row}. satır atlandı: {problems}.")
+        lines.append(f"Sporcu listesinde {skipped.row}. satır atlandı: {problems}.")
     for conflict in app.timetable.conflicts:
         announcement = conflict.announcement
         lines.append(
@@ -170,7 +173,7 @@ def warnings(app: App) -> list[str]:
     if app.unspoken:
         lines.append(
             f"{len(app.unspoken)} anonsun sesi oluşturulamadı. İnternet bağlantısını "
-            "kontrol edip “Yenile”ye basın."
+            "kontrol edin; birkaç dakikada bir yeniden denenir."
         )
         if app.spoken_template != app.settings.template:
             lines.append(

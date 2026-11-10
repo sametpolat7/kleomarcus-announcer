@@ -56,7 +56,7 @@ def test_choosing_a_schedule_loads_it_remembers_the_file_and_generates_its_speec
 
     assert app.unspoken == ()
     assert sorted(text for text, _ in provider.calls) == sorted(
-        DEFAULT_TEMPLATE.replace("{ad}", name) for name, _, _ in ROWS
+        DEFAULT_TEMPLATE.replace("{ad_soyad}", name) for name, _, _ in ROWS
     )
 
 
@@ -259,10 +259,10 @@ def test_new_template_is_stored_and_spoken(
     app.choose_schedule(schedule)
     wait_for_speech(app)
 
-    app.set_template("Hoş geldiniz, {ad}.")
+    app.set_template("Hoş geldiniz, {ad_soyad}.")
     wait_for_speech(app)
 
-    assert load_settings(settings_file).settings.template == "Hoş geldiniz, {ad}."
+    assert load_settings(settings_file).settings.template == "Hoş geldiniz, {ad_soyad}."
     assert app.timetable.slots[0].texts[0] == "Hoş geldiniz, Ayşe Yılmaz."
     assert ("Hoş geldiniz, Zeynep Kaya.", app.settings.voice) in provider.calls
     assert app.unspoken == ()
@@ -273,7 +273,7 @@ def test_template_changed_while_speech_is_generated_is_spoken_too(
 ) -> None:
     app.choose_schedule(schedule)
     assert app.generating
-    app.set_template("Hoş geldiniz, {ad}.")
+    app.set_template("Hoş geldiniz, {ad_soyad}.")
     wait_for_speech(app)
 
     assert ("Hoş geldiniz, Ayşe Yılmaz.", app.settings.voice) in provider.calls
@@ -378,7 +378,7 @@ def test_change_that_cannot_be_saved_changes_nothing(
     settings_file.mkdir(parents=True)  # a folder where the file should be
 
     with pytest.raises(OSError):
-        app.set_template("Hoş geldiniz, {ad}.")
+        app.set_template("Hoş geldiniz, {ad_soyad}.")
     with pytest.raises(OSError):
         app.save_announcement(WATER)
 
@@ -489,7 +489,7 @@ def test_test_announcement_speaks_the_template_with_a_made_up_name(
         app.test("Merhaba.")
     assert app.test_status is None
 
-    app.test("Merhaba {ad}.")
+    app.test("Merhaba {ad_soyad}.")
     assert app.test_status is Status.PLAYING
     wait_for(app, lambda: app.test_status is Status.PLAYED)
 
@@ -544,7 +544,7 @@ def test_dropped_custom_announcements_are_counted(
     assert len(app.settings.custom_announcements) == 1
     # The next save leaves the dropped one out, so the file is copied first.
     assert app.settings_backed_up
-    app.set_template("Hoş geldiniz, {ad}.")
+    app.set_template("Hoş geldiniz, {ad_soyad}.")
     assert '"25:00"' not in settings_file.read_text(encoding="utf-8")
     assert '"25:00"' in backup_copy(settings_file).read_text(encoding="utf-8")
 
@@ -586,10 +586,10 @@ def test_athletes_keep_the_old_template_until_the_new_one_has_speech(
     old = app.timetable.slots[0].texts
 
     provider.offline = True
-    app.set_template("Hoş geldiniz, {ad}.")
+    app.set_template("Hoş geldiniz, {ad_soyad}.")
     wait_for_speech(app)
 
-    assert app.settings.template == "Hoş geldiniz, {ad}."
+    assert app.settings.template == "Hoş geldiniz, {ad_soyad}."
     assert app.spoken_template == DEFAULT_TEMPLATE
     assert app.timetable.slots[0].texts == old
     assert len(app.unspoken) == 3
@@ -602,7 +602,7 @@ def test_athletes_keep_the_old_template_until_the_new_one_has_speech(
     app.refresh()
     wait_for_speech(app)
 
-    assert app.spoken_template == "Hoş geldiniz, {ad}."
+    assert app.spoken_template == "Hoş geldiniz, {ad_soyad}."
     assert app.timetable.slots[0].texts[0] == "Hoş geldiniz, Ayşe Yılmaz."
     assert not app.unspoken
 
@@ -612,7 +612,7 @@ def test_template_with_stored_speech_is_spoken_at_once(
 ) -> None:
     app.choose_schedule(schedule)
     wait_for_speech(app)
-    app.set_template("Hoş geldiniz, {ad}.")
+    app.set_template("Hoş geldiniz, {ad_soyad}.")
     wait_for_speech(app)
     provider.offline = True
 
@@ -647,7 +647,7 @@ def test_actions_and_outcomes_are_logged_with_their_cause(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="announcer")
-    provider.unspeakable = {DEFAULT_TEMPLATE.replace("{ad}", "Mehmet Demir")}
+    provider.unspeakable = {DEFAULT_TEMPLATE.replace("{ad_soyad}", "Mehmet Demir")}
     app.choose_schedule(schedule)
     app.save_announcement(WATER)
     wait_for_speech(app)

@@ -5,7 +5,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 from announcer.app import App
-from announcer.loader import MissingColumnsError, UnreadableFileError
+from announcer.loader import (
+    MissingColumnsError,
+    UnreadableFileError,
+    WrongFileTypeError,
+)
 from announcer.models import ALL_WEEKDAYS, CustomAnnouncement
 from announcer.timetable import Conflict, SlotHolder
 from announcer.today import Status
@@ -20,12 +24,6 @@ def test_every_status_has_a_word() -> None:
 
 
 def test_words_of_the_tables() -> None:
-    assert [texts.kind(athletes) for athletes in (0, 1, 2, 14)] == [
-        "Özel",
-        "Sporcu",
-        "2 sporcu",
-        "14 sporcu",
-    ]
     assert texts.days(ALL_WEEKDAYS) == "Her gün"
     assert texts.days({3, 1}) == "Salı, Perşembe"
 
@@ -49,9 +47,10 @@ def test_schedule_error() -> None:
     missing = MissingColumnsError(("Gün", "Saat"))
 
     assert texts.schedule_error(missing) == (
-        "Program dosyasında şu sütunlar eksik: Gün, Saat."
+        "Sporcu listesinde şu sütunlar eksik: Gün, Saat."
     )
     assert "okunamadı" in texts.schedule_error(UnreadableFileError("no file"))
+    assert "yüklenemez" in texts.schedule_error(WrongFileTypeError("a text file"))
 
 
 def test_conflict_alert_names_each_day_and_what_holds_it() -> None:
@@ -81,11 +80,11 @@ def test_warnings_cover_everything_that_went_wrong(
     wait_for(app, lambda: not app.generating)
 
     assert texts.warnings(app) == [
-        "Program dosyasında 6. satır atlandı: ad soyad boş, gün tanınmadı.",
+        "Sporcu listesinde 6. satır atlandı: ad soyad boş, gün tanınmadı.",
         "“Su içmeyi unutmayın.” özel anonsu Pazartesi 19:00 için atlanıyor: "
         "aynı saatte sporcu anonsu var.",
-        "5 anonsun sesi oluşturulamadı. İnternet bağlantısını kontrol edip "
-        "“Yenile”ye basın.",
+        "5 anonsun sesi oluşturulamadı. İnternet bağlantısını kontrol edin; "
+        "birkaç dakikada bir yeniden denenir.",
     ]
 
 
@@ -99,8 +98,8 @@ def test_warning_for_a_schedule_that_can_no_longer_be_read(
     app.refresh()
 
     assert texts.warnings(app) == [
-        "Program dosyası okunamadı. Geçerli bir Excel (.xlsx) dosyası olmalıdır. "
-        "Son okunan program kullanılıyor."
+        "Sporcu listesi okunamadı. Geçerli bir Excel (.xlsx) dosyası olmalıdır. "
+        "Son yüklenen liste kullanılıyor."
     ]
 
 
@@ -144,12 +143,12 @@ def test_warning_while_a_new_template_has_no_speech(
     wait_for(app, lambda: not app.generating)
     provider.offline = True
 
-    app.set_template("Hoş geldiniz, {ad}.")
+    app.set_template("Hoş geldiniz, {ad_soyad}.")
     wait_for(app, lambda: not app.generating)
 
     assert texts.warnings(app) == [
-        "3 anonsun sesi oluşturulamadı. İnternet bağlantısını kontrol edip "
-        "“Yenile”ye basın.",
+        "3 anonsun sesi oluşturulamadı. İnternet bağlantısını kontrol edin; "
+        "birkaç dakikada bir yeniden denenir.",
         "Yeni şablonun sesleri hazır olana kadar sporcular önceki şablonla "
         "anons ediliyor.",
     ]

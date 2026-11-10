@@ -11,7 +11,7 @@ from announcer.timetable import (
     find_conflicts,
 )
 
-TEMPLATE = "{ad}, hoş geldiniz."
+TEMPLATE = "{ad_soyad}, hoş geldiniz."
 MONDAY, TUESDAY, WEDNESDAY, SUNDAY = 0, 1, 2, 6
 SIX_PM = datetime.time(18, 0)
 SEVEN_PM = datetime.time(19, 0)
@@ -52,7 +52,7 @@ def test_slots_are_ordered_by_weekday_then_time() -> None:
         AthleteEntry("A", MONDAY, datetime.time(9, 0)),
     ]
 
-    timetable = build_timetable(entries, [], "{ad}")
+    timetable = build_timetable(entries, [], "{ad_soyad}")
 
     assert [slot.texts for slot in timetable.slots] == [("A",), ("B",), ("C",), ("D",)]
     assert [slot.texts for slot in timetable.slots_on(MONDAY)] == [("A",), ("B",)]
@@ -62,7 +62,7 @@ def test_slots_are_ordered_by_weekday_then_time() -> None:
 
 
 def test_name_repeated_within_a_slot_is_said_once() -> None:
-    timetable = build_timetable([AYSE, MEHMET, AYSE], [], "{ad}")
+    timetable = build_timetable([AYSE, MEHMET, AYSE], [], "{ad_soyad}")
 
     names = ("Ayşe Yılmaz", "Mehmet Demir")
     assert timetable.slots == (Slot(MONDAY, SIX_PM, names, names),)
@@ -82,11 +82,11 @@ def test_custom_announcement_gets_a_slot_on_each_of_its_weekdays() -> None:
 
 
 def test_custom_announcement_text_is_not_treated_as_a_template() -> None:
-    literal = custom("{ad} yazan duyuru", SEVEN_PM, MONDAY)
+    literal = custom("{ad_soyad} yazan duyuru", SEVEN_PM, MONDAY)
 
     timetable = build_timetable([], [literal], TEMPLATE)
 
-    assert timetable.slots == (Slot(MONDAY, SEVEN_PM, ("{ad} yazan duyuru",)),)
+    assert timetable.slots == (Slot(MONDAY, SEVEN_PM, ("{ad_soyad} yazan duyuru",)),)
 
 
 def test_athletes_win_a_slot_that_a_custom_announcement_also_wants() -> None:

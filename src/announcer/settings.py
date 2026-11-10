@@ -19,6 +19,7 @@ from announcer.template import DEFAULT_TEMPLATE, PLACEHOLDER, is_valid_template
 DEFAULT_VOICE = "tr-TR-EmelNeural"
 
 _TIME_FORMAT = "%H:%M"
+_OLD_PLACEHOLDER = "{ad}"  # what the placeholder was called at first
 
 
 class SettingsFileError(Exception):
@@ -74,6 +75,9 @@ def load_settings(path: Path) -> LoadedSettings:
     voice = _text(data.get("voice"))
     schedule_path = _text(data.get("schedule_path"))
     template = data.get("template")
+    if isinstance(template, str):
+        # A template that was stored under the old name keeps working.
+        template = template.replace(_OLD_PLACEHOLDER, PLACEHOLDER)
     stored = data.get("custom_announcements")
     found = (
         [_custom_announcement(item) for item in stored]

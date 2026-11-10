@@ -16,7 +16,9 @@ AYSE = AthleteEntry("Ayşe Yılmaz", 0, SIX_PM)
 MEHMET = AthleteEntry("Mehmet Demir", 0, SIX_PM)
 ZEYNEP = AthleteEntry("Zeynep Kaya", 1, SIX_PM)
 WATER = CustomAnnouncement("Su içmeyi unutmayın.", SEVEN_PM)
-TIMETABLE = build_timetable([AYSE, MEHMET, ZEYNEP], [WATER], "{ad}, hoş geldiniz.")
+TIMETABLE = build_timetable(
+    [AYSE, MEHMET, ZEYNEP], [WATER], "{ad_soyad}, hoş geldiniz."
+)
 
 ATHLETES, REMINDER = "Ayşe Yılmaz, Mehmet Demir", "Su içmeyi unutmayın."
 
@@ -31,8 +33,8 @@ def statuses(
 def test_rows_list_todays_slots_in_time_order() -> None:
     # Athletes are listed by name and counted; a custom announcement by its text.
     assert todays_rows(TIMETABLE, at(8), {}) == (
-        Row(SIX_PM, 2, ATHLETES, Status.NEXT),
-        Row(SEVEN_PM, 0, REMINDER, Status.WAITING),
+        Row(SIX_PM, ATHLETES, Status.NEXT),
+        Row(SEVEN_PM, REMINDER, Status.WAITING),
     )
 
 
@@ -84,16 +86,16 @@ def test_outcome_of_another_day_or_of_what_was_there_before_does_not_count() -> 
 
 def test_custom_announcement_that_lost_todays_slot_is_listed_after_the_winner() -> None:
     reminder = CustomAnnouncement("Salon kapanıyor.", SIX_PM, frozenset({0, 2}))
-    timetable = build_timetable([AYSE], [reminder], "{ad}")
+    timetable = build_timetable([AYSE], [reminder], "{ad_soyad}")
 
     assert todays_rows(timetable, at(8), {}) == (
-        Row(SIX_PM, 1, "Ayşe Yılmaz", Status.NEXT),
-        Row(SIX_PM, 0, "Salon kapanıyor.", Status.CONFLICT),
+        Row(SIX_PM, "Ayşe Yılmaz", Status.NEXT),
+        Row(SIX_PM, "Salon kapanıyor.", Status.CONFLICT),
     )
     # On Wednesday the slot is free, so the announcement is simply due.
     wednesday = at(8) + datetime.timedelta(days=2)
     assert todays_rows(timetable, wednesday, {}) == (
-        Row(SIX_PM, 0, "Salon kapanıyor.", Status.NEXT),
+        Row(SIX_PM, "Salon kapanıyor.", Status.NEXT),
     )
 
 
