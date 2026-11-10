@@ -33,7 +33,8 @@ class AudioOutput(Protocol):
     def play(self, paths: Sequence[Path]) -> None:
         """Play the files one after another and return when the last has ended.
 
-        Raises ``PlaybackError`` if they cannot be played.
+        Raises ``PlaybackError`` if the device or any of the files cannot be
+        played; the files that can are played first.
         """
         ...
 
@@ -56,19 +57,30 @@ class PygameOutput:
             # The output device is opened for each playback and closed again,
             # so speakers that were plugged in or switched since are used.
             pygame.mixer.init()
-            try:
-                for index, path in enumerate(paths):
-                    if self._interrupted.wait(self._GAP if index else 0):
-                        break
+        except pygame.error as error:
+            raise PlaybackError("Cannot open the audio device") from error
+
+        unplayable = 0
+        try:
+            for index, path in enumerate(paths):
+                if self._interrupted.wait(self._GAP if index else 0):
+                    break
+                try:
                     pygame.mixer.music.load(path)
                     pygame.mixer.music.play()
-                    while pygame.mixer.music.get_busy():
-                        if self._interrupted.wait(self._POLL):
-                            break
-            finally:
-                pygame.mixer.quit()
-        except pygame.error as error:
-            raise PlaybackError("Cannot play audio") from error
+                # A missing file is an ``OSError``, a damaged one a pygame error.
+                # Either way the files after it are still played.
+                except pygame.error, OSError:
+                    _log.exception("Cannot play %s", path)
+                    unplayable += 1
+                    continue
+                while pygame.mixer.music.get_busy():
+                    if self._interrupted.wait(self._POLL):
+                        break
+        finally:
+            pygame.mixer.quit()
+        if unplayable:
+            raise PlaybackError(f"{unplayable} of {len(paths)} files cannot be played")
 
     def interrupt(self) -> None:
         self._interrupted.set()
@@ -116,7 +128,10 @@ class Player:
         self._thread.start()
 
     def stop(self) -> None:
-        """Cut off the current announcement, drop the queue and end the thread."""
+        """Cut off the current announcement, drop the queue and end the thread.
+
+        Nothing is reported for an announcement that is cut off or dropped.
+        """
         self._stopped.set()
         self._output.interrupt()
         self._queue.put(None)
@@ -145,6 +160,8 @@ class Player:
             except PlaybackError:
                 _log.exception("Playing an announcement failed")
                 failed = True
+        if self._stopped.is_set():
+            return  # cut off by ``stop``, so there is nothing true to report
         self._on_played(Playback(tuple(texts), tuple(missing), failed))
 
     def _run(self) -> None:

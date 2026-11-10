@@ -142,6 +142,33 @@ def test_stop_interrupts_the_output_and_ends_the_thread() -> None:
     assert all(thread.name != "player" for thread in threading.enumerate())
 
 
+def test_announcement_cut_off_by_stop_is_not_reported() -> None:
+    playing = threading.Event()
+
+    class BlockingOutput(FakeOutput):
+        """Plays until it is interrupted."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.released = threading.Event()
+
+        def play(self, paths: Sequence[Path]) -> None:
+            playing.set()
+            assert self.released.wait(timeout=5)
+
+        def interrupt(self) -> None:
+            self.released.set()
+
+    player, outcomes = make_player(BlockingOutput())
+    player.start()
+    player.enqueue(["Ayşe"])
+    assert playing.wait(timeout=5)
+
+    player.stop()
+
+    assert outcomes == []
+
+
 def test_stop_drops_what_is_still_queued() -> None:
     output = FakeOutput()
     player, outcomes = make_player(output)
@@ -242,6 +269,40 @@ def test_file_that_is_not_audio_is_a_playback_error(tmp_path: Path) -> None:
 
     with pytest.raises(PlaybackError):
         PygameOutput().play([file])
+
+
+@pytest.mark.usefixtures("silent_device")
+def test_missing_file_is_a_playback_error(tmp_path: Path) -> None:
+    with pytest.raises(PlaybackError):
+        PygameOutput().play([tmp_path / "deleted.mp3"])
+
+
+@pytest.mark.usefixtures("silent_device")
+def test_files_after_an_unplayable_one_are_still_played(tmp_path: Path) -> None:
+    broken = tmp_path / "broken.mp3"
+    broken.write_bytes(b"")
+    files = [tmp_path / "deleted.mp3", broken, write_silence(tmp_path / "ok.wav", 0.4)]
+
+    started = time.perf_counter()
+    with pytest.raises(PlaybackError, match="2 of 3"):
+        PygameOutput().play(files)
+
+    assert time.perf_counter() - started > 0.4
+
+
+@pytest.mark.usefixtures("silent_device")
+def test_player_reports_a_file_that_went_missing(tmp_path: Path) -> None:
+    outcomes: list[Playback] = []
+    player = Player(
+        lambda text: tmp_path / "deleted.mp3",
+        PygameOutput(),
+        outcomes.append,
+        chime=write_silence(tmp_path / "chime.wav", 0.1),
+    )
+
+    player.play(["Ayşe"])
+
+    assert outcomes == [Playback(("Ayşe",), missing=(), failed=True)]
 
 
 def test_missing_sound_device_is_a_playback_error(
