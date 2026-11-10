@@ -4,6 +4,7 @@ They need a display, as tkinter does; without one they are skipped.
 """
 
 import datetime
+import gc
 import logging
 import time
 import tkinter as tk
@@ -54,8 +55,11 @@ def window(
         pytest.skip(f"tkinter cannot open a window here: {error}")
     window.root.withdraw()  # everything works the same without being on screen
     yield window
-    if window.root.winfo_exists():
+    if not window.closed:
         window.close()
+    # tkinter has to be freed on this thread, not on one of the app's threads
+    # that happens to collect garbage later.
+    gc.collect()
 
 
 def pump(window: MainWindow, condition: Callable[[], bool]) -> None:
@@ -304,10 +308,47 @@ def test_log_button_opens_the_log_file(
 ) -> None:
     opened: list[Path] = []
     monkeypatch.setattr(main_window, "open_file", opened.append)
+    (tmp_path / "announcer.log").write_text("a line")
 
     window.log_button.invoke()
 
     assert opened == [tmp_path / "announcer.log"]
+
+
+def test_log_button_says_so_when_there_is_no_log_file(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch, alerts: list[str]
+) -> None:
+    opened: list[Path] = []
+    monkeypatch.setattr(main_window, "open_file", opened.append)
+
+    window.log_button.invoke()
+
+    assert (opened, alerts) == ([], ["Kayıt dosyası bulunamadı."])
+
+
+def test_window_can_be_closed_while_the_dialog_is_open(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch, alerts: list[str]
+) -> None:
+    # Closing the main window ends the dialog's wait.
+    monkeypatch.setattr(AnnouncementDialog, "wait", lambda dialog: window.close())
+
+    window.add()
+
+    assert window.closed
+    assert alerts == []
+
+
+def test_custom_announcements_keep_their_place_while_nothing_changes(
+    window: MainWindow, app: App
+) -> None:
+    app.save_announcement(WATER)
+    app.save_announcement(CLOSING)
+    window.show()
+    window.announcements.focus("1")
+
+    window.show()
+
+    assert window.announcements.focus() == "1"
 
 
 def test_error_in_an_action_is_logged_and_told(
@@ -338,7 +379,7 @@ def test_window_keeps_following_the_app_after_a_failed_update(
     alerts: list[str],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    polls = iter([RuntimeError("the first look broke")])
+    polls = iter([RuntimeError("the first look broke")] * 3)
 
     def poll() -> bool:
         for error in polls:
@@ -351,9 +392,11 @@ def test_window_keeps_following_the_app_after_a_failed_update(
         choose(window, schedule, monkeypatch)
         assert window.activity.get() == "Sesler oluşturuluyor…"
         pump(window, lambda: "Bringing the window up to date failed" in caplog.text)
-    # The next looks still take in that the speech is ready.
-    pump(window, lambda: window.activity.get() == "")
+        # The next looks still take in that the speech is ready.
+        pump(window, lambda: window.activity.get() == "")
 
+    # An error that stays is logged once, not four times a second.
+    assert caplog.text.count("Bringing the window up to date failed") == 1
     assert alerts == []
 
 

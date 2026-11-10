@@ -61,7 +61,10 @@ class MainWindow:
         self._clock = clock
         self._shown_minute: datetime.datetime | None = None
         self._shown_rows: list[tuple[str, str, str, str]] | None = None
+        self._shown_announcements: list[tuple[str, tuple[str, str, str]]] | None = None
         self._shown_warnings: list[str] | None = None
+        self._update_failed = False  # the last look at the app raised an error
+        self.closed = False
 
         self.root = tk.Tk()
         self.root.title(APP_NAME)
@@ -103,12 +106,18 @@ class MainWindow:
         self.root.mainloop()
 
     def close(self) -> None:
-        """Close the window."""
+        """Close the window, and with it a dialog that is open over it."""
+        self.closed = True
         self.root.after_cancel(self._after)
+        # The handler ties the window and tkinter together in a circle; without
+        # it tkinter is let go of right here, on the thread it belongs to.
+        del self.root.report_callback_exception
         self.root.destroy()
 
     def show(self) -> None:
         """Bring everything in the window up to date with the app."""
+        if self.closed:
+            return  # closed while a dialog was open; there is nothing to show
         app, now = self._app, self._clock()
         self._shown_minute = now.replace(second=0, microsecond=0)
         path = app.settings.schedule_path
@@ -297,19 +306,23 @@ class MainWindow:
 
     def _show_announcements(self) -> None:
         """List the custom announcements by time; a row's id is its index."""
+        announcements = self._app.settings.custom_announcements
+        shown = [
+            (
+                str(index),
+                (f"{item.time:%H:%M}", texts.days(item.weekdays), item.text),
+            )
+            for index, item in sorted(
+                enumerate(announcements), key=lambda pair: pair[1].time
+            )
+        ]
+        if shown == self._shown_announcements:
+            return  # left alone, so that it keeps its place while scrolled
+        self._shown_announcements = shown
         selected = self.announcements.selection()
         self.announcements.delete(*self.announcements.get_children())
-        announcements = self._app.settings.custom_announcements
-        for index in sorted(
-            range(len(announcements)), key=lambda index: announcements[index].time
-        ):
-            item = announcements[index]
-            self.announcements.insert(
-                "",
-                "end",
-                iid=str(index),
-                values=(f"{item.time:%H:%M}", texts.days(item.weekdays), item.text),
-            )
+        for row, values in shown:
+            self.announcements.insert("", "end", iid=row, values=values)
         if selected and self.announcements.exists(selected[0]):
             self.announcements.selection_set(selected[0])
         self._show_buttons()
@@ -339,9 +352,13 @@ class MainWindow:
             minute = self._clock().replace(second=0, microsecond=0)
             if changed or minute != self._shown_minute:
                 self.show()
+            self._update_failed = False
         except Exception:
-            # Not shown in a box: it would come up again four times a second.
-            _log.exception("Bringing the window up to date failed")
+            # Not shown in a box, and logged once: an error that stays would
+            # come up again four times a second.
+            if not self._update_failed:
+                _log.exception("Bringing the window up to date failed")
+            self._update_failed = True
         finally:
             self._after = self.root.after(_POLL, self._tick)
 
@@ -430,10 +447,14 @@ class MainWindow:
 
     def open_log(self) -> None:
         """Show the log file."""
-        open_file(self._log_file)
+        if self._log_file.is_file():
+            open_file(self._log_file)
+        else:
+            self._alert("Kayıtlar", "Kayıt dosyası bulunamadı.")
 
     def _alert(self, title: str, message: str) -> None:
-        messagebox.showerror(title, message, parent=self.root)
+        if not self.closed:
+            messagebox.showerror(title, message, parent=self.root)
 
     def _report_error(
         self,
