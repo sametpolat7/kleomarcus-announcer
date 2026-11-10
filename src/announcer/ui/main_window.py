@@ -206,7 +206,7 @@ class MainWindow:
             box,
             height=6,
             columns={"time": "Saat", "kind": "Tür", "text": "Anons", "status": "Durum"},
-            widths={"time": 60, "kind": 70, "text": 380, "status": 150},
+            widths={"time": 60, "kind": 90, "text": 360, "status": 150},
             select=False,  # there is nothing to do with a row but read it
         )
         self.today.tag_configure(Status.NEXT.name, font=self._bold)
@@ -351,7 +351,7 @@ class MainWindow:
         shown = [
             (
                 f"{row.time:%H:%M}",
-                texts.kind(row.custom),
+                texts.kind(row.athletes),
                 row.summary,
                 texts.STATUS[row.status],
             )

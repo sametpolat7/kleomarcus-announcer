@@ -43,8 +43,8 @@ def test_summary_is_the_names_of_athletes_or_the_custom_text() -> None:
 
 def test_rows_list_todays_slots_in_time_order() -> None:
     assert todays_rows(TIMETABLE, at(8), {}) == (
-        Row(SIX_PM, False, "Ayşe Yılmaz, Mehmet Demir", Status.NEXT),
-        Row(SEVEN_PM, True, "Su içmeyi unutmayın.", Status.WAITING),
+        Row(SIX_PM, 2, "Ayşe Yılmaz, Mehmet Demir", Status.NEXT),
+        Row(SEVEN_PM, 0, "Su içmeyi unutmayın.", Status.WAITING),
     )
 
 
@@ -107,13 +107,13 @@ def test_custom_announcement_that_lost_todays_slot_is_listed_after_the_winner() 
     timetable = build_timetable([AYSE], [reminder], "{ad}")
 
     assert todays_rows(timetable, at(8), {}) == (
-        Row(SIX_PM, False, "Ayşe Yılmaz", Status.NEXT),
-        Row(SIX_PM, True, "Salon kapanıyor.", Status.CONFLICT),
+        Row(SIX_PM, 1, "Ayşe Yılmaz", Status.NEXT),
+        Row(SIX_PM, 0, "Salon kapanıyor.", Status.CONFLICT),
     )
     # On Wednesday the slot is free, so the announcement is simply due.
     wednesday = at(8) + datetime.timedelta(days=2)
     assert todays_rows(timetable, wednesday, {}) == (
-        Row(SIX_PM, True, "Salon kapanıyor.", Status.NEXT),
+        Row(SIX_PM, 0, "Salon kapanıyor.", Status.NEXT),
     )
 
 
@@ -137,6 +137,4 @@ def test_outcome_status(playback: Playback, status: Status) -> None:
 def test_slot_built_by_hand_without_names_counts_as_custom() -> None:
     timetable = Timetable((Slot(0, NINE, ("Duyuru",)),))
 
-    assert todays_rows(timetable, at(8), {}) == (
-        Row(NINE, True, "Duyuru", Status.NEXT),
-    )
+    assert todays_rows(timetable, at(8), {}) == (Row(NINE, 0, "Duyuru", Status.NEXT),)

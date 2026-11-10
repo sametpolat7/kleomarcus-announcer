@@ -20,7 +20,12 @@ def test_every_status_has_a_word() -> None:
 
 
 def test_kind() -> None:
-    assert (texts.kind(custom=False), texts.kind(custom=True)) == ("Sporcu", "Özel")
+    assert [texts.kind(athletes) for athletes in (0, 1, 2, 14)] == [
+        "Özel",
+        "Sporcu",
+        "2 sporcu",
+        "14 sporcu",
+    ]
 
 
 def test_days_are_named_in_week_order() -> None:

@@ -30,7 +30,7 @@ class Row:
     """One line of today's preview."""
 
     time: datetime.time
-    custom: bool  # a custom announcement, as opposed to athletes
+    athletes: int  # how many athletes it names; none for a custom announcement
     summary: str  # the athletes' names, or the custom announcement's text
     status: Status
 
@@ -74,11 +74,11 @@ def todays_rows(
             status = Status.PASSED  # too late for the scheduler to announce it
         elif status is None:
             status, upcoming = upcoming, Status.WAITING
-        rows.append(Row(slot.time, not slot.names, summary(slot), status))
+        rows.append(Row(slot.time, len(slot.names), summary(slot), status))
     rows.extend(
         Row(
             conflict.announcement.time,
-            True,
+            0,
             conflict.announcement.text,
             Status.CONFLICT,
         )

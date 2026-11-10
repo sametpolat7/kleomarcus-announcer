@@ -71,9 +71,13 @@ _MONTHS = (
 )
 
 
-def kind(custom: bool) -> str:
-    """Return the word for a custom announcement or for athletes."""
-    return "Özel" if custom else "Sporcu"
+def kind(athletes: int) -> str:
+    """Return what a row of today's table is: a custom announcement, or one
+    for the given number of athletes."""
+    if not athletes:
+        return "Özel"
+    # A long list of names is cut off by the table, so their number is said.
+    return "Sporcu" if athletes == 1 else f"{athletes} sporcu"
 
 
 def days(weekdays: Iterable[int]) -> str:
