@@ -6,10 +6,13 @@ caught up on.
 """
 
 import datetime
+import logging
 import threading
 from collections.abc import Callable, Collection
 
 from announcer.timetable import Slot, Timetable
+
+_log = logging.getLogger(__name__)
 
 
 def due_slot(
@@ -29,7 +32,8 @@ class Scheduler:
     """Check the clock on a background thread and report each due slot once.
 
     ``on_due`` is called on that thread, so it should only hand the slot over,
-    for example by putting it on a queue.
+    for example by putting it on a queue. A scheduler runs once: after
+    ``stop`` it cannot be started again.
     """
 
     def __init__(
@@ -80,4 +84,8 @@ class Scheduler:
 
     def _run(self) -> None:
         while not self._stopped.wait(self._interval):
-            self.check()
+            try:
+                self.check()
+            except Exception:
+                # One failed check must not silence every later announcement.
+                _log.exception("Checking for a due slot failed")
