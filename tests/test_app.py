@@ -3,6 +3,7 @@
 import datetime
 import json
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -416,8 +417,8 @@ def test_due_slot_is_announced_and_shown_as_played(
     wait_for_speech(app)
     assert statuses(app) == [Status.NEXT]
 
-    clock.now = at(18, 0, 1)
     app.start()
+    clock.now = at(18, 0, 1)
     wait_for(app, lambda: statuses(app) == [Status.PLAYED])
 
     assert output.played[0] == CHIME_PATH
@@ -429,6 +430,24 @@ def test_due_slot_is_announced_and_shown_as_played(
         "Ayşe Yılmaz, Mehmet Demir",
         Status.PLAYED,
     )
+
+
+def test_slot_that_is_running_when_the_app_starts_is_not_announced(
+    app: App, schedule: Path, output: FakeOutput, clock: FakeClock
+) -> None:
+    # It may have been announced a moment ago, by a run that was closed.
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    clock.now = at(18, 0, 5)
+
+    app.start()
+    clock.now = at(18, 0, 6)
+    time.sleep(0.1)
+    app.poll()
+
+    assert output.played == []
+    clock.now = at(18, 0, 40)
+    assert statuses(app) == [Status.PASSED]
 
 
 def test_slot_without_speech_is_shown_as_skipped(
@@ -443,8 +462,8 @@ def test_slot_without_speech_is_shown_as_skipped(
     wait_for_speech(app)
     assert len(app.unspoken) == 3
 
-    clock.now = at(18)
     app.start()
+    clock.now = at(18)
     wait_for(app, lambda: statuses(app) == [Status.NO_SPEECH])
 
     assert output.played == []
@@ -458,8 +477,8 @@ def test_slot_with_speech_for_some_is_shown_as_partly_played(
     wait_for_speech(app)
     assert app.unspoken == tuple(provider.unspeakable)
 
-    clock.now = at(18)
     app.start()
+    clock.now = at(18)
     wait_for(app, lambda: statuses(app) == [Status.PARTLY_PLAYED])
 
 
@@ -470,8 +489,8 @@ def test_slot_that_the_output_cannot_play_is_shown_as_failed(
     app.choose_schedule(schedule)
     wait_for_speech(app)
 
-    clock.now = at(18)
     app.start()
+    clock.now = at(18)
     wait_for(app, lambda: statuses(app) == [Status.NO_OUTPUT])
 
     last = app.last_announcement
@@ -483,11 +502,12 @@ def test_slot_that_was_slept_through_is_shown_as_skipped(
     app: App, schedule: Path, output: FakeOutput, clock: FakeClock
 ) -> None:
     app.choose_schedule(schedule)
-    app.save_announcement(CustomAnnouncement("Günaydın.", datetime.time(8, 0)))
+    app.save_announcement(CustomAnnouncement("Günaydın.", datetime.time(9, 0)))
     app.save_announcement(WATER)
     wait_for_speech(app)
 
     app.start()
+    clock.now = at(9)
     wait_for(app, lambda: statuses(app)[0] is Status.PLAYED)
     played = list(output.played)
     clock.now = at(18, 30)  # the computer slept through 18:00
@@ -506,8 +526,8 @@ def test_outcomes_of_yesterday_are_not_shown_today(
     app.choose_schedule(schedule)
     app.save_announcement(WATER)
     wait_for_speech(app)
-    clock.now = at(19)
     app.start()
+    clock.now = at(19)
     wait_for(app, lambda: statuses(app)[-1] is Status.PLAYED)
 
     clock.now = at(19) + datetime.timedelta(days=7)
@@ -652,8 +672,8 @@ def test_athletes_keep_the_old_template_until_the_new_one_has_speech(
     assert app.spoken_template == DEFAULT_TEMPLATE
     assert app.timetable.slots[0].texts == old
     assert len(app.unspoken) == 3
-    clock.now = at(18)
     app.start()
+    clock.now = at(18)
     wait_for(app, lambda: statuses(app) == [Status.PLAYED])
     assert len(output.played) == 3  # the chime and both athletes
 
@@ -686,8 +706,8 @@ def test_outcome_does_not_pass_to_what_is_put_at_that_time_later(
 ) -> None:
     app.save_announcement(WATER)
     wait_for_speech(app)
-    clock.now = at(19)
     app.start()
+    clock.now = at(19)
     wait_for(app, lambda: statuses(app) == [Status.PLAYED])
 
     clock.now = at(19, 5)
@@ -710,8 +730,8 @@ def test_actions_and_outcomes_are_logged_with_their_cause(
     app.choose_schedule(schedule)
     app.save_announcement(WATER)
     wait_for_speech(app)
-    clock.now = at(18)
     app.start()
+    clock.now = at(18)
     wait_for(app, lambda: statuses(app)[0] is Status.PARTLY_PLAYED)
     clock.now = at(20)
     wait_for(app, lambda: statuses(app)[1] is Status.ASLEEP)

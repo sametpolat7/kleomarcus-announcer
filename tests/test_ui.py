@@ -193,8 +193,8 @@ def test_due_slot_is_shown_as_played(
     choose(window, schedule, monkeypatch)
     wait_for(app, lambda: not app.generating)
 
-    clock.now = at(18)
     app.start()
+    clock.now = at(18)
     pump(window, lambda: today(window)[0][3] == "Okundu")
 
     assert window.last_announcement.get() == (

@@ -1,9 +1,11 @@
 """Decide when a slot is due and report it from a background thread.
 
-A slot fires only during its own minute and at most once per date. A slot
-whose minute passed while the app was closed is not caught up on. Neither is
-one whose minute passed while the app ran but the computer was asleep; that
-one is reported as missed, so the app can show it.
+A slot is announced at its time or not at all: by a scheduler that was already
+running when the slot's minute began, at most half a minute late, and once per
+date. A slot whose minute began while the app was closed is not caught up on.
+Neither is one that the app could not announce in time although it ran,
+because the computer was asleep; that one is reported as missed, so the app
+can show it.
 """
 
 import datetime
@@ -15,8 +17,10 @@ from announcer.timetable import Slot, Timetable
 
 _log = logging.getLogger(__name__)
 
-_MINUTE = datetime.timedelta(minutes=1)
 _DAY = datetime.timedelta(days=1)
+# How long into its minute a slot may still be announced. A second or two is
+# normal; more happens when the computer is very busy or wakes from a sleep.
+LATE = datetime.timedelta(seconds=30)
 
 
 def due_slot(
@@ -24,30 +28,30 @@ def due_slot(
 ) -> Slot | None:
     """Return the slot to announce at ``now``, if there is one.
 
-    ``fired`` holds the times of the slots already announced on ``now``'s date.
+    ``fired`` holds the times of the slots already dealt with on ``now``'s
+    date. A slot is no longer due when its minute began too long ago.
     """
-    minute = datetime.time(now.hour, now.minute)
-    if minute in fired:
+    minute = now.replace(second=0, microsecond=0)
+    if minute.time() in fired or now - minute > LATE:
         return None
-    return timetable.slot_at(now.weekday(), minute)
+    return timetable.slot_at(now.weekday(), minute.time())
 
 
 def missed_slots(
     timetable: Timetable, before: datetime.datetime, now: datetime.datetime
 ) -> list[tuple[datetime.date, Slot]]:
-    """Return the slots whose whole minute went by between two looks at the clock.
+    """Return the slots that came and went between two looks at the clock.
 
-    Each slot comes with its date, the oldest first. The slot of the minute
-    that ``before`` lies in was dealt with at that look, and the slot of
-    ``now``'s minute is still due, so neither counts.
+    Each slot comes with its date, the oldest first. A slot is missed when
+    its minute began after the minute that ``before`` lies in, which was
+    dealt with at that look, and too long before ``now`` to be still due.
     """
     first = before.replace(second=0, microsecond=0)
-    last = now.replace(second=0, microsecond=0)
     found: list[tuple[datetime.date, Slot]] = []
     date = first.date()
-    while date <= last.date():
+    while date <= now.date():
         for slot in timetable.slots_on(date.weekday()):
-            if first < datetime.datetime.combine(date, slot.time) < last:
+            if first < datetime.datetime.combine(date, slot.time) < now - LATE:
                 found.append((date, slot))
         date += _DAY
     return found
@@ -57,8 +61,8 @@ class Scheduler:
     """Check the clock on a background thread and report each due slot once.
 
     ``on_due`` gets the date and the slot that is due now. ``on_missed`` gets
-    the date and the slot of each minute that went by between two checks,
-    which happens when the computer sleeps. Both are called on the scheduler's
+    the date and each slot that came and went between two checks, which
+    happens when the computer sleeps. Both are called on the scheduler's
     thread, so they should only hand the slot over, for example by putting it
     on a queue. A scheduler runs once: after ``stop`` it cannot be started
     again.
@@ -97,7 +101,13 @@ class Scheduler:
         self._timetable = timetable
 
     def start(self) -> None:
-        """Start checking the clock."""
+        """Start checking the clock.
+
+        The slot of the minute that is running is left out: it began before
+        the scheduler did, and may have been announced by a run of the app
+        that was closed a moment ago.
+        """
+        self.check()
         self._thread.start()
 
     def stop(self) -> None:
@@ -108,16 +118,23 @@ class Scheduler:
 
     def check(self) -> None:
         """Look at the clock once; report the slots missed since the last look
-        and the slot that is due now, if any."""
+        and the slot that is due now, if any. The first look only notes the
+        time, as the scheduler begins with it."""
         now = self._clock()
         before, self._checked_at = self._checked_at, now
-        if before is not None and now - before >= _MINUTE:
-            start = max(before, now - self._REPORTED)
-            for date, missed in missed_slots(self._timetable, start, now):
-                self._on_missed(date, missed)
+        minute = now.replace(second=0, microsecond=0)
         if now.date() != self._fired_on:
             self._fired_on = now.date()
             self._fired.clear()
+        if before is None:
+            self._fired.add(minute.time())
+            return
+        if before < minute:  # the first look in a new minute
+            start = max(before, now - self._REPORTED)
+            for date, missed in missed_slots(self._timetable, start, now):
+                if date == now.date():
+                    self._fired.add(missed.time)
+                self._on_missed(date, missed)
         slot = due_slot(self._timetable, now, self._fired)
         if slot is not None:
             self._fired.add(slot.time)

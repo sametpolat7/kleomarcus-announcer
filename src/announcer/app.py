@@ -233,6 +233,10 @@ class App:
         ]
         conflicts = find_conflicts(announcement, self._entries, others)
         if conflicts:
+            _log.info(
+                "Custom announcement not saved, its slot is taken: %s",
+                _described(announcement),
+            )
             raise SlotTakenError(conflicts)
         if replacing is None:
             announcements.append(announcement)
