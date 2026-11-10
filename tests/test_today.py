@@ -68,8 +68,9 @@ def test_only_the_first_slot_to_come_is_next() -> None:
     assert statuses(at(23)) == [Status.PASSED, Status.PASSED]
 
 
-def test_slot_is_not_passed_while_its_minute_runs() -> None:
-    assert statuses(at(18, 0, 59)) == [Status.NEXT, Status.WAITING]
+def test_slot_is_passed_once_it_is_too_late_to_announce_it() -> None:
+    assert statuses(at(18, 0, 30)) == [Status.NEXT, Status.WAITING]
+    assert statuses(at(18, 0, 31)) == [Status.PASSED, Status.NEXT]
 
 
 def test_known_outcome_is_shown_instead_of_the_clock() -> None:

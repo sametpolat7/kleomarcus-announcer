@@ -6,9 +6,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 from announcer.player import Playback
+from announcer.scheduler import LATE
 from announcer.timetable import Slot, Timetable
-
-_MINUTE = datetime.timedelta(minutes=1)
 
 
 class Status(Enum):
@@ -16,7 +15,7 @@ class Status(Enum):
 
     WAITING = "waiting"  # its time has not come yet
     NEXT = "next"  # the first one whose time has not come yet
-    PASSED = "passed"  # its time went by without the app announcing it
+    PASSED = "passed"  # its time went by without the app being there for it
     PLAYING = "playing"  # due, and queued or sounding right now
     PLAYED = "played"  # every text was heard
     PARTLY_PLAYED = "partly played"  # some texts were heard, the others skipped
@@ -71,8 +70,8 @@ def todays_rows(
     for slot in timetable.slots_on(now.weekday()):
         due = datetime.datetime.combine(now.date(), slot.time)
         status = outcomes.get((due, summary(slot)))
-        if status is None and due + _MINUTE <= now:
-            status = Status.PASSED
+        if status is None and now - due > LATE:
+            status = Status.PASSED  # too late for the scheduler to announce it
         elif status is None:
             status, upcoming = upcoming, Status.WAITING
         rows.append(Row(slot.time, not slot.names, summary(slot), status))
