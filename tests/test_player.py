@@ -11,7 +11,7 @@ import pytest
 
 from announcer.chime import CHIME_PATH
 from announcer.player import Playback, PlaybackError, Player, PygameOutput
-from fakes import FakeOutput
+from support import FakeOutput
 
 CHIME = Path("chime.wav")
 AYSE, MEHMET, ZEYNEP = Path("ayse.mp3"), Path("mehmet.mp3"), Path("zeynep.mp3")
