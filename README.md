@@ -13,17 +13,20 @@ added as the app takes shape.
 The schedule is an `.xlsx` workbook. The first worksheet needs a header row
 with these columns, in any order:
 
-| Column     | Content                                   | Example       |
-| ---------- | ----------------------------------------- | ------------- |
-| `Ad Soyad` | The athlete's full name                   | `Ayşe Yılmaz` |
-| `Gün`      | Turkish weekday name                      | `Salı`        |
+| Column     | Content                                    | Example       |
+| ---------- | ------------------------------------------ | ------------- |
+| `Ad Soyad` | The athlete's full name                    | `Ayşe Yılmaz` |
+| `Gün`      | Turkish weekday name                       | `Salı`        |
 | `Saat`     | Start time, as a time cell or `HH:MM` text | `18:30`       |
 
 Each row is one session, so an athlete who trains three times a week has three
-rows. Other columns are ignored. Headers and weekday names are matched without
-regard to case or Turkish accents, and `18.30` is read the same as `18:30`.
-Rows with a missing name, an unknown day or an invalid time are skipped and
-reported; the rest of the schedule still loads.
+rows. Other columns are ignored, and the first visible worksheet is used.
+Headers and weekday names are matched without regard to case or Turkish
+accents. Rows with a missing name, an unknown day or an invalid time are
+skipped and reported; the rest of the schedule still loads.
+
+Write times with a colon. Text such as `18.30` is accepted too, but Excel may
+turn a dotted value into a number or a date, and such a row is then skipped.
 
 [`sample_schedule.xlsx`](sample_schedule.xlsx) is a working example with
 fictional names.
