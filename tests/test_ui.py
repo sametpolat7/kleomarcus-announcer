@@ -330,6 +330,33 @@ def test_error_in_an_action_is_logged_and_told(
     assert "RuntimeError: the refresh broke" in caplog.text
 
 
+def test_window_keeps_following_the_app_after_a_failed_update(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    alerts: list[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    polls = iter([RuntimeError("the first look broke")])
+
+    def poll() -> bool:
+        for error in polls:
+            raise error
+        return App.poll(app)
+
+    monkeypatch.setattr(app, "poll", poll)
+
+    with caplog.at_level(logging.ERROR):
+        choose(window, schedule, monkeypatch)
+        assert window.activity.get() == "Sesler oluşturuluyor…"
+        pump(window, lambda: "Bringing the window up to date failed" in caplog.text)
+    # The next looks still take in that the speech is ready.
+    pump(window, lambda: window.activity.get() == "")
+
+    assert alerts == []
+
+
 @pytest.fixture
 def make_dialog(
     window: MainWindow, app: App
