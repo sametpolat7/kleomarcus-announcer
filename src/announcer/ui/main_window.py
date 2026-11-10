@@ -14,6 +14,7 @@ from types import TracebackType
 from announcer import APP_NAME
 from announcer.app import App
 from announcer.loader import ScheduleFileError
+from announcer.scheduler import LATE
 from announcer.today import Status
 from announcer.ui import texts
 from announcer.ui.announcement_dialog import AnnouncementDialog
@@ -44,6 +45,14 @@ _WARNING_BACKGROUND = "#fff3cd"
 _WARNING_TEXT = "#4d3b00"
 _WARNING_LINES = 4  # how many are shown before the rest has to be scrolled to
 _NO_ROW = "none"  # the id of the line that says that a table is empty
+_MAC_QUIT = "::tk::mac::Quit"  # what macOS calls for Quit in the menu and the Dock
+
+
+def _moment(now: datetime.datetime) -> tuple[datetime.datetime, bool]:
+    """Return what changes whenever the clock alone can change a status: at
+    the start of a minute, and when it is too late for that minute's slot."""
+    minute = now.replace(second=0, microsecond=0)
+    return minute, now - minute > LATE
 
 
 def open_file(path: Path) -> None:
@@ -78,7 +87,7 @@ class MainWindow:
         self._app = app
         self._log_file = log_file
         self._clock = clock
-        self._shown_minute: datetime.datetime | None = None
+        self._shown_at: tuple[datetime.datetime, bool] | None = None
         self._shown_rows: list[tuple[str, str, str, str]] | None = None
         self._shown_announcements: list[tuple[str, tuple[str, str, str]]] | None = None
         self._shown_warnings: list[str] | None = None
@@ -95,6 +104,10 @@ class MainWindow:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         self.root.protocol("WM_DELETE_WINDOW", self.ask_to_close)
+        self._on_mac = self.root.tk.call("tk", "windowingsystem") == "aqua"
+        if self._on_mac:
+            # Quit in the menu and the Dock does not go through the above.
+            self.root.createcommand(_MAC_QUIT, self.ask_to_close)
         # Tk prints an error in a button's command to a console that a
         # windowed app does not have.
         self.root.report_callback_exception = self._report_error
@@ -148,6 +161,8 @@ class MainWindow:
         """Close the window, and with it a dialog that is open over it."""
         self.closed = True
         self.root.after_cancel(self._after)
+        if self._on_mac:
+            self.root.deletecommand(_MAC_QUIT)
         # The handler ties the window and tkinter together in a circle; without
         # it tkinter is let go of right here, on the thread it belongs to.
         del self.root.report_callback_exception
@@ -158,7 +173,7 @@ class MainWindow:
         if self.closed:
             return  # closed while a dialog was open; there is nothing to show
         app, now = self._app, self._clock()
-        self._shown_minute = now.replace(second=0, microsecond=0)
+        self._shown_at = _moment(now)
         path = app.settings.schedule_path
         self.schedule_path.set("" if path is None else str(path))
         self._schedule_entry.xview_moveto(1)  # the file's name is at the end
@@ -296,6 +311,8 @@ class MainWindow:
             foreground=_WARNING_TEXT,
         )
         self.warnings.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        # A warning that is wider than the window takes more than one line.
+        self.warnings.bind("<Configure>", lambda event: self._fit_warnings())
         self._warnings_scrollbar = ttk.Scrollbar(
             box, orient="vertical", command=self.warnings.yview
         )
@@ -434,17 +451,25 @@ class MainWindow:
         self.warnings.configure(state="normal")
         self.warnings.delete("1.0", "end")
         self.warnings.insert("1.0", "\n".join(f"• {line}" for line in lines))
-        self.warnings.configure(
-            state="disabled", height=min(len(lines), _WARNING_LINES)
-        )
-        if len(lines) > _WARNING_LINES:
+        self.warnings.configure(state="disabled")
+        if lines:
+            self.warning_box.grid()
+            self._fit_warnings()
+        else:
+            self.warning_box.grid_remove()
+
+    def _fit_warnings(self) -> None:
+        """Make the box as high as its warnings, up to a few lines; the rest
+        is reached with the scrollbar."""
+        self.warnings.update_idletasks()  # so that the lines are laid out
+        lines = self.warnings.count("1.0", "end", "displaylines", return_ints=True)
+        height = max(1, min(lines, _WARNING_LINES))
+        if height != int(self.warnings.cget("height")):
+            self.warnings.configure(height=height)
+        if lines > _WARNING_LINES:
             self._warnings_scrollbar.grid()
         else:
             self._warnings_scrollbar.grid_remove()
-        if lines:
-            self.warning_box.grid()
-        else:
-            self.warning_box.grid_remove()
 
     def _tick(self) -> None:
         """Take in what the app has to report, and follow the clock."""
@@ -452,7 +477,7 @@ class MainWindow:
             changed = self._app.poll()
             now = self._clock()
             self.time.set(f"{now:%H:%M:%S}")
-            if changed or now.replace(second=0, microsecond=0) != self._shown_minute:
+            if changed or _moment(now) != self._shown_at:
                 self.show()
             self._update_failed = False
         except Exception:

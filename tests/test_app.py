@@ -154,90 +154,87 @@ def test_failed_refresh_keeps_the_schedule_that_was_read_last(
     assert [row.summary for row in app.rows()] == ["Ayşe Yılmaz"]
 
 
-def seconds_later(clock: FakeClock, seconds: int) -> None:
-    clock.now += datetime.timedelta(seconds=seconds)
-
-
 def test_schedule_file_that_was_saved_is_read_again_by_itself(
     app: App, schedule: Path, clock: FakeClock
 ) -> None:
     app.choose_schedule(schedule)
-    wait_for_speech(app)
-    write_schedule(schedule, [*ROWS, ("Elif Şahin", "Pazartesi", "20:30")])
+    app.start()
+    clock.now = at(9)
 
-    # The first look finds the file changed, the second finds it settled.
-    seconds_later(clock, 2)
-    assert not app.poll()
-    assert len(app.rows()) == 1
-    seconds_later(clock, 2)
-    assert app.poll()
+    write_schedule(schedule, [*ROWS, ("Elif Şahin", "Pazartesi", "20:30")])
+    wait_for(app, lambda: len(app.rows()) == 2)
 
     assert [row.summary for row in app.rows()] == [
         "Ayşe Yılmaz, Mehmet Demir",
         "Elif Şahin",
     ]
-    assert app.refreshed_at == clock.now
+    assert app.refreshed_at == at(9)
 
 
 def test_schedule_file_is_not_read_again_while_it_is_unchanged(
     app: App, schedule: Path, clock: FakeClock
 ) -> None:
     app.choose_schedule(schedule)
-    refreshed_at = app.refreshed_at
+    app.start()
+    wait_for_speech(app)
+    clock.now = at(9)
 
-    for _ in range(5):
-        seconds_later(clock, 2)
-        app.poll()
+    deadline = time.monotonic() + 0.3  # a good dozen looks at the file
+    while time.monotonic() < deadline:
+        assert not app.poll()
+        time.sleep(0.01)
 
-    assert app.refreshed_at == refreshed_at
-
-
-def test_schedule_file_is_looked_at_only_every_other_second(
-    app: App, schedule: Path, clock: FakeClock
-) -> None:
-    app.choose_schedule(schedule)
-    refreshed_at = app.refreshed_at
-    write_schedule(schedule, ROWS[:1])
-
-    for _ in range(10):
-        app.poll()  # the clock stands still, as between two quick polls
-
-    assert app.refreshed_at == refreshed_at
+    assert app.refreshed_at == at(8)
 
 
 def test_schedule_file_that_is_still_being_written_is_left_alone(
-    app: App, schedule: Path, clock: FakeClock
+    app: App, schedule: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr("announcer.app._WATCH", 0.2)
     app.choose_schedule(schedule)
-    refreshed_at = app.refreshed_at
+    app.start()
 
-    for size in (100, 200, 300):
-        schedule.write_bytes(b"x" * size)  # another part of the file arrives
-        seconds_later(clock, 2)
+    # Another part of the file arrives between any two looks at it.
+    for size in range(1, 60):
+        schedule.write_bytes(b"x" * size)
         app.poll()
+        time.sleep(0.01)
 
-    assert (app.refreshed_at, app.schedule_error) == (refreshed_at, None)
+    assert app.schedule_error is None
+    assert len(app.rows()) == 1
 
 
 def test_schedule_file_that_disappears_is_reported_and_read_when_it_returns(
-    app: App, schedule: Path, clock: FakeClock
+    app: App, schedule: Path
 ) -> None:
     app.choose_schedule(schedule)
-    schedule.unlink()
-    for _ in range(2):
-        seconds_later(clock, 2)
-        app.poll()
+    app.start()
 
-    assert isinstance(app.schedule_error, ScheduleFileError)
+    schedule.unlink()
+    wait_for(app, lambda: app.schedule_error is not None)
     assert len(app.rows()) == 1  # the last good schedule stays in use
 
     write_schedule(schedule, ROWS[:1])
-    for _ in range(2):
-        seconds_later(clock, 2)
-        app.poll()
-
-    assert app.schedule_error is None
+    wait_for(app, lambda: app.schedule_error is None)
     assert [row.summary for row in app.rows()] == ["Ayşe Yılmaz"]
+
+
+def test_changed_schedule_file_that_cannot_be_read_is_tried_a_few_times(
+    app: App, schedule: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    app.choose_schedule(schedule)
+    app.start()
+
+    schedule.write_text("not a workbook, and it stays that way")
+    with caplog.at_level(logging.ERROR, logger="announcer.app"):
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            app.poll()
+            time.sleep(0.01)
+
+    # Once for the change and three more times, then no more until it changes.
+    assert caplog.text.count("Cannot load the schedule") == 4
+    assert app.schedule_error is not None
 
 
 def test_missing_speech_is_tried_again_every_few_minutes(
@@ -248,17 +245,32 @@ def test_missing_speech_is_tried_again_every_few_minutes(
     wait_for_speech(app)
     asked = len(provider.calls)
 
-    seconds_later(clock, 240)
-    app.poll()
+    clock.now += datetime.timedelta(minutes=4)
+    assert not app.poll()
     assert len(provider.calls) == asked  # too early to try again
 
     provider.offline = False
-    seconds_later(clock, 61)
-    app.poll()
+    clock.now += datetime.timedelta(minutes=1)
+    assert app.poll()  # the window is told, so it can show that speech is made
     wait_for_speech(app)
 
     assert not app.unspoken
     assert len(provider.calls) == asked + 3
+
+
+def test_slot_that_is_running_when_the_app_starts_is_shown_as_passed_at_once(
+    app: App, schedule: Path, clock: FakeClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    app.choose_schedule(schedule)
+    clock.now = at(18, 0, 5)
+
+    with caplog.at_level(logging.WARNING, logger="announcer.app"):
+        app.start()
+
+    assert statuses(app) == [Status.PASSED]
+    assert "18:00 not announced, its minute had begun when the app started" in (
+        caplog.text
+    )
 
 
 def test_skipped_rows_are_kept_for_the_window(app: App, tmp_path: Path) -> None:
@@ -740,7 +752,7 @@ def test_actions_and_outcomes_are_logged_with_their_cause(
     assert "Schedule loaded from" in log
     assert "3 session(s), 0 row(s) skipped" in log
     assert 'Custom announcement added: "Su içmeyi unutmayın." at 19:00 on every' in log
-    assert 'No speech for "Mehmet Demir, antrenmanınız başlamıştır.' in log
+    assert 'No speech for 1 sentence(s), the first of them "Mehmet Demir, ' in log
     assert '18:00 announced: "Ayşe Yılmaz, antrenmanınız başlamıştır.' in log
     assert '18:00 skipped, no stored speech: "Mehmet Demir, antrenmanınız' in log
     assert "2026-11-09 19:00 skipped, the computer was asleep" in log
