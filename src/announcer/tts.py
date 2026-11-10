@@ -112,7 +112,7 @@ class AudioCache:
         for text in wanted:
             if self.find(text) is None:
                 todo.put(text)
-        failed: set[str] = set()
+        failed: dict[str, TtsError] = {}
 
         def work() -> None:
             while True:
@@ -123,11 +123,7 @@ class AudioCache:
                 try:
                     self.ensure(text)
                 except TtsError as error:
-                    # One line each: without a network every sentence fails.
-                    _log.warning(
-                        'No speech for "%s": %s (%r)', text, error, error.__cause__
-                    )
-                    failed.add(text)
+                    failed[text] = error
 
         # Daemon threads, so a long generation never keeps the app from closing.
         workers = [
@@ -138,7 +134,18 @@ class AudioCache:
             worker.start()
         for worker in workers:
             worker.join()
-        return tuple(text for text in wanted if text in failed)
+        unspoken = tuple(text for text in wanted if text in failed)
+        if unspoken:
+            # One line for all: without a network every sentence fails alike.
+            error = failed[unspoken[0]]
+            _log.warning(
+                'No speech for %d sentence(s), the first of them "%s": %s (%r)',
+                len(unspoken),
+                unspoken[0],
+                error,
+                error.__cause__,
+            )
+        return unspoken
 
     def _path(self, text: str) -> Path:
         digest = hashlib.sha256(f"{self._voice}\n{text}".encode()).hexdigest()

@@ -1,5 +1,6 @@
 """Let only one copy of the app run, so that nothing is announced twice."""
 
+import errno
 import sys
 from pathlib import Path
 from typing import IO
@@ -15,7 +16,8 @@ def claim(path: Path) -> IO[bytes] | None:
 
     The mark is a lock on the file at ``path``, which the system lets go of
     when the app ends, however it ends. Keep the returned file open until
-    then. Raises ``OSError`` if the file cannot be created.
+    then. Raises ``OSError`` if the file cannot be created or locked at all,
+    which says nothing about another copy.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     file = path.open("a+b")
@@ -25,7 +27,10 @@ def claim(path: Path) -> IO[bytes] | None:
             msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    except OSError as error:
         file.close()
-        return None
+        # These are how the two systems say that someone else holds the lock.
+        if error.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
+            return None
+        raise
     return file

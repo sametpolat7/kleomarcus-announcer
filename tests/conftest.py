@@ -52,8 +52,10 @@ def make_app(
     output: FakeOutput,
     clock: FakeClock,
     no_waiting: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[Callable[[], App]]:
     """Build apps over the fakes above; they are stopped after the test."""
+    monkeypatch.setattr("announcer.app._WATCH", 0.02)  # look at the file often
     apps: list[App] = []
 
     def make() -> App:

@@ -6,6 +6,7 @@ They need a display, as tkinter does; without one they are skipped.
 import datetime
 import gc
 import logging
+import sys
 import time
 import tkinter as tk
 from collections.abc import Callable, Iterator
@@ -18,7 +19,7 @@ from announcer.app import App
 from announcer.models import ALL_WEEKDAYS, CustomAnnouncement
 from announcer.template import DEFAULT_TEMPLATE
 from announcer.today import Status
-from announcer.ui import main_window
+from announcer.ui import announcement_dialog, main_window
 from announcer.ui.announcement_dialog import AnnouncementDialog
 from announcer.ui.main_window import MainWindow
 from support import ROWS, FakeClock, FakeProvider, at, wait_for, write_schedule
@@ -663,11 +664,80 @@ def test_dialog_tries_out_the_text_without_saving_it(
 
     dialog.text.set("  Lütfen salonu temiz tutunuz.  ")
     dialog.test()
+    assert dialog.test_status.get() == "Test anonsu hazırlanıyor…"
+    assert dialog.test_button.instate(["disabled"])  # one test at a time
     wait_for(app, lambda: app.test_status is Status.PLAYED)
 
     assert [text for text, _ in provider.calls] == ["Lütfen salonu temiz tutunuz."]
     assert app.settings.custom_announcements == ()
     assert dialog.window.winfo_exists()
+
+
+def test_dialog_shows_how_the_test_went(
+    make_dialog: Callable[[], AnnouncementDialog],
+    window: MainWindow,
+    app: App,
+    provider: FakeProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(announcement_dialog, "_FOLLOW", 5)
+    provider.offline = True
+    app.start()
+    dialog = make_dialog()
+    assert dialog.test_status.get() == ""
+
+    dialog.text.set("Lütfen salonu temiz tutunuz.")
+    dialog.test()
+    pump(window, lambda: dialog.test_status.get().startswith("Test anonsunun sesi"))
+
+    assert dialog.test_button.instate(["!disabled"])
+
+
+def test_wrapped_warnings_get_the_lines_they_need(
+    window: MainWindow, app: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    long = "Bu uyarı pencereden çok daha geniş olduğu için birkaç satıra yayılır. " * 4
+    monkeypatch.setattr("announcer.ui.texts.warnings", lambda app: [long, "Kısa."])
+    window.root.geometry("720x680")
+
+    window.show()
+    pump(window, lambda: int(window.warnings.cget("height")) >= 3)
+
+    last_line_in_view = window.warnings.bbox("end-1c") is not None
+    assert last_line_in_view or window.warnings.yview() != (0.0, 1.0)
+
+
+def test_status_that_only_the_clock_changes_is_shown_at_the_half_minute(
+    window: MainWindow,
+    schedule: Path,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    clock.now = at(18, 0, 20)
+    pump(window, lambda: window.time.get() == "18:00:20")
+    assert today(window)[0][3] == "Sıradaki"
+
+    clock.now = at(18, 0, 31)  # too late for it now, with nothing else changing
+    pump(window, lambda: today(window)[0][3] == "Saati geçti")
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Quit in the menu is macOS's")
+def test_quit_in_the_macos_menu_asks_first_too(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    questions: list[str] = []
+
+    def askyesno(title: str, message: str, **options: object) -> bool:
+        questions.append(message)
+        return False
+
+    monkeypatch.setattr(messagebox, "askyesno", askyesno)
+
+    window.root.tk.call("::tk::mac::Quit")
+
+    assert len(questions) == 1
+    assert not window.closed
 
 
 def test_days_can_be_ticked_only_when_not_every_day(

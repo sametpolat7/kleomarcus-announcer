@@ -7,11 +7,13 @@ from tkinter import messagebox, ttk
 
 from announcer.app import App, SlotTakenError
 from announcer.models import ALL_WEEKDAYS, WEEKDAY_NAMES, CustomAnnouncement
+from announcer.today import Status
 from announcer.ui import texts
 
 _log = logging.getLogger(__name__)
 
 _NO_TEXT = "Anons metni boş olamaz."
+_FOLLOW = 250  # milliseconds between two looks at how a test is going
 
 
 class AnnouncementDialog:
@@ -92,12 +94,18 @@ class AnnouncementDialog:
             box.grid(row=column // 4, column=column % 4, sticky="w", padx=(0, 12))
         self.show_days()
 
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=7, column=0, sticky="ew")
-        buttons.columnconfigure(0, weight=1)
-        ttk.Button(buttons, text="Test", command=self.test).grid(
-            row=0, column=0, sticky="w"
+        # How a test of the text went; empty until one is asked for here.
+        self.test_status = tk.StringVar()
+        self._tested = False
+        ttk.Label(frame, textvariable=self.test_status, wraplength=520).grid(
+            row=7, column=0, sticky="w", pady=(0, 8)
         )
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=8, column=0, sticky="ew")
+        buttons.columnconfigure(0, weight=1)
+        self.test_button = ttk.Button(buttons, text="Test", command=self.test)
+        self.test_button.grid(row=0, column=0, sticky="w")
         ttk.Button(buttons, text="Vazgeç", command=self.window.destroy).grid(
             row=0, column=1, padx=(0, 8)
         )
@@ -118,10 +126,28 @@ class AnnouncementDialog:
     def test(self) -> None:
         """Announce the text as entered, saved or not, so it can be heard first."""
         text = self.text.get().strip()
-        if text:
-            self._app.preview(text)
-        else:
+        if not text:
             self._alert(_NO_TEXT)
+            return
+        self._app.preview(text)
+        if not self._tested:
+            self._tested = True
+            self._follow_test()
+
+    def _follow_test(self) -> None:
+        """Keep showing how the test goes for as long as the dialog is open.
+
+        The main window, which takes in what the app reports, keeps running
+        underneath; this only reads the outcome.
+        """
+        if not self.window.winfo_exists():
+            return
+        status = self._app.test_status
+        self.test_status.set(texts.activity(generating=False, test=status))
+        # One test at a time: pressing again would only queue the same text.
+        busy = status is Status.PLAYING
+        self.test_button.state(["disabled" if busy else "!disabled"])
+        self.window.after(_FOLLOW, self._follow_test)
 
     def save(self) -> None:
         """Save what was entered and close; say why if it cannot be saved."""

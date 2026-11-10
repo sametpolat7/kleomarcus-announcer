@@ -50,7 +50,8 @@ from announcer.tts import AudioCache, TtsError, TtsProvider
 
 TEST_NAME = "Ayşe Yılmaz"  # a made-up athlete for the test announcement
 
-_WATCH = datetime.timedelta(seconds=2)  # between two looks at the schedule file
+_WATCH = 2.0  # seconds between two looks at the schedule file
+_REREADS = 3  # how often a changed schedule file that cannot be read is retried
 _RETRY = datetime.timedelta(minutes=5)  # before missing speech is tried again
 
 _log = logging.getLogger(__name__)
@@ -101,11 +102,21 @@ class _TestUnspoken:
     """The speech for the test announcement could not be generated."""
 
 
-type _Event = _Due | _Missed | Playback | _Generated | _TestUnspoken
-
 # What tells a file from an earlier version of itself: when it was changed and
 # its size, or None if there is no such file.
 type _FileState = tuple[int, int] | None
+_UNREAD: _FileState = (-1, -1)  # what no file looks like: it is read at a look
+
+
+@dataclass(frozen=True)
+class _FileSeen:
+    """What the schedule file looked like a moment ago."""
+
+    path: Path
+    state: _FileState
+
+
+type _Event = _Due | _Missed | Playback | _Generated | _TestUnspoken | _FileSeen
 
 
 class App:
@@ -146,12 +157,13 @@ class App:
         # was last looked at; a file that was saved since is read again.
         self._read_file: _FileState = None
         self._seen_file: _FileState = None
-        self._watched_at = clock()
+        self._rereads = 0  # failed readings of the file as it is now
+        self._stopped = threading.Event()
 
         self.generating = False  # speech is being generated right now
         self.unspoken: tuple[str, ...] = ()  # the texts that have no speech
         self._regenerate = False  # the texts changed while generating
-        self._generated_at = clock()  # when speech was last asked for
+        self._generated_at = clock()  # when a round of speech last began or ended
 
         self.last_announcement: LastAnnouncement | None = None
         self.test_status: Status | None = None  # of the latest test announcement
@@ -167,12 +179,28 @@ class App:
     def start(self) -> None:
         """Load the schedule and start announcing."""
         _log.info("Started; the settings are in %s", self.settings_file)
+        now = self._clock()
         self._scheduler.start()
         self._player.start()
         self.refresh()
+        # The scheduler leaves out the slot of the minute it starts in, which
+        # a run that was closed a moment ago may have announced.
+        slot = self.timetable.slot_at(
+            now.weekday(), datetime.time(now.hour, now.minute)
+        )
+        if slot is not None:
+            due = datetime.datetime.combine(now.date(), slot.time)
+            self._outcomes[due, summary(slot)] = Status.PASSED
+            _log.warning(
+                "%s not announced, its minute had begun when the app started: %s",
+                f"{due:%H:%M}",
+                _quoted(slot.texts),
+            )
+        threading.Thread(target=self._watch, name="watch", daemon=True).start()
 
     def stop(self) -> None:
         """Stop announcing, cutting off what is sounding."""
+        self._stopped.set()
         self._scheduler.stop()
         self._player.stop()
         _log.info("Stopped")
@@ -291,16 +319,19 @@ class App:
     def poll(self) -> bool:
         """Take in what the background threads reported since the last call.
 
-        Now and then this also reads a schedule file again that was saved in
-        the meantime, and asks again for speech that could not be generated.
-        Returns whether anything changed.
+        This also reads the schedule file again when it was saved in the
+        meantime, and asks again for speech that could not be generated a
+        while ago. Returns whether anything changed.
         """
         changed = False
         while True:
             try:
                 event = self._events.get_nowait()
             except queue.Empty:
-                return self._keep_up() or changed
+                return self._retry_speech() or changed
+            if isinstance(event, _FileSeen):
+                changed = self._follow(event.path, event.state) or changed
+                continue
             changed = True
             match event:
                 case _Due(due, slot):
@@ -324,6 +355,7 @@ class App:
                 case _Generated(template, unspoken):
                     self.generating = False
                     self.unspoken = unspoken
+                    self._generated_at = self._clock()
                     if not unspoken:
                         self._speak_with(template)
                     if self._regenerate:
@@ -331,31 +363,46 @@ class App:
                 case _TestUnspoken():
                     self.test_status = Status.NO_SPEECH
 
-    def _keep_up(self) -> bool:
-        """Follow the schedule file and the missing speech; return whether
-        anything changed."""
-        now = self._clock()
-        if abs(now - self._watched_at) < _WATCH:
-            return False
-        self._watched_at = now
-        if (
-            self.unspoken
-            and not self.generating
-            and abs(now - self._generated_at) >= _RETRY
-        ):
-            _log.info("Trying again to generate the missing speech")
-            self._generate()
-        path = self.settings.schedule_path
-        if path is None:
-            return False
-        state = _file_state(path)
+    def _follow(self, path: Path, state: _FileState) -> bool:
+        """Read the schedule file again if a look at it shows a change that
+        has settled; return whether it was read."""
+        if path != self.settings.schedule_path:
+            return False  # a look at a file that was replaced meanwhile
         if state == self._read_file or state != self._seen_file:
             # Unchanged, or still being written: wait until it has settled.
+            if state != self._seen_file:
+                self._rereads = 0
             self._seen_file = state
             return False
         _log.info("The schedule file was changed; reading it again")
         self.refresh()
+        if self.schedule_error is not None and self._rereads < _REREADS:
+            # Something else may only have had it open for a moment, so the
+            # next looks try again, a few times at most.
+            self._rereads += 1
+            self._read_file = _UNREAD
         return True
+
+    def _retry_speech(self) -> bool:
+        """Ask again for speech that could not be generated a while ago;
+        return whether that was done."""
+        if (
+            not self.unspoken
+            or self.generating
+            or abs(self._clock() - self._generated_at) < _RETRY
+        ):
+            return False
+        _log.info("Trying again to generate the missing speech")
+        self._generate()
+        return True
+
+    def _watch(self) -> None:
+        """Look at the schedule file every now and then; on a thread, as a
+        file on a network drive can take long to answer."""
+        while not self._stopped.wait(_WATCH):
+            path = self.settings.schedule_path
+            if path is not None:
+                self._events.put(_FileSeen(path, _file_state(path)))
 
     def _load_settings(self) -> LoadedSettings:
         """Load the settings, or the defaults if the file cannot be read.

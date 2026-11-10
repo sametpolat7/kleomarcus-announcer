@@ -1,6 +1,10 @@
 """Tests for letting only one copy of the app run."""
 
+import errno
+import sys
 from pathlib import Path
+
+import pytest
 
 from announcer.single_instance import claim
 
@@ -37,3 +41,16 @@ def test_mark_left_behind_by_a_copy_that_crashed_does_not_count(tmp_path: Path) 
 
     assert claimed is not None
     claimed.close()
+
+
+def test_lock_that_fails_for_another_reason_is_not_taken_for_a_running_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(*args: object) -> None:
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    module = "msvcrt.locking" if sys.platform == "win32" else "fcntl.flock"
+    monkeypatch.setattr(module, fail)
+
+    with pytest.raises(OSError, match="No locks available"):
+        claim(tmp_path / "announcer.lock")
