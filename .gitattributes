@@ -1,0 +1,3 @@
+# Normalize line endings so formatting checks agree on Windows and macOS.
+* text=auto eol=lf
+*.xlsx binary
