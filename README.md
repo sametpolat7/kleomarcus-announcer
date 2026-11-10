@@ -1,5 +1,9 @@
 # Kleomarcus Announcer
 
+[![CI](https://github.com/sametpolat7/kleomarcus-announcer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/sametpolat7/kleomarcus-announcer/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2Fsametpolat7%2Fkleomarcus-announcer%2Fmain%2Fpyproject.toml)](pyproject.toml)
+[![License](https://img.shields.io/github/license/sametpolat7/kleomarcus-announcer)](LICENSE)
+
 A small desktop app for [Kleomarcus Spor Akademi](https://www.kleomarcus.com)
 that plays scheduled voice announcements in the lobby: it reads the training
 schedule from an Excel file and announces each athlete by name when their
