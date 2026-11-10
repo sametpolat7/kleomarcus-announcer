@@ -1,6 +1,8 @@
 """Tests for reading and validating the Excel schedule."""
 
 import datetime
+import unicodedata
+import zipfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -61,7 +63,6 @@ def test_loads_entries_in_file_order(load_rows: LoadRows) -> None:
     [
         (datetime.time(18, 30), datetime.time(18, 30)),
         (datetime.time(18, 30, 45), datetime.time(18, 30)),
-        (datetime.datetime(2026, 1, 5, 7, 5), datetime.time(7, 5)),
         ("18:30", datetime.time(18, 30)),
         ("9:05", datetime.time(9, 5)),
         ("18.30", datetime.time(18, 30)),
@@ -79,7 +80,22 @@ def test_normalizes_time_values(
     assert [entry.time for entry in schedule.entries] == [expected]
 
 
-@pytest.mark.parametrize("cell", ["24:00", "18:60", "1830", "akşam", 18.5, 18, None])
+@pytest.mark.parametrize(
+    "cell",
+    [
+        "24:00",
+        "18:60",
+        "18:30:99",
+        "1830",
+        "akşam",
+        18.5,
+        18,
+        None,
+        # Excel turns some dotted values, such as "18.10", into dates.
+        datetime.datetime(2026, 10, 18),
+        datetime.datetime(2026, 10, 18, 18, 30),
+    ],
+)
 def test_skips_rows_with_an_invalid_time(load_rows: LoadRows, cell: object) -> None:
     schedule = load_rows(("Ayşe Yılmaz", "Salı", cell))
 
@@ -103,6 +119,8 @@ def test_skips_rows_with_an_invalid_time(load_rows: LoadRows, cell: object) -> N
         ("sali", 1),
         ("carsamba", 2),
         ("  perşembe ", 3),
+        (unicodedata.normalize("NFD", "Çarşamba"), 2),
+        (unicodedata.normalize("NFD", "PAZARTESİ"), 0),
     ],
 )
 def test_maps_turkish_weekday_names(
@@ -171,6 +189,42 @@ def test_finds_columns_by_header_regardless_of_order_and_case(
     assert schedule.entries == (AthleteEntry("Ayşe Yılmaz", 4, datetime.time(18, 0)),)
 
 
+def test_matches_headers_written_with_combining_accents(load_rows: LoadRows) -> None:
+    schedule = load_rows(
+        ("Ayşe Yılmaz", "Cuma", "18:00"),
+        header=("Ad Soyad", unicodedata.normalize("NFD", "Gün"), "Saat"),
+    )
+
+    assert len(schedule.entries) == 1
+
+
+def test_reads_the_first_visible_worksheet(tmp_path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.worksheets[0]
+    sheet.append(HEADER)
+    sheet.append(("Ayşe Yılmaz", "Cuma", "18:00"))
+    workbook.create_sheet("Hidden", 0).sheet_state = "hidden"
+    path = tmp_path / "schedule.xlsx"
+    workbook.save(path)
+
+    assert len(load_schedule(path).entries) == 1
+
+
+def test_ignores_formatting_far_below_the_data(tmp_path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.worksheets[0]
+    sheet.append(HEADER)
+    sheet.append(("Ayşe Yılmaz", "Cuma", "18:00"))
+    sheet.cell(row=200_000, column=3).number_format = "hh:mm"
+    path = tmp_path / "schedule.xlsx"
+    workbook.save(path)
+
+    schedule = load_schedule(path)
+
+    assert len(schedule.entries) == 1
+    assert schedule.skipped == ()
+
+
 def test_rejects_a_file_with_missing_columns(load_rows: LoadRows) -> None:
     with pytest.raises(MissingColumnsError) as error:
         load_rows(("Ayşe Yılmaz", "18:00"), header=("Ad Soyad", "Saat", "Cinsiyet"))
@@ -199,6 +253,23 @@ def test_rejects_a_file_that_is_not_a_workbook(tmp_path: Path) -> None:
 
     with pytest.raises(UnreadableFileError):
         load_schedule(path)
+
+
+def test_rejects_a_damaged_workbook(tmp_path: Path) -> None:
+    intact = tmp_path / "intact.xlsx"
+    workbook = Workbook()
+    workbook.worksheets[0].append(HEADER)
+    workbook.save(intact)
+    damaged = tmp_path / "damaged.xlsx"
+    with zipfile.ZipFile(intact) as source, zipfile.ZipFile(damaged, "w") as target:
+        for item in source.infolist():
+            data = source.read(item)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                data = data[: len(data) // 2]
+            target.writestr(item, data)
+
+    with pytest.raises(UnreadableFileError):
+        load_schedule(damaged)
 
 
 def test_sample_schedule_loads_without_skipped_rows() -> None:

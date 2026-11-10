@@ -7,13 +7,12 @@ single typo does not silence the whole schedule.
 
 import datetime
 import re
+import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from zipfile import BadZipFile
 
 from openpyxl import load_workbook
-from openpyxl.utils.exceptions import InvalidFileException
 
 from announcer.models import WEEKDAY_NAMES, AthleteEntry
 
@@ -63,18 +62,23 @@ class LoadedSchedule:
     skipped: tuple[SkippedRow, ...]
 
 
-# Turkish letters are folded to ASCII before matching, so that "SALI", "Salı"
-# and "sali" all name the same day. ``str.lower()`` alone gets "İ" and "I"
-# wrong for Turkish, and the system locale is deliberately not consulted.
-_FOLD = str.maketrans("İIıŞşÇçĞğÜüÖö", "iiissccgguuoo")
-
 # Hours and minutes separated by ":" or ".", optionally followed by seconds.
-_TIME_PATTERN = re.compile(r"(\d{1,2})[:.](\d{2})(?:[:.]\d{2})?")
+_TIME_PATTERN = re.compile(r"(\d{1,2})[:.](\d{2})(?:[:.][0-5]\d)?")
 
 
 def _fold(text: str) -> str:
-    """Normalize text for matching: ignore case, Turkish accents and spacing."""
-    return " ".join(text.translate(_FOLD).lower().split())
+    """Reduce text to lowercase ASCII letters for matching.
+
+    "SALI", "Salı" and "sali" then all name the same day. Accents are removed
+    by decomposing each letter and dropping the combining marks, which also
+    covers text that arrives already decomposed. The dotless "ı" has no
+    decomposition, so it is replaced first. The system locale is deliberately
+    not consulted.
+    """
+    decomposed = unicodedata.normalize("NFKD", text.replace("ı", "i"))
+    return "".join(
+        char for char in decomposed if not unicodedata.combining(char)
+    ).lower()
 
 
 _WEEKDAYS: dict[str, int] = {
@@ -96,13 +100,14 @@ def load_schedule(path: Path) -> LoadedSchedule:
     entries: list[AthleteEntry] = []
     skipped: list[SkippedRow] = []
     for number, row in enumerate(rows[1:], start=2):
-        name = _clean(row[name_at])
-        day = _clean(row[day_at])
-        if not name and not day and not _clean(row[time_at]):
+        name = _clean(_cell(row, name_at))
+        day = _clean(_cell(row, day_at))
+        time_cell = _cell(row, time_at)
+        if not name and not day and not _clean(time_cell):
             continue  # blank row
 
         weekday = _WEEKDAYS.get(_fold(day))
-        time = _parse_time(row[time_at])
+        time = _parse_time(time_cell)
         problems: list[RowProblem] = []
         if not name:
             problems.append(RowProblem.MISSING_NAME)
@@ -110,7 +115,8 @@ def load_schedule(path: Path) -> LoadedSchedule:
             problems.append(RowProblem.UNKNOWN_DAY)
         if time is None:
             problems.append(RowProblem.INVALID_TIME)
-        if weekday is None or time is None or problems:
+        # The explicit None checks let the type checker narrow both values.
+        if problems or weekday is None or time is None:
             skipped.append(SkippedRow(number, tuple(problems)))
             continue
         entries.append(AthleteEntry(name, weekday, time))
@@ -119,13 +125,22 @@ def load_schedule(path: Path) -> LoadedSchedule:
 
 
 def _read_rows(path: Path) -> list[tuple[object, ...]]:
-    """Return every row of the first worksheet as a tuple of cell values."""
+    """Return every row of the first visible worksheet as a tuple of values."""
     try:
-        workbook = load_workbook(path, data_only=True)
-    # openpyxl raises KeyError for a zip archive that is not a workbook.
-    except (OSError, BadZipFile, InvalidFileException, KeyError) as error:
+        # Read-only mode streams rows, so stray formatting far below the data
+        # does not cost time or memory.
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        try:
+            sheet = next(
+                sheet for sheet in workbook.worksheets if sheet.sheet_state == "visible"
+            )
+            return list(sheet.iter_rows(values_only=True))
+        finally:
+            workbook.close()
+    # openpyxl raises many unrelated exception types for missing, damaged or
+    # non-workbook files, so everything is treated as an unreadable file.
+    except Exception as error:
         raise UnreadableFileError(f"Cannot read {path}") from error
-    return list(workbook.worksheets[0].iter_rows(values_only=True))
 
 
 def _locate_columns(header: tuple[object, ...]) -> tuple[int, int, int]:
@@ -146,6 +161,11 @@ def _locate_columns(header: tuple[object, ...]) -> tuple[int, int, int]:
     )
 
 
+def _cell(row: tuple[object, ...], index: int) -> object:
+    """Return the value at ``index``; rows may be shorter than the header."""
+    return row[index] if index < len(row) else None
+
+
 def _clean(value: object) -> str:
     """Return a cell value as text with surrounding and repeated spaces removed."""
     return "" if value is None else " ".join(str(value).split())
@@ -155,10 +175,9 @@ def _parse_time(value: object) -> datetime.time | None:
     """Return a cell value as a time of day to the minute, or None if invalid.
 
     Excel hands back a ``time`` for time-formatted cells and a string for text
-    cells, so both are accepted.
+    cells, so both are accepted. A ``datetime`` is rejected: it means Excel
+    turned the typed value into a date, so its time part is not what was meant.
     """
-    if isinstance(value, datetime.datetime):
-        value = value.time()
     if isinstance(value, datetime.time):
         return datetime.time(value.hour, value.minute)
     if isinstance(value, str):
