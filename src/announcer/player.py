@@ -10,6 +10,7 @@ it wakes. Only a sleep of under half a minute goes unnoticed, and what was
 playing then carries on by that much.
 """
 
+import datetime
 import logging
 import os
 import queue
@@ -27,6 +28,9 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame
 
 _log = logging.getLogger(__name__)
+
+# When a group of texts was queued, the texts, and when they were due.
+type _Queued = tuple[float, tuple[str, ...], datetime.datetime | None]
 
 
 class PlaybackError(Exception):
@@ -88,6 +92,7 @@ class Playback:
     missing: tuple[str, ...]  # the texts skipped for lack of stored speech
     late: tuple[str, ...]  # the texts skipped because the computer was asleep
     failed: bool  # the audio output could not play some or all of the others
+    due: datetime.datetime | None = None  # as given when the texts were queued
 
 
 class Player:
@@ -95,7 +100,9 @@ class Player:
 
     ``find_audio`` returns the stored speech for a text, or None. ``on_played``
     is called on the player's thread after each group, so it should only hand
-    the result over, for example by putting it on a queue. ``clock`` gives the
+    the result over, for example by putting it on a queue. A group may be
+    queued with the moment it was due; the player only hands that back with
+    the outcome, so the caller can tell which group it was. ``clock`` gives the
     time of day in seconds and is how a sleep is noticed. A player runs once:
     after ``stop`` it cannot be started again.
     """
@@ -121,13 +128,15 @@ class Player:
         self._clock = clock
         self._looked_at = 0.0  # when the clock was last looked at
         self._asleep_until = float("-inf")  # texts queued before this are late
-        self._queue: queue.Queue[tuple[float, tuple[str, ...]] | None] = queue.Queue()
+        self._queue: queue.Queue[_Queued | None] = queue.Queue()
         self._stopped = threading.Event()
         self._thread = threading.Thread(target=self._run, name="player", daemon=True)
 
-    def enqueue(self, texts: Sequence[str]) -> None:
+    def enqueue(
+        self, texts: Sequence[str], due: datetime.datetime | None = None
+    ) -> None:
         """Announce ``texts`` together, after whatever is already queued."""
-        self._queue.put((self._clock(), tuple(texts)))
+        self._queue.put((self._clock(), tuple(texts), due))
 
     def start(self) -> None:
         """Start announcing what is queued."""
@@ -143,16 +152,18 @@ class Player:
         if self._thread.is_alive():
             self._thread.join()
 
-    def play(self, texts: Sequence[str]) -> None:
+    def play(self, texts: Sequence[str], due: datetime.datetime | None = None) -> None:
         """Announce ``texts`` now and report the outcome; returns when done.
 
         The chime sounds once, before the first text. If no text has stored
         speech, nothing is played at all.
         """
         self._looked_at = self._clock()
-        self._announce(tuple(texts), skip=False)
+        self._announce(tuple(texts), due, skip=False)
 
-    def _announce(self, texts: tuple[str, ...], skip: bool) -> None:
+    def _announce(
+        self, texts: tuple[str, ...], due: datetime.datetime | None, skip: bool
+    ) -> None:
         """Announce ``texts`` and report the outcome.
 
         With ``skip`` nothing is played, because the texts are already late.
@@ -182,7 +193,7 @@ class Player:
         # File 0 is the chime, so file n belongs to text n - 1. A text that
         # was cut off by a sleep counts as late, like those after it.
         late = tuple(text for text, _ in spoken[max(finished - 1, 0) :])
-        self._on_played(Playback(texts, tuple(missing), late, failed))
+        self._on_played(Playback(texts, tuple(missing), late, failed, due))
 
     def _play_files(self, paths: Sequence[Path]) -> tuple[bool, int]:
         """Play the files in order until the last has ended.
@@ -245,10 +256,10 @@ class Player:
                 self._looked_at = self._clock()
             if item is None or self._stopped.is_set():
                 break
-            queued_at, texts = item
+            queued_at, texts, due = item
             try:
                 self._slept()  # a sleep between two announcements counts too
-                self._announce(texts, skip=queued_at < self._asleep_until)
+                self._announce(texts, due, skip=queued_at < self._asleep_until)
             except Exception:
                 # One failed announcement must not silence every later one.
                 _log.exception("Announcing failed")
