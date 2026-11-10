@@ -58,6 +58,14 @@ def _moment(now: datetime.datetime) -> tuple[datetime.datetime, bool]:
     return minute, now - minute > LATE
 
 
+def _resized(base: font.Font, by: int) -> font.Font:
+    """Return a copy of a font that is ``by`` points or pixels larger."""
+    copy = base.copy()
+    size = int(copy.cget("size"))  # negative when it is in pixels
+    copy.configure(size=size + by if size > 0 else size - by)
+    return copy
+
+
 def open_file(path: Path) -> None:
     """Show ``path`` in the program that the system opens such files with."""
     if sys.platform == "win32":
@@ -116,9 +124,9 @@ class MainWindow:
         # Small enough for a laptop screen; the tables take up the difference.
         height = min(800, self.root.winfo_screenheight() - 120)
         self.root.geometry(f"860x{height}")
-        # At 720 high everything still fits, with three lines of warnings. On
+        # At 760 high everything still fits, with three lines of warnings. On
         # a lower screen the window stays in view and today's table gives way.
-        self.root.minsize(720, min(720, height))
+        self.root.minsize(720, min(760, height))
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         self.root.protocol("WM_DELETE_WINDOW", self.ask_to_close)
@@ -132,8 +140,7 @@ class MainWindow:
 
         self.schedule_path = tk.StringVar()
         self.loaded = tk.StringVar()
-        self.today_title = tk.StringVar()
-        self.time = tk.StringVar()
+        self.heading = tk.StringVar()
         self.last_announcement = tk.StringVar()
         self.template = tk.StringVar(value=app.settings.template)
         self.activity = tk.StringVar()
@@ -141,9 +148,9 @@ class MainWindow:
         # Kept on the window, as tkinter drops a font that nothing refers to.
         self._bold = font.nametofont("TkDefaultFont").copy()
         self._bold.configure(weight="bold")
-        self._large = self._bold.copy()
-        size = int(self._large.cget("size"))  # negative when it is in pixels
-        self._large.configure(size=size + 4 if size > 0 else size - 4)
+        self._large = _resized(self._bold, 4)  # the date and the time
+        self._title = _resized(self._bold, 2)  # the name of a section
+        self._small = _resized(font.nametofont("TkDefaultFont"), -2)  # a note
 
         # Top to bottom: what the operator looks at, then what is rarely
         # changed. Today's table takes whatever height is left over.
@@ -196,8 +203,7 @@ class MainWindow:
         self.schedule_path.set("" if path is None else str(path))
         self._schedule_entry.xview_moveto(1)
         self.loaded.set(texts.last_loaded(app.refreshed_at))
-        self.today_title.set(texts.today_title(now))
-        self.time.set(f"{now:%H:%M:%S}")
+        self.heading.set(texts.heading(now))
         self.last_announcement.set(texts.last_announcement(app.last_announcement))
         self.activity.set(texts.activity(app.generating, app.test_status))
         self._show_today(now)
@@ -210,16 +216,41 @@ class MainWindow:
     def _build_header(self, parent: ttk.Frame) -> ttk.Frame:
         header = ttk.Frame(parent)
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, textvariable=self.today_title, font=self._large).grid(
-            row=0, column=0, sticky="w"
-        )
-        ttk.Label(header, textvariable=self.time, font=self._large).grid(
-            row=0, column=1, sticky="e"
+        ttk.Label(header, textvariable=self.heading, font=self._large).grid(
+            row=0, column=0, sticky="e"
         )
         return header
 
-    def _build_schedule(self, parent: ttk.Frame) -> ttk.LabelFrame:
-        box = ttk.LabelFrame(parent, text="Sporcu Listesi", padding=8)
+    def _section(
+        self, parent: ttk.Frame, title: str
+    ) -> tuple[ttk.Frame, ttk.LabelFrame]:
+        """Return one part of the window, and the box in it under its name.
+
+        The part is what is placed in the window; the box is what is filled.
+        """
+        section = ttk.Frame(parent)
+        section.columnconfigure(0, weight=1)
+        section.rowconfigure(1, weight=1)
+        ttk.Label(section, text=title, font=self._title).grid(
+            row=0, column=0, sticky="w", pady=(0, 4)
+        )
+        box = ttk.LabelFrame(section, padding=8)
+        # A box keeps room for a name of its own; one of no size takes none.
+        box.configure(labelwidget=ttk.Frame(box))
+        box.grid(row=1, column=0, sticky="nsew")
+        return section, box
+
+    def _note(self, parent: tk.Misc, text: str | tk.StringVar) -> ttk.Label:
+        """Return a line of small, faint text, fixed or following a variable."""
+        note = ttk.Label(parent, font=self._small, foreground=_GREY)
+        if isinstance(text, str):
+            note.configure(text=text)
+        else:
+            note.configure(textvariable=text)
+        return note
+
+    def _build_schedule(self, parent: ttk.Frame) -> ttk.Frame:
+        section, box = self._section(parent, "Sporcu Listesi")
         box.columnconfigure(0, weight=1)
         self._schedule_entry = ttk.Entry(
             box, textvariable=self.schedule_path, state="readonly"
@@ -233,13 +264,13 @@ class MainWindow:
         self.choose_button = ttk.Button(box, text="Dosya Seç…", command=self.choose)
         self.choose_button.grid(row=0, column=1, padx=(8, 0))
         # There is no button to read the file again: saving it does that.
-        ttk.Label(box, textvariable=self.loaded).grid(
+        self._note(box, self.loaded).grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(6, 0)
         )
-        return box
+        return section
 
-    def _build_today(self, parent: ttk.Frame) -> ttk.LabelFrame:
-        box = ttk.LabelFrame(parent, text="Bugünün Anonsları", padding=8)
+    def _build_today(self, parent: ttk.Frame) -> ttk.Frame:
+        section, box = self._section(parent, "Bugünün Anonsları")
         box.columnconfigure(0, weight=1)
         box.rowconfigure(0, weight=1)
         self.today = self._table(
@@ -248,7 +279,7 @@ class MainWindow:
             columns={
                 "day": "Gün",
                 "time": "Saat",
-                "text": "İsim Soyisim",
+                "text": "Ad Soyad",
                 "status": "Durum",
             },
             widths={"day": 90, "time": 60, "text": 360, "status": 150},
@@ -265,10 +296,10 @@ class MainWindow:
         ttk.Label(box, textvariable=self.last_announcement).grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(6, 0)
         )
-        return box
+        return section
 
-    def _build_template(self, parent: ttk.Frame) -> ttk.LabelFrame:
-        box = ttk.LabelFrame(parent, text=_TEMPLATE_TITLE, padding=8)
+    def _build_template(self, parent: ttk.Frame) -> ttk.Frame:
+        section, box = self._section(parent, _TEMPLATE_TITLE)
         box.columnconfigure(0, weight=1)
         entry = ttk.Entry(box, textvariable=self.template)
         entry.grid(row=0, column=0, sticky="ew")
@@ -280,13 +311,13 @@ class MainWindow:
         self.save_template_button.grid(row=0, column=1, padx=(8, 0))
         self.test_button = ttk.Button(box, text="Test", command=self.test)
         self.test_button.grid(row=0, column=2, padx=(8, 0))
-        ttk.Label(box, text=texts.TEMPLATE_HINT).grid(
+        self._note(box, texts.TEMPLATE_HINT).grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(6, 0)
         )
-        return box
+        return section
 
-    def _build_announcements(self, parent: ttk.Frame) -> ttk.LabelFrame:
-        box = ttk.LabelFrame(parent, text="Özel Anonslar", padding=8)
+    def _build_announcements(self, parent: ttk.Frame) -> ttk.Frame:
+        section, box = self._section(parent, "Özel Anonslar")
         box.columnconfigure(0, weight=1)
         self.announcements = self._table(
             box,
@@ -311,7 +342,7 @@ class MainWindow:
             (self.add_button, self.edit_button, self.delete_button)
         ):
             button.grid(row=row, column=0, sticky="ew", pady=(0, 6))
-        return box
+        return section
 
     def _build_warnings(self, parent: ttk.Frame) -> tk.Frame:
         """Return the coloured box of warnings, which shows only when there are any."""
@@ -350,7 +381,7 @@ class MainWindow:
     def _build_footer(self, parent: ttk.Frame) -> ttk.Frame:
         footer = ttk.Frame(parent)
         footer.columnconfigure(1, weight=1)
-        ttk.Label(footer, text=texts.SLEEP_NOTICE).grid(row=0, column=0, sticky="w")
+        self._note(footer, texts.SLEEP_NOTICE).grid(row=0, column=0, sticky="w")
         ttk.Label(footer, textvariable=self.activity).grid(
             row=0, column=1, sticky="e", padx=_PAD
         )
@@ -515,7 +546,7 @@ class MainWindow:
         try:
             changed = self._app.poll()
             now = self._clock()
-            self.time.set(f"{now:%H:%M:%S}")
+            self.heading.set(texts.heading(now))
             if changed or _moment(now) != self._shown_at:
                 self.show()
             self._update_failed = False

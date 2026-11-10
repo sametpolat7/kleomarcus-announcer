@@ -18,14 +18,14 @@ from announcer.template import PLACEHOLDER
 from announcer.timetable import Conflict, SlotHolder
 from announcer.today import Status
 
-SLEEP_NOTICE = "Uyku modunda anonslar seslendirilmez."
+SLEEP_NOTICE = "Uyku modunda anonslar seslendirilmez. Bilgisayarınızı açık tutunuz."
 NO_ROWS = "Bugün için anons yok."
 NO_ANNOUNCEMENTS = "Özel anons yok."
 CLOSE_QUESTION = "Uygulama kapatılırsa anonslar okunmaz. Kapatılsın mı?"
 ALREADY_RUNNING = "Uygulama zaten çalışıyor."
 TEMPLATE_HINT = (
-    f"“{PLACEHOLDER}” bir değişkendir: yerine sporcunun adı ve soyadı okunur.\n"
-    "Cümlede istediğiniz yere taşıyabilirsiniz, ancak aynen bu şekilde yazılmalıdır."
+    f"“{PLACEHOLDER}” yerine sporcunun adı soyadı okunur. "
+    "Yeri değişebilir, yazımı değişmemelidir."
 )
 TEMPLATE_NEEDS_PLACEHOLDER = f"Şablonda “{PLACEHOLDER}” yer tutucusu bulunmalıdır."
 CANNOT_SAVE = "Değişiklik kaydedilemedi. Ayrıntılar kayıt dosyasındadır."
@@ -87,10 +87,10 @@ def days(weekdays: Iterable[int]) -> str:
     return ", ".join(WEEKDAY_NAMES[day] for day in chosen)
 
 
-def today_title(now: datetime.datetime) -> str:
-    """Return the heading of today's preview, such as "9 Kasım 2026 Pazartesi"."""
+def heading(now: datetime.datetime) -> str:
+    """Return the window's heading: the date and the time, to the second."""
     month, weekday = _MONTHS[now.month - 1], WEEKDAY_NAMES[now.weekday()]
-    return f"{now.day} {month} {now.year} {weekday}"
+    return f"{now.day} {month} {now.year} {weekday}  ·  {now:%H:%M:%S}"
 
 
 def last_loaded(moment: datetime.datetime | None) -> str:
