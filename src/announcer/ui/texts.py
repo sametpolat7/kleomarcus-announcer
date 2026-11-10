@@ -87,10 +87,10 @@ def days(weekdays: Iterable[int]) -> str:
     return ", ".join(WEEKDAY_NAMES[day] for day in chosen)
 
 
-def heading(now: datetime.datetime) -> str:
-    """Return the window's heading: the date and the time, to the second."""
+def today_title(now: datetime.datetime) -> str:
+    """Return the heading of the window, such as "9 Kasım 2026 Pazartesi"."""
     month, weekday = _MONTHS[now.month - 1], WEEKDAY_NAMES[now.weekday()]
-    return f"{now.day} {month} {now.year} {weekday}  ·  {now:%H:%M:%S}"
+    return f"{now.day} {month} {now.year} {weekday}"
 
 
 def last_loaded(moment: datetime.datetime | None) -> str:

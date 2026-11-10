@@ -140,7 +140,8 @@ class MainWindow:
 
         self.schedule_path = tk.StringVar()
         self.loaded = tk.StringVar()
-        self.heading = tk.StringVar()
+        self.today_title = tk.StringVar()
+        self.time = tk.StringVar()
         self.last_announcement = tk.StringVar()
         self.template = tk.StringVar(value=app.settings.template)
         self.activity = tk.StringVar()
@@ -149,7 +150,7 @@ class MainWindow:
         self._bold = font.nametofont("TkDefaultFont").copy()
         self._bold.configure(weight="bold")
         self._large = _resized(self._bold, 4)  # the date and the time
-        self._title = _resized(self._bold, 2)  # the name of a section
+        self._title = _resized(self._bold, 1)  # the name of a section
         self._small = _resized(font.nametofont("TkDefaultFont"), -2)  # a note
 
         # Top to bottom: what the operator looks at, then what is rarely
@@ -203,7 +204,8 @@ class MainWindow:
         self.schedule_path.set("" if path is None else str(path))
         self._schedule_entry.xview_moveto(1)
         self.loaded.set(texts.last_loaded(app.refreshed_at))
-        self.heading.set(texts.heading(now))
+        self.today_title.set(texts.today_title(now))
+        self.time.set(f"{now:%H:%M:%S}")
         self.last_announcement.set(texts.last_announcement(app.last_announcement))
         self.activity.set(texts.activity(app.generating, app.test_status))
         self._show_today(now)
@@ -216,8 +218,11 @@ class MainWindow:
     def _build_header(self, parent: ttk.Frame) -> ttk.Frame:
         header = ttk.Frame(parent)
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, textvariable=self.heading, font=self._large).grid(
-            row=0, column=0, sticky="e"
+        ttk.Label(header, textvariable=self.today_title, font=self._large).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(header, textvariable=self.time, font=self._large).grid(
+            row=0, column=1, sticky="e"
         )
         return header
 
@@ -546,7 +551,7 @@ class MainWindow:
         try:
             changed = self._app.poll()
             now = self._clock()
-            self.heading.set(texts.heading(now))
+            self.time.set(f"{now:%H:%M:%S}")
             if changed or _moment(now) != self._shown_at:
                 self.show()
             self._update_failed = False
