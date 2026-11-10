@@ -14,6 +14,9 @@ dependencies = [
   "pygame-ce>=2.5.8",
 ]
 
+[project.gui-scripts]
+kleomarcus-announcer = "announcer.__main__:main"
+
 [dependency-groups]
 dev = [
   "mypy>=2.4.1",
