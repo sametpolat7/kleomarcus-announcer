@@ -15,6 +15,9 @@ CHIME = Path("chime.wav")
 AYSE, MEHMET, ZEYNEP = Path("ayse.mp3"), Path("mehmet.mp3"), Path("zeynep.mp3")
 AUDIO = {"Ayşe": AYSE, "Mehmet": MEHMET, "Zeynep": ZEYNEP}
 
+# The real pauses, which the tests with the fake output do without.
+GAP, POLL = Player._GAP, Player._POLL
+
 
 class FakeClock:
     """A clock that the test moves by hand."""
@@ -242,15 +245,26 @@ def test_unplayable_file_is_still_reported_after_a_sleep(
     ]
 
 
-def test_a_short_stall_is_not_a_sleep(
+def test_a_stall_of_under_half_a_minute_is_not_a_sleep(
     player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
 ) -> None:
-    sleep_while_playing(output, clock, AYSE, seconds=5)
+    sleep_while_playing(output, clock, AYSE, seconds=29)
 
     player.play(["Ayşe", "Mehmet"])
 
     assert output.played == [CHIME, AYSE, MEHMET]
     assert outcomes[0].late == ()
+
+
+def test_a_gap_of_over_half_a_minute_is_a_sleep(
+    player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
+) -> None:
+    sleep_while_playing(output, clock, AYSE, seconds=31)
+
+    player.play(["Ayşe", "Mehmet"])
+
+    assert output.played == [CHIME, AYSE]
+    assert outcomes[0].late == ("Ayşe", "Mehmet")
 
 
 def test_clock_set_back_is_not_a_sleep(
@@ -500,8 +514,8 @@ def real_player(
     real pauses between files are back.
     """
     monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
-    monkeypatch.setattr(Player, "_GAP", 0.3)
-    monkeypatch.setattr(Player, "_POLL", 0.05)
+    monkeypatch.setattr(Player, "_GAP", GAP)
+    monkeypatch.setattr(Player, "_POLL", POLL)
     return Player(
         lambda text: tmp_path / text,
         PygameOutput(),

@@ -99,10 +99,10 @@ class Player:
     """
 
     _GAP = 0.3  # seconds of silence between two files
-    _POLL = 0.05  # seconds between two looks at whether a file has ended
-    # Two looks are never this many seconds apart while the computer runs, so
-    # a longer gap means that it slept in between.
-    _SLEEP = 10.0
+    _POLL = 0.1  # seconds between two looks at whether a file has ended
+    # Two looks are never this many seconds apart while the computer runs, even
+    # when it is very busy, so a longer gap means that it slept in between.
+    _SLEEP = 30.0
 
     def __init__(
         self,
