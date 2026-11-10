@@ -13,25 +13,11 @@ from announcer.tts import (
     TtsError,
     audio_cache_dir,
 )
+from fakes import FakeProvider
 
 VOICE = "tr-TR-EmelNeural"
 HELLO = "Ayşe Yılmaz, hoş geldiniz."
 BYE = "Salon kapanıyor."
-
-
-class FakeProvider:
-    """A provider that returns predictable audio and records what it was asked."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
-        self.offline = False
-        self.unspeakable: set[str] = set()
-
-    def synthesize(self, text: str, voice: str) -> bytes:
-        self.calls.append((text, voice))
-        if self.offline or text in self.unspeakable:
-            raise TtsError("no speech")
-        return f"{voice}|{text}".encode()
 
 
 @pytest.fixture

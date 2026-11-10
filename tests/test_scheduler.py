@@ -5,6 +5,7 @@ import threading
 
 from announcer.scheduler import Scheduler, due_slot, missed_slots
 from announcer.timetable import Slot, Timetable
+from fakes import FakeClock
 
 MONDAY = datetime.date(2026, 11, 9)
 SIX_PM = datetime.time(18, 0)
@@ -21,16 +22,6 @@ def at(
     """Return a moment on the test Monday, or a number of days after it."""
     day = MONDAY + datetime.timedelta(days=days_later)
     return datetime.datetime.combine(day, datetime.time(hour, minute, second))
-
-
-class FakeClock:
-    """A clock that the test moves by hand."""
-
-    def __init__(self, now: datetime.datetime) -> None:
-        self.now = now
-
-    def __call__(self) -> datetime.datetime:
-        return self.now
 
 
 def make_scheduler(
