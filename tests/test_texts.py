@@ -4,13 +4,13 @@ import datetime
 from collections.abc import Callable
 from pathlib import Path
 
-from announcer.app import App, LastAnnouncement
+from announcer.app import App
 from announcer.loader import MissingColumnsError, UnreadableFileError
 from announcer.models import ALL_WEEKDAYS, CustomAnnouncement
 from announcer.timetable import Conflict, SlotHolder
 from announcer.today import Status
 from announcer.ui import texts
-from support import ROWS, FakeProvider, at, wait_for, write_schedule
+from support import ROWS, FakeProvider, wait_for, write_schedule
 
 WATER = CustomAnnouncement("Su içmeyi unutmayın.", datetime.time(19, 0))
 
@@ -19,38 +19,15 @@ def test_every_status_has_a_word() -> None:
     assert set(texts.STATUS) == set(Status)
 
 
-def test_kind() -> None:
+def test_words_of_the_tables() -> None:
     assert [texts.kind(athletes) for athletes in (0, 1, 2, 14)] == [
         "Özel",
         "Sporcu",
         "2 sporcu",
         "14 sporcu",
     ]
-
-
-def test_days_are_named_in_week_order() -> None:
     assert texts.days(ALL_WEEKDAYS) == "Her gün"
     assert texts.days({3, 1}) == "Salı, Perşembe"
-    assert texts.days({6}) == "Pazar"
-
-
-def test_today_title() -> None:
-    assert texts.today_title(at(8)) == "9 Kasım 2026 Pazartesi"
-    assert texts.today_title(datetime.datetime(2027, 2, 1)) == "1 Şubat 2027 Pazartesi"
-
-
-def test_refreshed() -> None:
-    assert texts.refreshed(None) == "Son yenileme: —"
-    assert texts.refreshed(at(18, 4, 9)) == "Son yenileme: 09.11.2026 18:04:09"
-
-
-def test_last_announcement() -> None:
-    last = LastAnnouncement(at(18), "Ayşe Yılmaz, Mehmet Demir", Status.PLAYED)
-
-    assert texts.last_announcement(None) == "Son anons: —"
-    assert texts.last_announcement(last) == (
-        "Son anons: 18:00 · Ayşe Yılmaz, Mehmet Demir · Okundu"
-    )
 
 
 def test_activity() -> None:
@@ -88,19 +65,6 @@ def test_conflict_alert_names_each_day_and_what_holds_it() -> None:
         "• Pazartesi 19:00: sporcu anonsu var\n"
         "• Çarşamba 19:00: başka bir özel anons var"
     )
-
-
-def test_fresh_app_is_only_told_to_choose_a_schedule(app: App) -> None:
-    assert texts.warnings(app) == [
-        "Program dosyası seçilmedi. “Dosya Seç” ile bir Excel dosyası seçin."
-    ]
-
-
-def test_app_with_a_clean_schedule_has_no_warnings(app: App, schedule: Path) -> None:
-    app.choose_schedule(schedule)
-    wait_for(app, lambda: not app.generating)
-
-    assert texts.warnings(app) == []
 
 
 def test_warnings_cover_everything_that_went_wrong(

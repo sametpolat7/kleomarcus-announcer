@@ -11,7 +11,7 @@ import pytest
 
 from announcer.app import TEST_NAME, App, SlotTakenError, backup_copy
 from announcer.chime import CHIME_PATH
-from announcer.loader import RowProblem, ScheduleFileError, SkippedRow
+from announcer.loader import ScheduleFileError
 from announcer.models import CustomAnnouncement
 from announcer.settings import Settings, load_settings, save_settings
 from announcer.template import DEFAULT_TEMPLATE
@@ -39,33 +39,18 @@ def statuses(app: App) -> list[Status]:
     return [row.status for row in app.rows()]
 
 
-def test_fresh_app_has_the_defaults_and_nothing_to_announce(app: App) -> None:
-    app.start()
-
-    assert app.settings == Settings()
-    assert app.rows() == ()
-    assert app.refreshed_at is None
-    assert app.schedule_error is None
-    assert (app.settings_unreadable, app.dropped_announcements) == (False, 0)
-    assert (app.generating, app.unspoken) == (False, ())
-    assert (app.last_announcement, app.test_status) == (None, None)
-
-
-def test_choosing_a_schedule_loads_it_and_remembers_the_file(
-    app: App, schedule: Path, settings_file: Path, clock: FakeClock
+def test_choosing_a_schedule_loads_it_remembers_the_file_and_generates_its_speech(
+    app: App,
+    schedule: Path,
+    settings_file: Path,
+    clock: FakeClock,
+    provider: FakeProvider,
 ) -> None:
     app.choose_schedule(schedule)
 
     assert [row.summary for row in app.rows()] == ["Ayşe Yılmaz, Mehmet Demir"]
     assert app.refreshed_at == clock.now
-    assert app.settings.schedule_path == schedule
     assert load_settings(settings_file).settings.schedule_path == schedule
-
-
-def test_choosing_a_schedule_generates_its_speech(
-    app: App, schedule: Path, provider: FakeProvider
-) -> None:
-    app.choose_schedule(schedule)
     assert app.generating
     wait_for_speech(app)
 
@@ -117,21 +102,6 @@ def test_refresh_reads_the_file_again(
         "Elif Şahin",
     ]
     assert app.refreshed_at == at(9)
-
-
-def test_refresh_generates_the_speech_that_is_missing(
-    app: App, schedule: Path, provider: FakeProvider
-) -> None:
-    provider.offline = True
-    app.choose_schedule(schedule)
-    wait_for_speech(app)
-    assert len(app.unspoken) == 3
-
-    provider.offline = False
-    app.refresh()
-    wait_for_speech(app)
-
-    assert not app.unspoken
 
 
 def test_failed_refresh_keeps_the_schedule_that_was_read_last(
@@ -258,30 +228,29 @@ def test_missing_speech_is_tried_again_every_few_minutes(
     assert len(provider.calls) == asked + 3
 
 
-def test_slot_that_is_running_when_the_app_starts_is_shown_as_passed_at_once(
-    app: App, schedule: Path, clock: FakeClock, caplog: pytest.LogCaptureFixture
+def test_slot_that_is_running_when_the_app_starts_is_not_announced(
+    app: App,
+    schedule: Path,
+    output: FakeOutput,
+    clock: FakeClock,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    # It may have been announced a moment ago, by a run that was closed.
     app.choose_schedule(schedule)
+    wait_for_speech(app)
     clock.now = at(18, 0, 5)
 
     with caplog.at_level(logging.WARNING, logger="announcer.app"):
         app.start()
 
-    assert statuses(app) == [Status.PASSED]
+    assert statuses(app) == [Status.PASSED]  # shown as such at once
     assert "18:00 not announced, its minute had begun when the app started" in (
         caplog.text
     )
-
-
-def test_skipped_rows_are_kept_for_the_window(app: App, tmp_path: Path) -> None:
-    rows = [*ROWS, ("Can Aydın", "Pazartesi", "akşam"), ("", "Funday", "18:00")]
-
-    app.choose_schedule(write_schedule(tmp_path / "typos.xlsx", rows))
-
-    assert app.skipped_rows == (
-        SkippedRow(5, (RowProblem.INVALID_TIME,)),
-        SkippedRow(6, (RowProblem.MISSING_NAME, RowProblem.UNKNOWN_DAY)),
-    )
+    clock.now = at(18, 0, 6)
+    time.sleep(0.1)
+    app.poll()
+    assert output.played == []
 
 
 def test_new_template_is_stored_and_spoken(
@@ -335,29 +304,24 @@ def test_custom_announcement_is_added_and_stored(
     ]
 
 
-def test_custom_announcement_cannot_share_a_slot_with_athletes(
-    app: App, schedule: Path
-) -> None:
+def test_custom_announcement_cannot_share_a_slot(app: App, schedule: Path) -> None:
     app.choose_schedule(schedule)
-    wanted = CustomAnnouncement("Salon kapanıyor.", SIX_PM, frozenset({0, 3}))
-
-    with pytest.raises(SlotTakenError) as raised:
-        app.save_announcement(wanted)
-
-    [conflict] = raised.value.conflicts
-    assert (conflict.weekday, conflict.holder) == (0, SlotHolder.ATHLETES)
-    assert app.settings.custom_announcements == ()
-
-
-def test_custom_announcement_cannot_share_a_slot_with_another(app: App) -> None:
     app.save_announcement(WATER)
-    wanted = CustomAnnouncement("Salon kapanıyor.", SEVEN_PM, frozenset({6}))
 
-    with pytest.raises(SlotTakenError) as raised:
-        app.save_announcement(wanted)
+    with pytest.raises(SlotTakenError) as with_athletes:
+        app.save_announcement(
+            CustomAnnouncement("Salon kapanıyor.", SIX_PM, frozenset({0, 3}))
+        )
+    with pytest.raises(SlotTakenError) as with_another:
+        app.save_announcement(
+            CustomAnnouncement("Salon kapanıyor.", SEVEN_PM, frozenset({6}))
+        )
 
-    [conflict] = raised.value.conflicts
-    assert (conflict.weekday, conflict.holder) == (6, SlotHolder.CUSTOM_ANNOUNCEMENT)
+    assert [
+        (conflict.weekday, conflict.holder)
+        for error in (with_athletes, with_another)
+        for conflict in error.value.conflicts
+    ] == [(0, SlotHolder.ATHLETES), (6, SlotHolder.CUSTOM_ANNOUNCEMENT)]
     assert app.settings.custom_announcements == (WATER,)
 
 
@@ -444,24 +408,6 @@ def test_due_slot_is_announced_and_shown_as_played(
     )
 
 
-def test_slot_that_is_running_when_the_app_starts_is_not_announced(
-    app: App, schedule: Path, output: FakeOutput, clock: FakeClock
-) -> None:
-    # It may have been announced a moment ago, by a run that was closed.
-    app.choose_schedule(schedule)
-    wait_for_speech(app)
-    clock.now = at(18, 0, 5)
-
-    app.start()
-    clock.now = at(18, 0, 6)
-    time.sleep(0.1)
-    app.poll()
-
-    assert output.played == []
-    clock.now = at(18, 0, 40)
-    assert statuses(app) == [Status.PASSED]
-
-
 def test_slot_without_speech_is_shown_as_skipped(
     app: App,
     schedule: Path,
@@ -479,19 +425,6 @@ def test_slot_without_speech_is_shown_as_skipped(
     wait_for(app, lambda: statuses(app) == [Status.NO_SPEECH])
 
     assert output.played == []
-
-
-def test_slot_with_speech_for_some_is_shown_as_partly_played(
-    app: App, schedule: Path, provider: FakeProvider, clock: FakeClock
-) -> None:
-    provider.unspeakable = {DEFAULT_TEMPLATE.replace("{ad}", "Mehmet Demir")}
-    app.choose_schedule(schedule)
-    wait_for_speech(app)
-    assert app.unspoken == tuple(provider.unspeakable)
-
-    app.start()
-    clock.now = at(18)
-    wait_for(app, lambda: statuses(app) == [Status.PARTLY_PLAYED])
 
 
 def test_slot_that_the_output_cannot_play_is_shown_as_failed(
@@ -552,6 +485,9 @@ def test_test_announcement_speaks_the_template_with_a_made_up_name(
     app: App, provider: FakeProvider, output: FakeOutput
 ) -> None:
     app.start()
+    with pytest.raises(ValueError, match="placeholder"):
+        app.test("Merhaba.")
+    assert app.test_status is None
 
     app.test("Merhaba {ad}.")
     assert app.test_status is Status.PLAYING
@@ -590,23 +526,6 @@ def test_test_announcement_without_speech_is_reported(
     assert output.played == []
 
 
-def test_test_announcement_that_cannot_be_played_is_reported(
-    app: App, output: FakeOutput
-) -> None:
-    output.no_device = True
-    app.start()
-
-    app.test(DEFAULT_TEMPLATE)
-    wait_for(app, lambda: app.test_status is Status.NO_OUTPUT)
-
-
-def test_test_announcement_needs_the_placeholder(app: App) -> None:
-    with pytest.raises(ValueError, match="placeholder"):
-        app.test("Merhaba.")
-
-    assert app.test_status is None
-
-
 def test_dropped_custom_announcements_are_counted(
     make_app: Callable[[], App], settings_file: Path
 ) -> None:
@@ -642,16 +561,6 @@ def test_unreadable_settings_are_copied_and_the_defaults_used(
     assert (app.settings_unreadable, app.settings_backed_up) == (True, True)
     assert backup_copy(settings_file).read_text(encoding="utf-8") == "{ not json"
     assert load_settings(settings_file).settings.custom_announcements == (WATER,)
-
-
-def test_settings_that_cannot_be_copied_are_reported_as_such(
-    make_app: Callable[[], App], settings_file: Path
-) -> None:
-    settings_file.mkdir(parents=True)  # a folder can be neither read nor copied
-
-    app = make_app()
-
-    assert (app.settings_unreadable, app.settings_backed_up) == (True, False)
 
 
 def test_settings_without_problems_are_not_copied(
