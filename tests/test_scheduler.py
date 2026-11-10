@@ -3,7 +3,7 @@
 import datetime
 import threading
 
-from announcer.scheduler import Scheduler, due_slot
+from announcer.scheduler import Scheduler, due_slot, missed_slots
 from announcer.timetable import Slot, Timetable
 
 MONDAY = datetime.date(2026, 11, 9)
@@ -36,9 +36,16 @@ class FakeClock:
 def make_scheduler(
     clock: FakeClock, timetable: Timetable = TIMETABLE
 ) -> tuple[Scheduler, list[Slot]]:
-    """Return a scheduler that is driven by hand and the slots it reports."""
+    """Return a scheduler that is driven by hand and the slots it reports as due."""
     reported: list[Slot] = []
-    return Scheduler(timetable, reported.append, clock), reported
+    scheduler = Scheduler(
+        timetable, lambda date, slot: reported.append(slot), ignore, clock
+    )
+    return scheduler, reported
+
+
+def ignore(date: datetime.date, slot: Slot) -> None:
+    """Take a reported slot and do nothing with it."""
 
 
 def test_the_test_monday_is_a_monday() -> None:
@@ -196,11 +203,12 @@ def test_background_thread_reports_a_due_slot_and_stops() -> None:
     reported: list[Slot] = []
     done = threading.Event()
 
-    def on_due(slot: Slot) -> None:
+    def on_due(date: datetime.date, slot: Slot) -> None:
         reported.append(slot)
         done.set()
 
-    scheduler = Scheduler(TIMETABLE, on_due, FakeClock(at(18, 0)), interval=0.01)
+    clock = FakeClock(at(18, 0))
+    scheduler = Scheduler(TIMETABLE, on_due, ignore, clock, interval=0.01)
     scheduler.start()
     try:
         assert done.wait(timeout=5)
@@ -217,14 +225,14 @@ def test_background_thread_survives_a_failing_callback() -> None:
     failed = threading.Event()
     done = threading.Event()
 
-    def on_due(slot: Slot) -> None:
+    def on_due(date: datetime.date, slot: Slot) -> None:
         if not failed.is_set():
             failed.set()
             raise RuntimeError("the first hand-over fails")
         reported.append(slot)
         done.set()
 
-    scheduler = Scheduler(TIMETABLE, on_due, clock, interval=0.01)
+    scheduler = Scheduler(TIMETABLE, on_due, ignore, clock, interval=0.01)
     scheduler.start()
     try:
         assert failed.wait(timeout=5)
@@ -242,3 +250,125 @@ def test_stopping_a_scheduler_that_never_started_is_harmless() -> None:
     scheduler.stop()
 
     assert reported == []
+
+
+def test_slots_whose_minute_went_by_between_two_looks_are_missed() -> None:
+    missed = missed_slots(TIMETABLE, at(17, 59, 30), at(18, 2, 10))
+
+    assert missed == [(MONDAY, MONDAY_SIX), (MONDAY, MONDAY_SIX_OH_ONE)]
+
+
+def test_slot_of_the_minute_of_either_look_is_not_missed() -> None:
+    # 18:00 was dealt with at the first look, and 18:01 is still due.
+    assert missed_slots(TIMETABLE, at(18, 0, 5), at(18, 1, 59)) == []
+    assert missed_slots(TIMETABLE, at(18, 0, 59), at(18, 2)) == [
+        (MONDAY, MONDAY_SIX_OH_ONE)
+    ]
+
+
+def test_missed_slots_come_with_their_dates_oldest_first() -> None:
+    tuesday = MONDAY + datetime.timedelta(days=1)
+
+    missed = missed_slots(TIMETABLE, at(18, 0, 30), at(9, 0, days_later=2))
+
+    assert missed == [(MONDAY, MONDAY_SIX_OH_ONE), (tuesday, TUESDAY_SIX)]
+
+
+def test_nothing_is_missed_when_the_clock_goes_back() -> None:
+    assert missed_slots(TIMETABLE, at(18, 5), at(17, 0)) == []
+
+
+def make_watched_scheduler(
+    clock: FakeClock,
+) -> tuple[Scheduler, list[Slot], list[tuple[datetime.date, Slot]]]:
+    """Return a scheduler driven by hand, the slots it reports as due and
+    those it reports as missed."""
+    due: list[Slot] = []
+    missed: list[tuple[datetime.date, Slot]] = []
+    scheduler = Scheduler(
+        TIMETABLE,
+        lambda date, slot: due.append(slot),
+        lambda date, slot: missed.append((date, slot)),
+        clock,
+    )
+    return scheduler, due, missed
+
+
+def test_scheduler_reports_the_date_with_a_due_slot() -> None:
+    dates: list[datetime.date] = []
+    clock = FakeClock(at(18, 0, days_later=1))
+    scheduler = Scheduler(
+        TIMETABLE, lambda date, slot: dates.append(date), ignore, clock
+    )
+
+    scheduler.check()
+
+    assert dates == [MONDAY + datetime.timedelta(days=1)]
+
+
+def test_scheduler_reports_the_slots_it_slept_through() -> None:
+    clock = FakeClock(at(17, 59, 30))
+    scheduler, due, missed = make_watched_scheduler(clock)
+
+    scheduler.check()
+    clock.now = at(18, 30)  # the computer slept through 18:00 and 18:01
+    scheduler.check()
+
+    assert due == []
+    assert missed == [(MONDAY, MONDAY_SIX), (MONDAY, MONDAY_SIX_OH_ONE)]
+
+
+def test_scheduler_misses_nothing_while_it_checks_every_second() -> None:
+    clock = FakeClock(at(17, 59, 58))
+    scheduler, due, missed = make_watched_scheduler(clock)
+
+    for second in range(58, 60 + 125):
+        clock.now = at(17, 59) + datetime.timedelta(seconds=second)
+        scheduler.check()
+
+    assert due == [MONDAY_SIX, MONDAY_SIX_OH_ONE]
+    assert missed == []
+
+
+def test_slot_announced_before_a_sleep_is_not_reported_as_missed() -> None:
+    clock = FakeClock(at(18, 0, 5))
+    scheduler, due, missed = make_watched_scheduler(clock)
+
+    scheduler.check()
+    clock.now = at(20, 0)
+    scheduler.check()
+
+    assert due == [MONDAY_SIX]
+    assert missed == [(MONDAY, MONDAY_SIX_OH_ONE)]
+
+
+def test_slot_is_still_announced_when_the_computer_wakes_within_its_minute() -> None:
+    clock = FakeClock(at(17, 0))
+    scheduler, due, missed = make_watched_scheduler(clock)
+
+    scheduler.check()
+    clock.now = at(18, 1, 40)
+    scheduler.check()
+
+    assert due == [MONDAY_SIX_OH_ONE]
+    assert missed == [(MONDAY, MONDAY_SIX)]
+
+
+def test_first_check_reports_nothing_as_missed() -> None:
+    scheduler, due, missed = make_watched_scheduler(FakeClock(at(23, 0)))
+
+    scheduler.check()
+
+    assert (due, missed) == ([], [])
+
+
+def test_only_the_last_week_of_a_long_gap_is_reported_as_missed() -> None:
+    clock = FakeClock(at(12, 0))
+    scheduler, _, missed = make_watched_scheduler(clock)
+
+    scheduler.check()
+    clock.now = at(12, 0, days_later=365)  # more likely a corrected clock
+    scheduler.check()
+
+    assert len(missed) == len(TIMETABLE.slots)
+    assert min(date for date, _ in missed) > at(12, 0, days_later=357).date()
