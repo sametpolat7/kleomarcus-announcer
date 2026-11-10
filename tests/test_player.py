@@ -1,5 +1,6 @@
 """Tests for announcing queued texts and for the pygame audio output."""
 
+import datetime
 import threading
 import time
 import wave
@@ -320,6 +321,18 @@ def test_background_thread_plays_the_queue_in_order(
 
     assert output.played == [CHIME, AYSE, CHIME, MEHMET]
     assert [playback.texts for playback in outcomes] == [("Ayşe",), ("Mehmet",)]
+
+
+def test_outcome_carries_the_due_time_the_texts_were_queued_with(
+    player: Player, outcomes: list[Playback]
+) -> None:
+    six_pm = datetime.datetime(2026, 11, 9, 18, 0)
+    player.enqueue(["Ayşe"], six_pm)
+    player.enqueue(["Mehmet"])
+
+    run_queue(player, outcomes, expected=2)
+
+    assert [playback.due for playback in outcomes] == [six_pm, None]
 
 
 def test_texts_queued_before_a_sleep_are_skipped_as_late(
