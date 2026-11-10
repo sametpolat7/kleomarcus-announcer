@@ -6,13 +6,13 @@ schedule file, the announcement template and the custom announcements.
 
 import datetime
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from platformdirs import user_config_dir
 
 from announcer import APP_NAME
+from announcer.files import write_atomically
 from announcer.models import CustomAnnouncement
 from announcer.template import DEFAULT_TEMPLATE, PLACEHOLDER, is_valid_template
 
@@ -81,10 +81,8 @@ def load_settings(path: Path) -> Settings:
 def save_settings(settings: Settings, path: Path) -> None:
     """Write ``settings`` to ``path``, creating its folder if needed.
 
-    The text goes to a temporary file that is flushed to disk and then
-    replaces the old one, so a save cut short, even by a power loss, leaves
-    the previous settings in place. Raises ``OSError`` if the file cannot be
-    written.
+    A save that is cut short leaves the previous settings in place. Raises
+    ``OSError`` if the file cannot be written.
     """
     data = {
         "voice": settings.voice,
@@ -101,13 +99,8 @@ def save_settings(settings: Settings, path: Path) -> None:
             for announcement in settings.custom_announcements
         ],
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f"{path.name}.tmp")
-    with temporary.open("w", encoding="utf-8") as file:
-        file.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-        file.flush()
-        os.fsync(file.fileno())
-    temporary.replace(path)
+    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    write_atomically(path, text.encode("utf-8"))
 
 
 def _text(value: object) -> str | None:
