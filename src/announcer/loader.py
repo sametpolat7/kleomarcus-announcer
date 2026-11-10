@@ -30,6 +30,10 @@ class UnreadableFileError(ScheduleFileError):
     """The file is missing, inaccessible, or not a valid .xlsx workbook."""
 
 
+class WrongFileTypeError(ScheduleFileError):
+    """The file is not an Excel workbook, going by its name."""
+
+
 class MissingColumnsError(ScheduleFileError):
     """The header row lacks one or more required columns."""
 
@@ -89,9 +93,11 @@ _WEEKDAYS: dict[str, int] = {
 def load_schedule(path: Path) -> LoadedSchedule:
     """Load the schedule at ``path``.
 
-    Raises ``ScheduleFileError`` if the file cannot be read or lacks a
-    required column.
+    Raises ``ScheduleFileError`` if the file is not an ``.xlsx`` workbook,
+    cannot be read or lacks a required column.
     """
+    if path.suffix.lower() != ".xlsx":
+        raise WrongFileTypeError(f"{path.name} is not an .xlsx file")
     rows = _read_rows(path)
     if not rows:
         raise MissingColumnsError(REQUIRED_COLUMNS)
