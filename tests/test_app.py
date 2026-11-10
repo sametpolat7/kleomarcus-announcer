@@ -153,6 +153,113 @@ def test_failed_refresh_keeps_the_schedule_that_was_read_last(
     assert [row.summary for row in app.rows()] == ["Ayşe Yılmaz"]
 
 
+def seconds_later(clock: FakeClock, seconds: int) -> None:
+    clock.now += datetime.timedelta(seconds=seconds)
+
+
+def test_schedule_file_that_was_saved_is_read_again_by_itself(
+    app: App, schedule: Path, clock: FakeClock
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    write_schedule(schedule, [*ROWS, ("Elif Şahin", "Pazartesi", "20:30")])
+
+    # The first look finds the file changed, the second finds it settled.
+    seconds_later(clock, 2)
+    assert not app.poll()
+    assert len(app.rows()) == 1
+    seconds_later(clock, 2)
+    assert app.poll()
+
+    assert [row.summary for row in app.rows()] == [
+        "Ayşe Yılmaz, Mehmet Demir",
+        "Elif Şahin",
+    ]
+    assert app.refreshed_at == clock.now
+
+
+def test_schedule_file_is_not_read_again_while_it_is_unchanged(
+    app: App, schedule: Path, clock: FakeClock
+) -> None:
+    app.choose_schedule(schedule)
+    refreshed_at = app.refreshed_at
+
+    for _ in range(5):
+        seconds_later(clock, 2)
+        app.poll()
+
+    assert app.refreshed_at == refreshed_at
+
+
+def test_schedule_file_is_looked_at_only_every_other_second(
+    app: App, schedule: Path, clock: FakeClock
+) -> None:
+    app.choose_schedule(schedule)
+    refreshed_at = app.refreshed_at
+    write_schedule(schedule, ROWS[:1])
+
+    for _ in range(10):
+        app.poll()  # the clock stands still, as between two quick polls
+
+    assert app.refreshed_at == refreshed_at
+
+
+def test_schedule_file_that_is_still_being_written_is_left_alone(
+    app: App, schedule: Path, clock: FakeClock
+) -> None:
+    app.choose_schedule(schedule)
+    refreshed_at = app.refreshed_at
+
+    for size in (100, 200, 300):
+        schedule.write_bytes(b"x" * size)  # another part of the file arrives
+        seconds_later(clock, 2)
+        app.poll()
+
+    assert (app.refreshed_at, app.schedule_error) == (refreshed_at, None)
+
+
+def test_schedule_file_that_disappears_is_reported_and_read_when_it_returns(
+    app: App, schedule: Path, clock: FakeClock
+) -> None:
+    app.choose_schedule(schedule)
+    schedule.unlink()
+    for _ in range(2):
+        seconds_later(clock, 2)
+        app.poll()
+
+    assert isinstance(app.schedule_error, ScheduleFileError)
+    assert len(app.rows()) == 1  # the last good schedule stays in use
+
+    write_schedule(schedule, ROWS[:1])
+    for _ in range(2):
+        seconds_later(clock, 2)
+        app.poll()
+
+    assert app.schedule_error is None
+    assert [row.summary for row in app.rows()] == ["Ayşe Yılmaz"]
+
+
+def test_missing_speech_is_tried_again_every_few_minutes(
+    app: App, schedule: Path, provider: FakeProvider, clock: FakeClock
+) -> None:
+    provider.offline = True
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    asked = len(provider.calls)
+
+    seconds_later(clock, 240)
+    app.poll()
+    assert len(provider.calls) == asked  # too early to try again
+
+    provider.offline = False
+    seconds_later(clock, 61)
+    app.poll()
+    wait_for_speech(app)
+
+    assert not app.unspoken
+    assert len(provider.calls) == asked + 3
+
+
 def test_skipped_rows_are_kept_for_the_window(app: App, tmp_path: Path) -> None:
     rows = [*ROWS, ("Can Aydın", "Pazartesi", "akşam"), ("", "Funday", "18:00")]
 
@@ -424,6 +531,19 @@ def test_test_announcement_speaks_the_template_with_a_made_up_name(
     # Trying a template out neither stores it nor counts as an announcement.
     assert app.settings.template == DEFAULT_TEMPLATE
     assert app.last_announcement is None
+
+
+def test_any_text_can_be_tried_out(
+    app: App, provider: FakeProvider, output: FakeOutput
+) -> None:
+    app.start()
+
+    app.preview("Lütfen salonu temiz tutunuz.")
+    wait_for(app, lambda: app.test_status is Status.PLAYED)
+
+    assert provider.calls == [("Lütfen salonu temiz tutunuz.", app.settings.voice)]
+    assert len(output.played) == 2
+    assert app.settings.custom_announcements == ()
 
 
 def test_test_announcement_without_speech_is_reported(
