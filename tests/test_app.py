@@ -508,7 +508,7 @@ def test_actions_and_outcomes_are_logged_with_their_cause(
     log = caplog.text
     assert "Schedule loaded from" in log
     assert "3 session(s), 0 row(s) skipped" in log
-    assert 'Custom announcement added: "Su içmeyi unutmayın." at 19:00 on' in log
+    assert 'Custom announcement added: "Su içmeyi unutmayın." at 19:00 on every' in log
     assert 'No speech for "Mehmet Demir, antrenmanınız başlamıştır.' in log
     assert '18:00 announced: "Ayşe Yılmaz, antrenmanınız başlamıştır.' in log
     assert '18:00 skipped, no stored speech: "Mehmet Demir, antrenmanınız' in log

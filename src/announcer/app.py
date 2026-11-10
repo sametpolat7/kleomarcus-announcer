@@ -21,7 +21,12 @@ from announcer.loader import (
     SkippedRow,
     load_schedule,
 )
-from announcer.models import WEEKDAY_NAMES, AthleteEntry, CustomAnnouncement
+from announcer.models import (
+    ALL_WEEKDAYS,
+    WEEKDAY_NAMES,
+    AthleteEntry,
+    CustomAnnouncement,
+)
 from announcer.player import AudioOutput, Playback, Player
 from announcer.scheduler import Scheduler
 from announcer.settings import (
@@ -446,5 +451,9 @@ def _quoted(texts: Iterable[str]) -> str:
 
 def _described(announcement: CustomAnnouncement) -> str:
     """Return a custom announcement for a log line."""
-    days = ", ".join(WEEKDAY_NAMES[day] for day in sorted(announcement.weekdays))
+    days = (
+        "every day"
+        if announcement.weekdays == ALL_WEEKDAYS
+        else ", ".join(WEEKDAY_NAMES[day] for day in sorted(announcement.weekdays))
+    )
     return f'"{announcement.text}" at {announcement.time:%H:%M} on {days}'
