@@ -95,7 +95,8 @@ def today_title(now: datetime.datetime) -> str:
 
 def last_loaded(moment: datetime.datetime | None) -> str:
     """Return the line that says when the schedule file was last read."""
-    return f"Son Yüklenme Tarihi: {f'{moment:%d.%m.%Y %H:%M:%S}' if moment else '—'}"
+    when = f"{moment:%d.%m.%Y %H:%M:%S}" if moment else "—"
+    return f"Son Yüklenme Tarihi: {when}"
 
 
 def last_announcement(last: LastAnnouncement | None) -> str:

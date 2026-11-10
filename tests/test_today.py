@@ -31,7 +31,7 @@ def statuses(
 
 
 def test_rows_list_todays_slots_in_time_order() -> None:
-    # Athletes are listed by name and counted; a custom announcement by its text.
+    # Athletes are listed by name; a custom announcement by its text.
     assert todays_rows(TIMETABLE, at(8), {}) == (
         Row(SIX_PM, ATHLETES, Status.NEXT),
         Row(SEVEN_PM, REMINDER, Status.WAITING),
