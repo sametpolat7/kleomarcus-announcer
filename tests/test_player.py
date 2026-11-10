@@ -11,6 +11,7 @@ import pytest
 
 from announcer.chime import CHIME_PATH
 from announcer.player import Playback, PlaybackError, Player, PygameOutput
+from fakes import FakeOutput
 
 CHIME = Path("chime.wav")
 AYSE, MEHMET, ZEYNEP = Path("ayse.mp3"), Path("mehmet.mp3"), Path("zeynep.mp3")
@@ -25,55 +26,6 @@ class FakeClock:
 
     def __call__(self) -> float:
         return self.now
-
-
-class FakeOutput:
-    """An output that records what it was asked to play.
-
-    Each file is busy for one look, or for ever if ``endless`` is set.
-    ``while_playing`` is called during a look with the file, which is where a
-    test lets time pass.
-    """
-
-    def __init__(self) -> None:
-        self.played: list[Path] = []
-        self.opened = 0
-        self.closed = 0
-        self.no_device = False
-        self.unplayable: set[Path] = set()
-        self.endless = False
-        self.while_playing: Callable[[Path], None] = lambda path: None
-        self.while_closing: Callable[[], None] = lambda: None
-        self._busy = False
-
-    def open(self) -> None:
-        if self.no_device:
-            raise PlaybackError("no sound device")
-        self.opened += 1
-
-    def start(self, path: Path) -> None:
-        if path in self.unplayable:
-            raise PlaybackError(f"cannot play {path}")
-        self.played.append(path)
-        self._busy = True
-
-    def busy(self) -> bool:
-        if self._busy:
-            self._busy = self.endless
-            self.while_playing(self.played[-1])
-            return True
-        return False
-
-    def close(self) -> None:
-        self.closed += 1
-        self.while_closing()
-
-
-@pytest.fixture
-def no_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Take the real-time pauses out; for the tests that use the fake output."""
-    monkeypatch.setattr(Player, "_GAP", 0.0)
-    monkeypatch.setattr(Player, "_POLL", 0.0)
 
 
 @pytest.fixture
