@@ -1,0 +1,164 @@
+"""The Turkish wording of what the window shows.
+
+Nothing here touches tkinter, so the wording can be tested without a display.
+"""
+
+import datetime
+from collections.abc import Iterable
+
+from announcer.app import App, LastAnnouncement, unreadable_copy
+from announcer.loader import MissingColumnsError, RowProblem, ScheduleFileError
+from announcer.models import ALL_WEEKDAYS, WEEKDAY_NAMES
+from announcer.template import PLACEHOLDER
+from announcer.timetable import Conflict, SlotHolder
+from announcer.today import Status
+
+SLEEP_NOTICE = "Uyku modunda anonslar seslendirilmez."
+NO_WARNINGS = "Uyarı yok."
+TEMPLATE_HINT = f"“{PLACEHOLDER}” yerine sporcunun adı ve soyadı okunur."
+TEMPLATE_NEEDS_PLACEHOLDER = f"Şablonda “{PLACEHOLDER}” yer tutucusu bulunmalıdır."
+CANNOT_SAVE = "Değişiklik kaydedilemedi. Ayrıntılar kayıt dosyasındadır."
+
+STATUS: dict[Status, str] = {
+    Status.WAITING: "Bekliyor",
+    Status.NEXT: "Sıradaki",
+    Status.PASSED: "Saati geçti",
+    Status.PLAYING: "Okunuyor",
+    Status.PLAYED: "Okundu",
+    Status.PARTLY_PLAYED: "Eksik okundu",
+    Status.NO_SPEECH: "Atlandı (ses yok)",
+    Status.ASLEEP: "Atlandı (uyku modu)",
+    Status.NO_OUTPUT: "Hata (ses çıkışı)",
+    Status.CONFLICT: "Atlandı (çakışma)",
+}
+
+_TEST_STATUS: dict[Status, str] = {
+    Status.PLAYING: "Test anonsu hazırlanıyor…",
+    Status.PLAYED: "Test anonsu okundu.",
+    Status.NO_SPEECH: (
+        "Test anonsunun sesi oluşturulamadı. İnternet bağlantısını kontrol edin."
+    ),
+    Status.NO_OUTPUT: "Test anonsu okunamadı. Ses çıkışını kontrol edin.",
+}
+
+_ROW_PROBLEMS: dict[RowProblem, str] = {
+    RowProblem.MISSING_NAME: "ad soyad boş",
+    RowProblem.UNKNOWN_DAY: "gün tanınmadı",
+    RowProblem.INVALID_TIME: "saat geçersiz",
+}
+
+_HOLDERS: dict[SlotHolder, str] = {
+    SlotHolder.ATHLETES: "sporcu anonsu",
+    SlotHolder.CUSTOM_ANNOUNCEMENT: "başka bir özel anons",
+}
+
+_MONTHS = (
+    "Ocak",
+    "Şubat",
+    "Mart",
+    "Nisan",
+    "Mayıs",
+    "Haziran",
+    "Temmuz",
+    "Ağustos",
+    "Eylül",
+    "Ekim",
+    "Kasım",
+    "Aralık",
+)
+
+
+def kind(custom: bool) -> str:
+    """Return the word for a custom announcement or for athletes."""
+    return "Özel" if custom else "Sporcu"
+
+
+def days(weekdays: Iterable[int]) -> str:
+    """Return the weekdays of a custom announcement, in order."""
+    chosen = sorted(weekdays)
+    if chosen == sorted(ALL_WEEKDAYS):
+        return "Her gün"
+    return ", ".join(WEEKDAY_NAMES[day] for day in chosen)
+
+
+def today_title(now: datetime.datetime) -> str:
+    """Return the heading of today's preview, such as "9 Kasım 2026 Pazartesi"."""
+    month, weekday = _MONTHS[now.month - 1], WEEKDAY_NAMES[now.weekday()]
+    return f"{now.day} {month} {now.year} {weekday}"
+
+
+def refreshed(moment: datetime.datetime | None) -> str:
+    """Return the line that says when the schedule file was last read."""
+    return f"Son yenileme: {moment:%d.%m.%Y %H:%M:%S}" if moment else "Son yenileme: —"
+
+
+def last_announcement(last: LastAnnouncement | None) -> str:
+    """Return the line about the announcement that came due most recently."""
+    if last is None:
+        return "Son anons: —"
+    return f"Son anons: {last.due:%H:%M} · {last.summary} · {STATUS[last.status]}"
+
+
+def activity(generating: bool, test: Status | None) -> str:
+    """Return the line about what the app is busy with, and the latest test."""
+    parts = [
+        "Sesler oluşturuluyor…" if generating else "",
+        "" if test is None else _TEST_STATUS.get(test, STATUS[test]),
+    ]
+    return "  ·  ".join(part for part in parts if part)
+
+
+def schedule_error(error: ScheduleFileError) -> str:
+    """Return why a schedule file cannot be used."""
+    if isinstance(error, MissingColumnsError):
+        return f"Program dosyasında şu sütunlar eksik: {', '.join(error.columns)}."
+    return "Program dosyası okunamadı. Geçerli bir Excel (.xlsx) dosyası olmalıdır."
+
+
+def conflict_alert(conflicts: Iterable[Conflict]) -> str:
+    """Return why a custom announcement cannot be saved."""
+    lines = [
+        f"• {WEEKDAY_NAMES[conflict.weekday]} {conflict.announcement.time:%H:%M}: "
+        f"{_HOLDERS[conflict.holder]} var"
+        for conflict in conflicts
+    ]
+    return "\n".join(["Bu saat dolu olduğu için anons kaydedilemedi:", *lines])
+
+
+def warnings(app: App) -> list[str]:
+    """Return everything the operator should know about, most basic first."""
+    lines: list[str] = []
+    if app.settings_unreadable:
+        kept = unreadable_copy(app.settings_file).name
+        lines.append(
+            "Ayarlar dosyası okunamadı; varsayılan ayarlar kullanılıyor. "
+            f"Eski dosya “{kept}” adıyla saklandı."
+        )
+    if app.dropped_announcements:
+        lines.append(
+            f"Ayarlar dosyasındaki {app.dropped_announcements} özel anons "
+            "geçersiz olduğu için yok sayıldı."
+        )
+    if app.settings.schedule_path is None:
+        lines.append(
+            "Program dosyası seçilmedi. “Dosya Seç” ile bir Excel dosyası seçin."
+        )
+    if app.schedule_error is not None:
+        kept = " Son okunan program kullanılıyor." if app.refreshed_at else ""
+        lines.append(schedule_error(app.schedule_error) + kept)
+    for skipped in app.skipped_rows:
+        problems = ", ".join(_ROW_PROBLEMS[problem] for problem in skipped.problems)
+        lines.append(f"Program dosyasında {skipped.row}. satır atlandı: {problems}.")
+    for conflict in app.timetable.conflicts:
+        announcement = conflict.announcement
+        lines.append(
+            f"“{announcement.text}” özel anonsu {WEEKDAY_NAMES[conflict.weekday]} "
+            f"{announcement.time:%H:%M} için atlanıyor: aynı saatte "
+            f"{_HOLDERS[conflict.holder]} var."
+        )
+    if app.unspoken:
+        lines.append(
+            f"{len(app.unspoken)} anonsun sesi oluşturulamadı. İnternet bağlantısını "
+            "kontrol edip “Yenile”ye basın."
+        )
+    return lines

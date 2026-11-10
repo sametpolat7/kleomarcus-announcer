@@ -109,7 +109,7 @@ class App:
         clock: Callable[[], datetime.datetime] = datetime.datetime.now,
         interval: float = 1.0,
     ) -> None:
-        self._settings_file = settings_file
+        self.settings_file = settings_file
         self._clock = clock
         self._events: queue.SimpleQueue[_Event] = queue.SimpleQueue()
 
@@ -141,7 +141,7 @@ class App:
 
     def start(self) -> None:
         """Load the schedule and start announcing."""
-        _log.info("Started; the settings are in %s", self._settings_file)
+        _log.info("Started; the settings are in %s", self.settings_file)
         self._scheduler.start()
         self._player.start()
         self.refresh()
@@ -289,7 +289,7 @@ class App:
 
     def _load_settings(self) -> LoadedSettings:
         """Load the settings, or set an unreadable file aside and use defaults."""
-        path = self._settings_file
+        path = self.settings_file
         try:
             loaded = load_settings(path)
         except SettingsFileError:
@@ -311,7 +311,7 @@ class App:
 
     def _save(self, settings: Settings) -> None:
         """Store ``settings`` and use them from now on."""
-        save_settings(settings, self._settings_file)
+        save_settings(settings, self.settings_file)
         self.settings = settings
 
     def _save_announcements(self, announcements: Iterable[CustomAnnouncement]) -> None:
