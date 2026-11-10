@@ -1,5 +1,3 @@
-"""Tests for the generated chime and the bundled copy of it."""
-
 import array
 import io
 import sys
@@ -24,7 +22,6 @@ def test_chime_is_short_audible_and_free_of_clicks() -> None:
     samples = read_samples(render_chime())
 
     assert 1.5 < len(samples) / SAMPLE_RATE < 2.5
-    # It starts and ends on silence, and is loud without clipping.
     assert abs(samples[0]) <= 1
     assert abs(samples[-1]) <= 1
     assert 0.5 * 32767 < max(abs(sample) for sample in samples) < 0.7 * 32767

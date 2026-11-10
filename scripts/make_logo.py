@@ -1,6 +1,4 @@
-"""Write the logo: ``docs/logo.svg`` and the bundled window icons.
-
-Run with ``uv run scripts/make_logo.py`` after changing the drawing in
+"""Run with ``uv run scripts/make_logo.py`` after changing the drawing in
 ``announcer.logo``.
 """
 

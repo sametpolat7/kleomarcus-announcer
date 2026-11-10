@@ -1,5 +1,3 @@
-"""Tests for today's preview and for judging how an announcement fared."""
-
 import datetime
 
 import pytest
@@ -31,7 +29,6 @@ def statuses(
 
 
 def test_rows_list_todays_slots_in_time_order() -> None:
-    # Athletes are listed by name; a custom announcement by its text.
     assert todays_rows(TIMETABLE, at(8), {}) == (
         Row(SIX_PM, ATHLETES, Status.NEXT),
         Row(SEVEN_PM, REMINDER, Status.WAITING),
@@ -74,7 +71,6 @@ def test_known_outcome_is_shown_instead_of_the_clock() -> None:
 
 def test_outcome_of_another_day_or_of_what_was_there_before_does_not_count() -> None:
     yesterday = at(18) - datetime.timedelta(days=1)
-    # The slot at 19:00 held another announcement when it came due.
     outcomes = {
         (yesterday, ATHLETES): Status.PLAYED,
         (at(19), "Salon kapanıyor."): Status.PLAYED,
@@ -92,7 +88,6 @@ def test_custom_announcement_that_lost_todays_slot_is_listed_after_the_winner() 
         Row(SIX_PM, "Ayşe Yılmaz", Status.NEXT),
         Row(SIX_PM, "Salon kapanıyor.", Status.CONFLICT),
     )
-    # On Wednesday the slot is free, so the announcement is simply due.
     wednesday = at(8) + datetime.timedelta(days=2)
     assert todays_rows(timetable, wednesday, {}) == (
         Row(SIX_PM, "Salon kapanıyor.", Status.NEXT),

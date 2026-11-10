@@ -1,5 +1,3 @@
-"""Tests for the speech cache and the Edge provider, without a network."""
-
 import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -104,8 +102,6 @@ def test_ensure_all_generates_several_sentences_at_a_time(tmp_path: Path) -> Non
     together = threading.Barrier(3, timeout=5)
 
     class WaitingProvider:
-        """Answers only once three requests are under way at the same time."""
-
         def synthesize(self, text: str, voice: str) -> bytes:
             together.wait()
             return text.encode()

@@ -1,5 +1,3 @@
-"""Tests for the Turkish wording of the window."""
-
 import datetime
 from collections.abc import Callable
 from pathlib import Path
@@ -37,7 +35,6 @@ def test_activity() -> None:
     assert texts.activity(generating=True, test=Status.NO_SPEECH).startswith(
         "Sesler oluşturuluyor…  ·  Test anonsunun sesi oluşturulamadı."
     )
-    # A status without wording of its own falls back to the word of the table.
     assert texts.activity(generating=False, test=Status.ASLEEP) == (
         "Atlandı (uyku modu)"
     )

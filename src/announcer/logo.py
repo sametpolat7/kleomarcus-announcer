@@ -1,6 +1,4 @@
-"""The logo: the bars of a level meter on a dark tile.
-
-The logo is drawn here, so the app ships no third-party artwork.
+"""The logo is drawn here, so the app ships no third-party artwork.
 ``scripts/make_logo.py`` writes it to ``docs/logo.svg`` and, in the sizes a
 window icon needs, to ``assets``; those bundled files are what the app shows.
 """
@@ -26,7 +24,6 @@ type _Box = tuple[float, float, float, float]  # left, top, right, bottom
 
 
 def _bars(side: float = 1.0) -> list[_Box]:
-    """Return the bars, centred on a tile with the given side."""
     count = len(_BAR_HEIGHTS)
     step = _BAR_WIDTH + _BAR_GAP
     left = (1 - count * step + _BAR_GAP) / 2
@@ -42,8 +39,6 @@ def _bars(side: float = 1.0) -> list[_Box]:
 
 
 def render_svg() -> str:
-    """Return the logo as an SVG image."""
-
     def rectangle(box: _Box, radius: float, colour: tuple[int, int, int]) -> str:
         left, top, right, bottom = (round(value * 512, 2) for value in box)
         return (
@@ -63,7 +58,7 @@ def render_svg() -> str:
 
 
 def render_png(size: int) -> bytes:
-    """Return the logo as a square PNG image with ``size`` pixels a side."""
+    """``size`` is in pixels a side."""
     shapes = _bars(size)
     pixels = bytearray()
     for row in range(size):
@@ -106,5 +101,4 @@ def _coverage(x: float, y: float, box: _Box, radius: float) -> float:
 
 
 def icon_path(size: int) -> Path:
-    """Return where the bundled icon with ``size`` pixels a side lives."""
     return Path(__file__).parent / "assets" / f"icon-{size}.png"

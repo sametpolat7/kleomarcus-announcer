@@ -1,5 +1,3 @@
-"""Tests for loading and saving the settings file."""
-
 import datetime
 import json
 from pathlib import Path
@@ -89,7 +87,6 @@ def test_template_stored_with_the_old_placeholder_keeps_working(path: Path) -> N
 
     assert load_settings(path).settings.template == "Sayın {ad_soyad}, hoş geldiniz."
 
-    # Braces that merely look like the old placeholder are left as typed.
     write_json(path, {"template": "{ad_soyad}, {ad} salonu."})
     assert load_settings(path).settings.template == "{ad_soyad}, {ad} salonu."
 

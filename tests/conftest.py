@@ -1,5 +1,3 @@
-"""Fixtures shared by the test modules."""
-
 from collections.abc import Callable, Iterator
 from pathlib import Path
 

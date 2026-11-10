@@ -1,5 +1,3 @@
-"""The dialog that adds or changes a custom announcement."""
-
 import datetime
 import logging
 import tkinter as tk
@@ -17,11 +15,8 @@ _FOLLOW = 250  # milliseconds between two looks at how a test is going
 
 
 class AnnouncementDialog:
-    """A window over the main one with the text, time and days of an announcement.
-
-    ``index`` is the place of the announcement to change among the app's
-    custom announcements, or None to add a new one. The dialog saves through
-    the app, and stays open while what was entered cannot be saved.
+    """``index`` is the place of the announcement to change among the app's
+    custom announcements, or None to add a new one.
     """
 
     def __init__(self, parent: tk.Misc, app: App, index: int | None = None) -> None:
@@ -118,13 +113,11 @@ class AnnouncementDialog:
         entry.focus_set()
 
     def wait(self) -> None:
-        """Keep the main window out of reach until the dialog is closed."""
         self.window.wait_visibility()
         self.window.grab_set()
         self.window.wait_window()
 
     def test(self) -> None:
-        """Announce the text as entered, saved or not, so it can be heard first."""
         text = self.text.get().strip()
         if not text:
             self._alert(_NO_TEXT)
@@ -135,10 +128,8 @@ class AnnouncementDialog:
             self._follow_test()
 
     def _follow_test(self) -> None:
-        """Keep showing how the test goes for as long as the dialog is open.
-
-        The main window, which takes in what the app reports, keeps running
-        underneath; this only reads the outcome.
+        """The main window, which takes in what the app reports, keeps running
+        underneath; this only reads the test's outcome.
         """
         if not self.window.winfo_exists():
             return
@@ -150,7 +141,6 @@ class AnnouncementDialog:
         self.window.after(_FOLLOW, self._follow_test)
 
     def save(self) -> None:
-        """Save what was entered and close; say why if it cannot be saved."""
         announcement = self._entered()
         if announcement is None:
             return
@@ -165,7 +155,6 @@ class AnnouncementDialog:
             self.window.destroy()
 
     def _entered(self) -> CustomAnnouncement | None:
-        """Return the announcement as entered; say why if it is not valid."""
         text = self.text.get().strip()
         if not text:
             self._alert(_NO_TEXT)
@@ -186,7 +175,6 @@ class AnnouncementDialog:
         return CustomAnnouncement(text, time, weekdays)
 
     def choose_days(self) -> None:
-        """Follow a switch between every day and chosen days."""
         if not self.every_day.get() and all(day.get() for day in self.days):
             # Start from nothing ticked: ticking two days beats unticking five.
             for day in self.days:
@@ -194,7 +182,6 @@ class AnnouncementDialog:
         self.show_days()
 
     def show_days(self) -> None:
-        """Let the weekdays be ticked only when the choice is not every day."""
         state = "disabled" if self.every_day.get() else "!disabled"
         for box in self.day_boxes:
             box.state([state])

@@ -1,6 +1,4 @@
-"""Decide when a slot is due and report it from a background thread.
-
-A slot is announced at its time or not at all: by a scheduler that was already
+"""A slot is announced at its time or not at all: by a scheduler that was already
 running when the slot's minute began, at most half a minute late, and once per
 date. A slot whose minute began while the app was closed is not caught up on.
 Neither is one that the app could not announce in time although it ran,
@@ -26,11 +24,7 @@ LATE = datetime.timedelta(seconds=30)
 def due_slot(
     timetable: Timetable, now: datetime.datetime, fired: Collection[datetime.time]
 ) -> Slot | None:
-    """Return the slot to announce at ``now``, if there is one.
-
-    ``fired`` holds the times of the slots already dealt with on ``now``'s
-    date. A slot is no longer due when its minute began too long ago.
-    """
+    """``fired`` holds the times of the slots already dealt with on ``now``'s date."""
     minute = now.replace(second=0, microsecond=0)
     if minute.time() in fired or now - minute > LATE:
         return None
@@ -58,14 +52,9 @@ def missed_slots(
 
 
 class Scheduler:
-    """Check the clock on a background thread and report each due slot once.
-
-    ``on_due`` gets the date and the slot that is due now. ``on_missed`` gets
-    the date and each slot that came and went between two checks, which
-    happens when the computer sleeps. Both are called on the scheduler's
-    thread, so they should only hand the slot over, for example by putting it
-    on a queue. A scheduler runs once: after ``stop`` it cannot be started
-    again.
+    """``on_due`` and ``on_missed`` are called on the scheduler's thread, so they
+    should only hand the slot over, for example by putting it on a queue. A
+    scheduler runs once: after ``stop`` it cannot be started again.
     """
 
     # A week holds every slot once, and a longer gap between two checks is
@@ -92,18 +81,15 @@ class Scheduler:
         self._thread = threading.Thread(target=self._run, name="scheduler", daemon=True)
 
     def set_timetable(self, timetable: Timetable) -> None:
-        """Use ``timetable`` from the next check on; safe to call from any thread.
-
-        Slots already announced today stay announced, so replacing the
-        timetable within a slot's minute does not repeat it.
+        """Safe to call from any thread. Slots already announced today stay
+        announced, so replacing the timetable within a slot's minute does not
+        repeat it.
         """
         # Rebinding an attribute is atomic, so no lock is needed.
         self._timetable = timetable
 
     def start(self) -> None:
-        """Start checking the clock.
-
-        The slot of the minute that is running is left out: it began before
+        """The slot of the minute that is running is left out: it began before
         the scheduler did, and may have been announced by a run of the app
         that was closed a moment ago.
         """
@@ -111,15 +97,12 @@ class Scheduler:
         self._thread.start()
 
     def stop(self) -> None:
-        """Stop checking the clock and wait for the thread to end."""
         self._stopped.set()
         if self._thread.is_alive():
             self._thread.join()
 
     def check(self) -> None:
-        """Look at the clock once; report the slots missed since the last look
-        and the slot that is due now, if any. The first look only notes the
-        time, as the scheduler begins with it."""
+        """The first look only notes the time, as the scheduler begins with it."""
         now = self._clock()
         before, self._checked_at = self._checked_at, now
         minute = now.replace(second=0, microsecond=0)

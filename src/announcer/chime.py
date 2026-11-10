@@ -1,6 +1,4 @@
-"""The chime that is played before every announcement.
-
-The sound is synthesised here, so the app ships no third-party audio.
+"""The chime is synthesised here, so the app ships no third-party audio.
 ``scripts/make_chime.py`` writes it to ``assets/chime.wav``, and that bundled
 file is what the app plays.
 """

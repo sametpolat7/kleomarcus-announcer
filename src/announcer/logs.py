@@ -1,12 +1,10 @@
-"""Keep a log file of what the app did, in lines that are easy to read back.
-
-Every module logs through ``logging.getLogger(__name__)``. This module only
+"""Every module logs through ``logging.getLogger(__name__)``. This module only
 decides where the lines go and what they look like, for example::
 
     2026-11-10 18:00:00 INFO    announcer.app: 18:00 announced: "Ayşe Yılmaz, ..."
     2026-11-10 18:30:00 WARNING announcer.app: 18:30 skipped, no stored speech: ...
 
-The file holds athlete names, so it stays on the computer, next to the app's
+The log file holds athlete names, so it stays on the computer, next to the app's
 other per-user files.
 """
 
@@ -23,23 +21,18 @@ from announcer import APP_NAME
 
 _FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-_MAX_BYTES = 1_000_000  # a file that grows past this is set aside as ".1"
-_OLD_FILES = 3  # how many files that were set aside are kept
+_MAX_BYTES = 1_000_000
+_OLD_FILES = 3
 
 _log = logging.getLogger(__name__)
 
 
 def log_path() -> Path:
-    """Return where the log file lives for the current user."""
     return Path(user_log_dir(APP_NAME, appauthor=False)) / "announcer.log"
 
 
 def configure_logging(path: Path) -> None:
-    """Send the app's log lines, and every error that nothing caught, to ``path``.
-
-    The app's own modules log from ``INFO`` up and the libraries from
-    ``WARNING`` up. If the file cannot be opened the app runs without a log.
-    """
+    """If the file cannot be opened the app runs without a log."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         handler = RotatingFileHandler(
@@ -64,5 +57,4 @@ def _log_uncaught(
     error: BaseException | None,
     trace: TracebackType | None,
 ) -> None:
-    """Log an error that nothing caught, with its traceback."""
     _log.critical("Uncaught error", exc_info=(kind, error or kind(), trace))

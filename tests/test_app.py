@@ -1,5 +1,3 @@
-"""Tests for the app behind the window, with fake speech and a fake output."""
-
 import datetime
 import json
 import logging
@@ -164,7 +162,6 @@ def test_schedule_file_that_is_still_being_written_is_left_alone(
     app.choose_schedule(schedule)
     app.start()
 
-    # Another part of the file arrives between any two looks at it.
     for size in range(1, 60):
         schedule.write_bytes(b"x" * size)
         app.poll()
@@ -182,7 +179,7 @@ def test_schedule_file_that_disappears_is_reported_and_read_when_it_returns(
 
     schedule.unlink()
     wait_for(app, lambda: app.schedule_error is not None)
-    assert len(app.rows()) == 1  # the last good schedule stays in use
+    assert len(app.rows()) == 1
 
     write_schedule(schedule, ROWS[:1])
     wait_for(app, lambda: app.schedule_error is None)
@@ -217,7 +214,7 @@ def test_missing_speech_is_tried_again_every_few_minutes(
 
     clock.now += datetime.timedelta(minutes=4)
     assert not app.poll()
-    assert len(provider.calls) == asked  # too early to try again
+    assert len(provider.calls) == asked
 
     provider.offline = False
     clock.now += datetime.timedelta(minutes=1)
@@ -243,7 +240,7 @@ def test_schedule_file_that_cannot_be_read_is_tried_again_every_few_minutes(
 
     # The file looks no different once it can be read, so no change is seen.
     clock.now += datetime.timedelta(minutes=4)
-    assert not app.poll()  # too early to try again
+    assert not app.poll()
     clock.now += datetime.timedelta(minutes=1)
     assert app.poll()
 
@@ -258,7 +255,6 @@ def test_slot_that_is_running_when_the_app_starts_is_not_announced(
     clock: FakeClock,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # It may have been announced a moment ago, by a run that was closed.
     app.choose_schedule(schedule)
     wait_for_speech(app)
     clock.now = at(18, 0, 5)
@@ -266,7 +262,7 @@ def test_slot_that_is_running_when_the_app_starts_is_not_announced(
     with caplog.at_level(logging.WARNING, logger="announcer.app"):
         app.start()
 
-    assert statuses(app) == [Status.PASSED]  # shown as such at once
+    assert statuses(app) == [Status.PASSED]
     assert "18:00 not announced, its minute had begun when the app started" in (
         caplog.text
     )
@@ -353,7 +349,6 @@ def test_custom_announcement_is_changed_in_place(app: App) -> None:
     app.save_announcement(WATER)
     app.save_announcement(closing)
 
-    # Keeping its own time is no conflict with itself.
     changed = CustomAnnouncement("Bol su için.", SEVEN_PM, frozenset({0}))
     app.save_announcement(changed, replacing=0)
 
@@ -478,7 +473,7 @@ def test_slot_that_was_slept_through_is_shown_as_skipped(
     clock.now = at(9)
     wait_for(app, lambda: statuses(app)[0] is Status.PLAYED)
     played = list(output.played)
-    clock.now = at(18, 30)  # the computer slept through 18:00
+    clock.now = at(18, 30)
     wait_for(app, lambda: statuses(app)[1] is Status.ASLEEP)
 
     assert statuses(app) == [Status.PLAYED, Status.ASLEEP, Status.NEXT]
@@ -519,7 +514,6 @@ def test_test_announcement_speaks_the_template_with_a_made_up_name(
     assert provider.calls == [(f"Merhaba {TEST_NAME}.", app.settings.voice)]
     assert output.played[0] == CHIME_PATH
     assert len(output.played) == 2
-    # Trying a template out neither stores it nor counts as an announcement.
     assert app.settings.template == DEFAULT_TEMPLATE
     assert app.last_announcement is None
 
@@ -565,7 +559,6 @@ def test_dropped_custom_announcements_are_counted(
 
     assert app.dropped_announcements == 1
     assert len(app.settings.custom_announcements) == 1
-    # The next save leaves the dropped one out, so the file is copied first.
     assert app.settings_backed_up
     app.set_template("Hoş geldiniz, {ad_soyad}.")
     assert '"25:00"' not in settings_file.read_text(encoding="utf-8")

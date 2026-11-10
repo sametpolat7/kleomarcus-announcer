@@ -1,9 +1,6 @@
-"""The app behind the window: what it knows and what the operator can do.
-
-``App`` owns the settings, the schedule and the background threads. The
-window calls its methods and reads its attributes, all on the main thread.
-The background threads never touch that state: they put what happened on a
-queue, and ``poll`` takes it in on the main thread.
+"""The window calls ``App``'s methods and reads its attributes, all on the main
+thread. The background threads never touch that state: they put what happened
+on a queue, and ``poll`` takes it in on the main thread.
 """
 
 import dataclasses
@@ -48,7 +45,7 @@ from announcer.timetable import (
 from announcer.today import Row, Status, outcome_status, summary, todays_rows
 from announcer.tts import AudioCache, TtsError, TtsProvider
 
-TEST_NAME = "Ayşe Yılmaz"  # a made-up athlete for the test announcement
+TEST_NAME = "Ayşe Yılmaz"  # a made-up athlete
 
 _WATCH = 2.0  # seconds between two looks at the schedule file
 _REREADS = 3  # how often a changed schedule file that cannot be read is retried
@@ -60,8 +57,6 @@ _log = logging.getLogger(__name__)
 
 
 class SlotTakenError(Exception):
-    """A custom announcement cannot be saved: its slot is taken on some days."""
-
     def __init__(self, conflicts: tuple[Conflict, ...]) -> None:
         super().__init__("The slot is already taken")
         self.conflicts = conflicts
@@ -69,8 +64,6 @@ class SlotTakenError(Exception):
 
 @dataclass(frozen=True)
 class LastAnnouncement:
-    """The announcement that came due most recently, and how it fared."""
-
     due: datetime.datetime
     summary: str  # the athletes' names, or the custom announcement's text
     status: Status
@@ -78,42 +71,33 @@ class LastAnnouncement:
 
 @dataclass(frozen=True)
 class _Due:
-    """A slot came due and was handed to the player."""
-
     due: datetime.datetime
     slot: Slot
 
 
 @dataclass(frozen=True)
 class _Missed:
-    """A slot's minute went by while the computer was asleep."""
-
     due: datetime.datetime
     slot: Slot
 
 
 @dataclass(frozen=True)
 class _Generated:
-    """A round of speech generation ended."""
-
-    template: str  # the template that the round was for
-    unspoken: tuple[str, ...]  # the texts that still have no speech
+    template: str
+    unspoken: tuple[str, ...]
 
 
 class _TestUnspoken:
     """The speech for the test announcement could not be generated."""
 
 
-# What tells a file from an earlier version of itself: when it was changed and
-# its size, or None if there is no such file.
+# When a file was changed and its size, or None if there is no such file.
 type _FileState = tuple[int, int] | None
 _UNREAD: _FileState = (-1, -1)  # what no file looks like: it is read at a look
 
 
 @dataclass(frozen=True)
 class _FileSeen:
-    """What the schedule file looked like a moment ago."""
-
     path: Path
     state: _FileState
 
@@ -122,9 +106,7 @@ type _Event = _Due | _Missed | Playback | _Generated | _TestUnspoken | _FileSeen
 
 
 class App:
-    """The state of the app and the actions on it.
-
-    Call ``start`` once, ``poll`` regularly and ``stop`` at the end. The
+    """Call ``start`` once, ``poll`` regularly and ``stop`` at the end. The
     public attributes are for reading only.
     """
 
@@ -141,8 +123,8 @@ class App:
         self._clock = clock
         self._events: queue.SimpleQueue[_Event] = queue.SimpleQueue()
 
-        self.settings_unreadable = False  # the defaults are in use instead
-        self.settings_backed_up = False  # a copy of a file with problems was kept
+        self.settings_unreadable = False
+        self.settings_backed_up = False
         loaded = self._load_settings()
         self.settings: Settings = loaded.settings
         self.dropped_announcements: int = loaded.dropped
@@ -156,20 +138,20 @@ class App:
         self.refreshed_at: datetime.datetime | None = None  # the last good reading
         self.timetable = Timetable()
         # What the schedule file looked like when it was last read, and when it
-        # was last looked at; a file that was saved since is read again.
+        # was last looked at.
         self._read_file: _FileState = None
         self._seen_file: _FileState = None
         self._rereads = 0  # failed readings of the file as it is now
         self._read_at = clock()  # when the file was last read, or tried to be
         self._stopped = threading.Event()
 
-        self.generating = False  # speech is being generated right now
-        self.unspoken: tuple[str, ...] = ()  # the texts that have no speech
+        self.generating = False
+        self.unspoken: tuple[str, ...] = ()
         self._regenerate = False  # the texts changed while generating
         self._generated_at = clock()  # when a round of speech last began or ended
 
         self.last_announcement: LastAnnouncement | None = None
-        self.test_status: Status | None = None  # of the latest test announcement
+        self.test_status: Status | None = None
         self._outcomes: dict[tuple[datetime.datetime, str], Status] = {}
         self._summaries: dict[datetime.datetime, str] = {}  # of the slots playing
 
@@ -180,7 +162,6 @@ class App:
         self._player = Player(self._cache.find, output, self._on_played)
 
     def start(self) -> None:
-        """Load the schedule and start announcing."""
         _log.info("Started; the settings are in %s", self.settings_file)
         now = self._clock()
         self._scheduler.start()
@@ -202,17 +183,14 @@ class App:
         threading.Thread(target=self._watch, name="watch", daemon=True).start()
 
     def stop(self) -> None:
-        """Stop announcing, cutting off what is sounding."""
         self._stopped.set()
         self._scheduler.stop()
         self._player.stop()
         _log.info("Stopped")
 
     def refresh(self) -> None:
-        """Read the schedule file again and generate the speech that is missing.
-
-        If the file cannot be read, the schedule that was read last stays in
-        use and ``schedule_error`` says why.
+        """If the schedule file cannot be read, the schedule that was read last stays
+        in use and ``schedule_error`` says why.
         """
         path = self.settings.schedule_path
         if path is not None:
@@ -226,10 +204,8 @@ class App:
         self._rebuild()
 
     def choose_schedule(self, path: Path) -> None:
-        """Use the schedule file at ``path`` from now on.
-
-        Raises ``ScheduleFileError`` if it cannot be used and ``OSError`` if
-        the choice cannot be saved; nothing changes then.
+        """Raises ``ScheduleFileError`` if the file cannot be used and ``OSError``
+        if the choice cannot be saved; nothing changes then.
         """
         state = _file_state(path)
         loaded = load_schedule(path)
@@ -239,11 +215,7 @@ class App:
         self._rebuild()
 
     def set_template(self, template: str) -> None:
-        """Announce athletes with ``template`` once its speech is generated.
-
-        Until then, and for as long as the speech cannot be generated, the
-        athletes are announced with the template before it. Raises
-        ``ValueError`` if the template has no place for the name and
+        """Raises ``ValueError`` if the template has no place for the name and
         ``OSError`` if it cannot be saved; nothing changes then.
         """
         self._save(dataclasses.replace(self.settings, template=template))
@@ -253,11 +225,9 @@ class App:
     def save_announcement(
         self, announcement: CustomAnnouncement, replacing: int | None = None
     ) -> None:
-        """Add a custom announcement, or put it in place of the one at an index.
-
-        Raises ``SlotTakenError`` if it would share a slot with athletes or
-        with another custom announcement, and ``OSError`` if it cannot be
-        saved; nothing changes then.
+        """Raises ``SlotTakenError`` if the announcement would share a slot with
+        athletes or with another custom announcement, and ``OSError`` if it
+        cannot be saved; nothing changes then.
         """
         announcements = list(self.settings.custom_announcements)
         others = [
@@ -283,10 +253,7 @@ class App:
         self._rebuild()
 
     def delete_announcement(self, index: int) -> None:
-        """Delete the custom announcement at ``index``.
-
-        Raises ``OSError`` if that cannot be saved; nothing changes then.
-        """
+        """Raises ``OSError`` if the deletion cannot be saved; nothing changes then."""
         announcements = list(self.settings.custom_announcements)
         deleted = announcements.pop(index)
         self._save_announcements(announcements)
@@ -294,22 +261,13 @@ class App:
         self._rebuild()
 
     def test(self, template: str) -> None:
-        """Announce ``template`` with a made-up name, after what is queued.
-
-        The speech is generated first if it is not stored, which needs a
-        network connection. Raises ``ValueError`` if the template has no place
-        for the name.
-        """
+        """Raises ``ValueError`` if the template has no place for the name."""
         if not is_valid_template(template):
             raise ValueError(f"The template has no {PLACEHOLDER} placeholder")
         self.preview(render(template, TEST_NAME))
 
     def preview(self, text: str) -> None:
-        """Announce ``text`` once as a test, after what is queued.
-
-        The speech is generated first if it is not stored, which needs a
-        network connection. ``test_status`` tells how it went.
-        """
+        """``test_status`` tells how the test went."""
         _log.info('Test announcement requested: "%s"', text)
         self.test_status = Status.PLAYING
         threading.Thread(
@@ -317,16 +275,10 @@ class App:
         ).start()
 
     def rows(self) -> tuple[Row, ...]:
-        """Return today's announcements and how each one stands."""
         return todays_rows(self.timetable, self._clock(), self._outcomes)
 
     def poll(self) -> bool:
-        """Take in what the background threads reported since the last call.
-
-        This also reads the schedule file again when it was saved in the
-        meantime, and tries again what failed a while ago: reading that file,
-        or generating speech. Returns whether anything changed.
-        """
+        """Returns whether anything changed."""
         changed = False
         while True:
             try:
@@ -369,8 +321,7 @@ class App:
                     self.test_status = Status.NO_SPEECH
 
     def _follow(self, path: Path, state: _FileState) -> bool:
-        """Read the schedule file again if a look at it shows a change that
-        has settled; return whether it was read."""
+        """Return whether the schedule file was read again."""
         if path != self.settings.schedule_path:
             return False  # a look at a file that was replaced meanwhile
         if state == self._read_file or state != self._seen_file:
@@ -389,9 +340,9 @@ class App:
         return True
 
     def _retry_schedule(self) -> bool:
-        """Read again a schedule file that could not be read a while ago;
-        return whether that was done. There is no button for it, and a file
-        on a network drive may turn up without having changed."""
+        """Return whether the schedule file was read again. There is no button
+        for that, and a file on a network drive may turn up without having
+        changed."""
         if self.schedule_error is None or abs(self._clock() - self._read_at) < _RETRY:
             return False
         _log.info("Trying again to read the schedule file")
@@ -399,8 +350,7 @@ class App:
         return True
 
     def _retry_speech(self) -> bool:
-        """Ask again for speech that could not be generated a while ago;
-        return whether that was done."""
+        """Return whether speech was asked for again."""
         if (
             not self.unspoken
             or self.generating
@@ -412,17 +362,14 @@ class App:
         return True
 
     def _watch(self) -> None:
-        """Look at the schedule file every now and then; on a thread, as a
-        file on a network drive can take long to answer."""
+        """Runs on a thread, as a file on a network drive can take long to answer."""
         while not self._stopped.wait(_WATCH):
             path = self.settings.schedule_path
             if path is not None:
                 self._events.put(_FileSeen(path, _file_state(path)))
 
     def _load_settings(self) -> LoadedSettings:
-        """Load the settings, or the defaults if the file cannot be read.
-
-        A file that cannot be read, or that holds something unusable, is
+        """A settings file that cannot be read, or that holds something unusable, is
         copied first: the next save writes the file anew without that.
         """
         path = self.settings_file
@@ -447,7 +394,6 @@ class App:
         return loaded
 
     def _save(self, settings: Settings) -> None:
-        """Store ``settings`` and use them from now on."""
         save_settings(settings, self.settings_file)
         self.settings = settings
 
@@ -459,7 +405,6 @@ class App:
         )
 
     def _use(self, path: Path, loaded: LoadedSchedule) -> None:
-        """Take over a schedule that was just read from ``path``."""
         self._entries, self.skipped_rows = loaded.entries, loaded.skipped
         self.schedule_error = None
         self.refreshed_at = self._clock()
@@ -474,12 +419,10 @@ class App:
             _log.warning("Row %d of the schedule skipped: %s", skipped.row, problems)
 
     def _rebuild(self) -> None:
-        """Build the timetable anew and generate the speech that is missing."""
         self._build()
         self._generate()
 
     def _build(self) -> None:
-        """Build the timetable anew and announce by it from now on."""
         known = self.timetable.conflicts
         self.timetable = build_timetable(
             self._entries, self.settings.custom_announcements, self.spoken_template
@@ -506,11 +449,6 @@ class App:
             self._build()
 
     def _generate(self) -> None:
-        """Generate the speech that is not stored yet, on a background thread.
-
-        The speech is that of the template in the settings, which is not
-        announced with before all of it is there.
-        """
         if self.generating:
             self._regenerate = True  # once more when the running round ends
             return
@@ -536,7 +474,7 @@ class App:
         ).start()
 
     def _generate_all(self, template: str, texts: tuple[str, ...]) -> None:
-        """Generate the speech for ``texts`` and report what is left; on a thread."""
+        """Runs on a thread."""
         unspoken = texts
         try:
             unspoken = self._cache.ensure_all(texts)
@@ -547,7 +485,7 @@ class App:
             self._events.put(_Generated(template, unspoken))
 
     def _test(self, text: str) -> None:
-        """Generate the speech of the test announcement and queue it; on a thread."""
+        """Runs on a thread."""
         try:
             self._cache.ensure(text)
         except TtsError as error:
@@ -560,14 +498,14 @@ class App:
         self._events.put(_TestUnspoken())
 
     def _on_due(self, date: datetime.date, slot: Slot) -> None:
-        """Hand a due slot to the player; called on the scheduler's thread."""
+        """Called on the scheduler's thread."""
         due = datetime.datetime.combine(date, slot.time)
         _log.info("%s due: %s", f"{due:%H:%M}", _quoted(slot.texts))
         self._events.put(_Due(due, slot))
         self._player.enqueue(slot.texts, due)
 
     def _on_missed(self, date: datetime.date, slot: Slot) -> None:
-        """Note a slot that was slept through; called on the scheduler's thread."""
+        """Called on the scheduler's thread."""
         due = datetime.datetime.combine(date, slot.time)
         _log.warning(
             "%s skipped, the computer was asleep: %s",
@@ -577,7 +515,7 @@ class App:
         self._events.put(_Missed(due, slot))
 
     def _on_played(self, playback: Playback) -> None:
-        """Note how an announcement went; called on the player's thread."""
+        """Called on the player's thread."""
         name = "Test" if playback.due is None else f"{playback.due:%H:%M}"
         skipped = {*playback.missing, *playback.late}
         played = tuple(text for text in playback.texts if text not in skipped)
@@ -601,7 +539,6 @@ class App:
 
 
 def _file_state(path: Path) -> _FileState:
-    """Return what tells a file from an earlier version of itself."""
     try:
         status = path.stat()
     except OSError:
@@ -610,17 +547,14 @@ def _file_state(path: Path) -> _FileState:
 
 
 def backup_copy(settings_file: Path) -> Path:
-    """Return where a copy of a settings file with problems is kept."""
     return settings_file.with_name(f"{settings_file.name}.backup")
 
 
 def _quoted(texts: Iterable[str]) -> str:
-    """Return ``texts`` for a log line, each in quotes."""
     return ", ".join(f'"{text}"' for text in texts)
 
 
 def _described(announcement: CustomAnnouncement) -> str:
-    """Return a custom announcement for a log line."""
     days = (
         "every day"
         if announcement.weekdays == ALL_WEEKDAYS

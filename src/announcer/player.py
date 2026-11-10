@@ -1,13 +1,5 @@
-"""Play announcements through the default audio output, one slot at a time.
-
-Texts to announce are queued and played on a background thread: one chime,
-then the stored speech of each text. A text without stored speech is skipped
-and reported, so the app can show it.
-
-Nothing is announced late after a sleep. If the computer goes to sleep while
-texts are playing or waiting in the queue, they are skipped and reported when
-it wakes. Only a sleep of under half a minute goes unnoticed, and what was
-playing then carries on by that much.
+"""Nothing is announced late after a sleep. Only a sleep of under half a minute
+goes unnoticed, and what was playing then carries on by that much.
 """
 
 import datetime
@@ -38,8 +30,6 @@ class PlaybackError(Exception):
 
 
 class AudioOutput(Protocol):
-    """Something that can play audio files out loud."""
-
     def open(self) -> None:
         """Get ready to play. Raises ``PlaybackError`` if there is no device."""
         ...
@@ -61,8 +51,6 @@ class AudioOutput(Protocol):
 
 
 class PygameOutput:
-    """The computer's default audio output, driven by pygame's mixer."""
-
     def open(self) -> None:
         try:
             pygame.mixer.init()
@@ -86,8 +74,6 @@ class PygameOutput:
 
 @dataclass(frozen=True)
 class Playback:
-    """What happened when one group of texts was due to be announced."""
-
     texts: tuple[str, ...]  # everything that was due
     missing: tuple[str, ...]  # the texts skipped for lack of stored speech
     late: tuple[str, ...]  # the texts skipped because the computer was asleep
@@ -96,15 +82,12 @@ class Playback:
 
 
 class Player:
-    """Announce queued texts on a background thread.
-
-    ``find_audio`` returns the stored speech for a text, or None. ``on_played``
-    is called on the player's thread after each group, so it should only hand
-    the result over, for example by putting it on a queue. A group may be
-    queued with the moment it was due; the player only hands that back with
-    the outcome, so the caller can tell which group it was. ``clock`` gives the
-    time of day in seconds and is how a sleep is noticed. A player runs once:
-    after ``stop`` it cannot be started again.
+    """``on_played`` is called on the player's thread after each group, so it
+    should only hand the result over, for example by putting it on a queue. A
+    group may be queued with the moment it was due; the player only hands that
+    back with the outcome, so the caller can tell which group it was. ``clock``
+    gives the time of day in seconds and is how a sleep is noticed. A player
+    runs once: after ``stop`` it cannot be started again.
     """
 
     _GAP = 0.3  # seconds of silence between two files
@@ -126,7 +109,7 @@ class Player:
         self._on_played = on_played
         self._chime = chime
         self._clock = clock
-        self._looked_at = 0.0  # when the clock was last looked at
+        self._looked_at = 0.0
         self._asleep_until = float("-inf")  # texts queued before this are late
         self._queue: queue.Queue[_Queued | None] = queue.Queue()
         self._stopped = threading.Event()
@@ -135,39 +118,27 @@ class Player:
     def enqueue(
         self, texts: Sequence[str], due: datetime.datetime | None = None
     ) -> None:
-        """Announce ``texts`` together, after whatever is already queued."""
         self._queue.put((self._clock(), tuple(texts), due))
 
     def start(self) -> None:
-        """Start announcing what is queued."""
         self._thread.start()
 
     def stop(self) -> None:
-        """Cut off the current announcement, drop the queue and end the thread.
-
-        Nothing is reported for an announcement that is cut off or dropped.
-        """
+        """Nothing is reported for an announcement that is cut off or dropped."""
         self._stopped.set()
         self._queue.put(None)
         if self._thread.is_alive():
             self._thread.join()
 
     def play(self, texts: Sequence[str], due: datetime.datetime | None = None) -> None:
-        """Announce ``texts`` now and report the outcome; returns when done.
-
-        The chime sounds once, before the first text. If no text has stored
-        speech, nothing is played at all.
-        """
+        """Returns when ``texts`` are announced and the outcome is reported."""
         self._looked_at = self._clock()
         self._announce(tuple(texts), due, skip=False)
 
     def _announce(
         self, texts: tuple[str, ...], due: datetime.datetime | None, skip: bool
     ) -> None:
-        """Announce ``texts`` and report the outcome.
-
-        With ``skip`` nothing is played, because the texts are already late.
-        """
+        """With ``skip`` nothing is played, because the texts are already late."""
         if self._stopped.is_set():
             return
         spoken: list[tuple[str, Path]] = []
@@ -196,9 +167,7 @@ class Player:
         self._on_played(Playback(texts, tuple(missing), late, failed, due))
 
     def _play_files(self, paths: Sequence[Path]) -> tuple[bool, int]:
-        """Play the files in order until the last has ended.
-
-        Returns whether any file could not be played, and how many files were
+        """Returns whether any file could not be played, and how many files were
         dealt with before the player was stopped or the computer slept: all of
         them if neither happened. Raises ``PlaybackError`` if there is no
         audio device.
@@ -226,15 +195,10 @@ class Player:
         return unplayable, len(paths)
 
     def _wait(self, seconds: float) -> bool:
-        """Wait a moment; return False if playing has to end here.
-
-        That is the case when the player was stopped or the computer slept.
-        """
         stopped = self._stopped.wait(seconds)
         return not (self._slept() or stopped)
 
     def _slept(self) -> bool:
-        """Look at the clock; return whether the computer slept since the last look."""
         before, now = self._looked_at, self._clock()
         self._looked_at = now
         if now - before <= self._SLEEP:

@@ -1,5 +1,3 @@
-"""Tests for the drawn logo, the bundled copies of it and the window's icon."""
-
 import struct
 import zlib
 from pathlib import Path

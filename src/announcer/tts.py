@@ -1,6 +1,4 @@
-"""Turn announcement text into speech, and keep the result on disk.
-
-Speech comes from a provider behind a small interface, so the service can be
+"""Speech comes from a provider behind a small interface, so the service can be
 swapped. Every sentence is generated once and stored as an MP3 file; after
 that the app plays it without a network connection.
 """
@@ -28,8 +26,6 @@ class TtsError(Exception):
 
 
 class TtsProvider(Protocol):
-    """A text-to-speech service."""
-
     def synthesize(self, text: str, voice: str) -> bytes:
         """Return ``text`` spoken by ``voice`` as MP3 data.
 
@@ -39,8 +35,6 @@ class TtsProvider(Protocol):
 
 
 class EdgeTtsProvider:
-    """Speech from Microsoft Edge's online read-aloud service."""
-
     def synthesize(self, text: str, voice: str) -> bytes:
         try:
             audio = asyncio.run(_collect(text, voice))
@@ -54,7 +48,6 @@ class EdgeTtsProvider:
 
 
 async def _collect(text: str, voice: str) -> bytes:
-    """Return the audio that the service streams back for ``text``."""
     stream = edge_tts.Communicate(text, voice).stream()
     return b"".join(
         [chunk["data"] async for chunk in stream if chunk["type"] == "audio"]
@@ -62,14 +55,11 @@ async def _collect(text: str, voice: str) -> bytes:
 
 
 def audio_cache_dir() -> Path:
-    """Return where generated speech is kept for the current user."""
     return Path(user_cache_dir(APP_NAME, appauthor=False)) / "audio"
 
 
 class AudioCache:
-    """Speech files for one voice, generated on demand and reused afterwards.
-
-    A file is named after a hash of the voice and the text, so a changed
+    """A speech file is named after a hash of the voice and the text, so a changed
     template or voice leads to new files and never to stale speech. Safe to
     use from several threads.
     """
@@ -82,15 +72,11 @@ class AudioCache:
         self._voice = voice
 
     def find(self, text: str) -> Path | None:
-        """Return the stored speech for ``text``, or None if there is none yet."""
         path = self._path(text)
         return path if path.is_file() else None
 
     def ensure(self, text: str) -> Path:
-        """Return the speech for ``text``, generating it if it is not stored.
-
-        Raises ``TtsError`` if it cannot be generated or stored.
-        """
+        """Raises ``TtsError`` if the speech cannot be generated or stored."""
         path = self._path(text)
         if not path.is_file():
             audio = self._provider.synthesize(text, self._voice)
@@ -101,9 +87,7 @@ class AudioCache:
         return path
 
     def ensure_all(self, texts: Iterable[str]) -> tuple[str, ...]:
-        """Generate the speech that is not stored yet for ``texts``.
-
-        Returns the texts that still have no speech, for example because there
+        """Returns the texts that still have no speech, for example because there
         is no network connection. Several sentences are generated at a time,
         since each one takes a few seconds.
         """

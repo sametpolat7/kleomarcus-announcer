@@ -1,7 +1,4 @@
-"""Generate ``sample_schedule.xlsx``, a schedule of fictional athletes.
-
-Run with ``uv run scripts/make_sample_schedule.py``.
-"""
+"""Run with ``uv run scripts/make_sample_schedule.py``."""
 
 from datetime import time
 from pathlib import Path

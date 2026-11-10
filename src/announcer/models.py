@@ -1,5 +1,3 @@
-"""Domain types shared across the app."""
-
 import datetime
 from dataclasses import dataclass
 
@@ -18,8 +16,6 @@ ALL_WEEKDAYS: frozenset[int] = frozenset(range(len(WEEKDAY_NAMES)))
 
 @dataclass(frozen=True)
 class AthleteEntry:
-    """One athlete's training session, as read from the schedule file."""
-
     name: str
     weekday: int  # 0 is Monday, as in ``date.weekday()``
     time: datetime.time  # start of the session, to the minute
@@ -27,8 +23,6 @@ class AthleteEntry:
 
 @dataclass(frozen=True)
 class CustomAnnouncement:
-    """A free-text announcement that repeats every week at a fixed time."""
-
     text: str
     time: datetime.time  # to the minute
     weekdays: frozenset[int] = ALL_WEEKDAYS  # as in ``date.weekday()``

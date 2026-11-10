@@ -1,6 +1,4 @@
-"""Read and validate the athlete schedule from an Excel file.
-
-The first worksheet must have a header row with the columns ``Ad Soyad``,
+"""The first worksheet must have a header row with the columns ``Ad Soyad``,
 ``Gün`` and ``Saat``. Rows that cannot be used are reported, not fatal, so a
 single typo does not silence the whole schedule.
 """
@@ -35,15 +33,13 @@ class WrongFileTypeError(ScheduleFileError):
 
 
 class MissingColumnsError(ScheduleFileError):
-    """The header row lacks one or more required columns."""
-
     def __init__(self, columns: tuple[str, ...]) -> None:
         super().__init__(f"Missing columns: {', '.join(columns)}")
         self.columns = columns
 
 
 class RowProblem(Enum):
-    """Why a row was skipped. The UI turns these into Turkish messages."""
+    """The UI turns these into Turkish messages."""
 
     MISSING_NAME = "missing name"
     UNKNOWN_DAY = "unknown day"
@@ -52,16 +48,12 @@ class RowProblem(Enum):
 
 @dataclass(frozen=True)
 class SkippedRow:
-    """A row that was left out of the schedule."""
-
     row: int  # 1-based row number, as shown in Excel
     problems: tuple[RowProblem, ...]
 
 
 @dataclass(frozen=True)
 class LoadedSchedule:
-    """The usable entries of a schedule file, plus the rows that were skipped."""
-
     entries: tuple[AthleteEntry, ...]
     skipped: tuple[SkippedRow, ...]
 
@@ -71,13 +63,10 @@ _TIME_PATTERN = re.compile(r"(\d{1,2})[:.](\d{2})(?:[:.][0-5]\d)?")
 
 
 def _fold(text: str) -> str:
-    """Reduce text to lowercase ASCII letters for matching.
-
-    "SALI", "Salı" and "sali" then all name the same day. Accents are removed
-    by decomposing each letter and dropping the combining marks, which also
-    covers text that arrives already decomposed. The dotless "ı" has no
-    decomposition, so it is replaced first. The system locale is deliberately
-    not consulted.
+    """Accents are removed by decomposing each letter and dropping the combining
+    marks, which also covers text that arrives already decomposed. The dotless
+    "ı" has no decomposition, so it is replaced first. The system locale is
+    deliberately not consulted.
     """
     decomposed = unicodedata.normalize("NFKD", text.replace("ı", "i"))
     return "".join(
@@ -91,9 +80,7 @@ _WEEKDAYS: dict[str, int] = {
 
 
 def load_schedule(path: Path) -> LoadedSchedule:
-    """Load the schedule at ``path``.
-
-    Raises ``ScheduleFileError`` if the file is not an ``.xlsx`` workbook,
+    """Raises ``ScheduleFileError`` if the file is not an ``.xlsx`` workbook,
     cannot be read or lacks a required column.
     """
     if path.suffix.lower() != ".xlsx":
@@ -110,7 +97,7 @@ def load_schedule(path: Path) -> LoadedSchedule:
         day = _clean(_cell(row, day_at))
         time_cell = _cell(row, time_at)
         if not name and not day and not _clean(time_cell):
-            continue  # blank row
+            continue
 
         weekday = _WEEKDAYS.get(_fold(day))
         time = _parse_time(time_cell)
@@ -131,7 +118,6 @@ def load_schedule(path: Path) -> LoadedSchedule:
 
 
 def _read_rows(path: Path) -> list[tuple[object, ...]]:
-    """Return every row of the first visible worksheet as a tuple of values."""
     try:
         # Read-only mode streams rows, so stray formatting far below the data
         # does not cost time or memory.
@@ -168,19 +154,16 @@ def _locate_columns(header: tuple[object, ...]) -> tuple[int, int, int]:
 
 
 def _cell(row: tuple[object, ...], index: int) -> object:
-    """Return the value at ``index``; rows may be shorter than the header."""
+    """Rows may be shorter than the header."""
     return row[index] if index < len(row) else None
 
 
 def _clean(value: object) -> str:
-    """Return a cell value as text with surrounding and repeated spaces removed."""
     return "" if value is None else " ".join(str(value).split())
 
 
 def _parse_time(value: object) -> datetime.time | None:
-    """Return a cell value as a time of day to the minute, or None if invalid.
-
-    Excel hands back a ``time`` for time-formatted cells and a string for text
+    """Excel hands back a ``time`` for time-formatted cells and a string for text
     cells, so both are accepted. A ``datetime`` is rejected: it means Excel
     turned the typed value into a date, so its time part is not what was meant.
     """

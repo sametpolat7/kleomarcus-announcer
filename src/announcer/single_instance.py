@@ -1,5 +1,3 @@
-"""Let only one copy of the app run, so that nothing is announced twice."""
-
 import errno
 import sys
 from pathlib import Path

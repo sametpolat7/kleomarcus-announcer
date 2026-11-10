@@ -1,31 +1,25 @@
 # Real schedules contain athlete names and must never be committed.
-# Only the fictional sample is tracked.
 *.xlsx
 !sample_schedule.xlsx
 ~$*
 
-# Byte-compiled files
 __pycache__/
 *.py[cod]
 
-# Virtual environments
 .venv/
 venv/
 
-# Packaging and build output
 build/
 dist/
 *.egg-info/
 *.spec
 
-# Tool caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
 htmlcov/
 
-# Editors and operating systems
 .idea/
 .vscode/
 .DS_Store

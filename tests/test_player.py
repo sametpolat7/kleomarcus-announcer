@@ -1,5 +1,3 @@
-"""Tests for announcing queued texts and for the pygame audio output."""
-
 import datetime
 import threading
 import time
@@ -19,8 +17,6 @@ AUDIO = {"Ayşe": AYSE, "Mehmet": MEHMET, "Zeynep": ZEYNEP}
 
 
 class FakeClock:
-    """A clock that the test moves by hand."""
-
     def __init__(self) -> None:
         self.now = 1_000_000.0
 
@@ -54,8 +50,6 @@ def player(
 def sleep_while_playing(
     output: FakeOutput, clock: FakeClock, file: Path, seconds: float = 3 * 3600
 ) -> None:
-    """Make the computer sleep for ``seconds`` while ``file`` is playing."""
-
     def while_playing(path: Path) -> None:
         if path == file:
             clock.now += seconds
@@ -70,7 +64,6 @@ def test_chime_sounds_once_before_the_texts_in_order(
 
     assert output.played == [CHIME, MEHMET, AYSE]
     assert outcomes == [Playback(("Mehmet", "Ayşe"), missing=(), late=(), failed=False)]
-    # The device is opened for the announcement and closed after it.
     assert (output.opened, output.closed) == (1, 1)
 
 
@@ -171,7 +164,7 @@ def test_sleep_in_the_pause_between_two_files_makes_the_rest_late(
     def busy_then_asleep() -> bool:
         playing = busy()
         if not playing and output.played[-1] == AYSE:
-            clock.now += 3 * 3600  # Ayşe was heard to the end
+            clock.now += 3 * 3600
         return playing
 
     monkeypatch.setattr(output, "busy", busy_then_asleep)
@@ -232,14 +225,12 @@ def test_time_between_two_announcements_is_not_a_sleep(
 
 
 def wait_for(condition: Callable[[], bool]) -> None:
-    """Wait until ``condition`` holds, for five seconds at most."""
     deadline = time.monotonic() + 5
     while not condition() and time.monotonic() < deadline:
         time.sleep(0.01)
 
 
 def run_queue(player: Player, outcomes: list[Playback], expected: int) -> None:
-    """Run the player's thread until it has reported ``expected`` outcomes."""
     player.start()
     try:
         wait_for(lambda: len(outcomes) >= expected)
@@ -258,7 +249,6 @@ def test_background_thread_plays_the_queue_in_order(
 
     assert output.played == [CHIME, AYSE, CHIME, MEHMET]
     assert [playback.texts for playback in outcomes] == [("Ayşe",), ("Mehmet",)]
-    # An outcome carries the due time that its texts were queued with.
     assert [playback.due for playback in outcomes] == [six_pm, None]
 
 
@@ -347,7 +337,6 @@ def test_texts_queued_after_the_wake_are_played(
 def test_waiting_behind_a_long_announcement_is_not_late(
     player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
 ) -> None:
-    # Every file takes eight seconds, with no sleep anywhere.
     def while_playing(path: Path) -> None:
         clock.now += 8
 
@@ -430,7 +419,6 @@ def test_nothing_is_played_after_stop(
 
 
 def write_silence(path: Path, seconds: float) -> Path:
-    """Write a silent WAV file of the given length."""
     with wave.open(str(path), "wb") as file:
         file.setnchannels(1)
         file.setsampwidth(2)

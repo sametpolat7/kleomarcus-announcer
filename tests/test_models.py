@@ -1,5 +1,3 @@
-"""Tests for the domain types."""
-
 import datetime
 
 import pytest

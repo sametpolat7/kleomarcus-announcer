@@ -1,9 +1,3 @@
-"""Load and save the app's settings as a single JSON file.
-
-The file holds everything the app remembers between runs: the voice, the last
-schedule file, the announcement template and the custom announcements.
-"""
-
 import datetime
 import json
 from dataclasses import dataclass
@@ -19,7 +13,7 @@ from announcer.template import DEFAULT_TEMPLATE, PLACEHOLDER, is_valid_template
 DEFAULT_VOICE = "tr-TR-EmelNeural"
 
 _TIME_FORMAT = "%H:%M"
-_OLD_PLACEHOLDER = "{ad}"  # what the placeholder was called at first
+_OLD_PLACEHOLDER = "{ad}"
 
 
 class SettingsFileError(Exception):
@@ -28,10 +22,8 @@ class SettingsFileError(Exception):
 
 @dataclass(frozen=True)
 class Settings:
-    """What the app remembers between runs."""
-
     voice: str = DEFAULT_VOICE
-    schedule_path: Path | None = None  # the Excel file that was loaded last
+    schedule_path: Path | None = None
     template: str = DEFAULT_TEMPLATE
     custom_announcements: tuple[CustomAnnouncement, ...] = ()
 
@@ -42,21 +34,16 @@ class Settings:
 
 @dataclass(frozen=True)
 class LoadedSettings:
-    """The settings read from a file, plus what had to be left out of them."""
-
     settings: Settings
     dropped: int = 0  # how many custom announcements were unusable
 
 
 def settings_path() -> Path:
-    """Return where the settings file lives for the current user."""
     return Path(user_config_dir(APP_NAME, appauthor=False)) / "config.json"
 
 
 def load_settings(path: Path) -> LoadedSettings:
-    """Load the settings at ``path``, or the defaults if there is no such file.
-
-    The file may have been edited by hand, so a value that is missing or
+    """The file may have been edited by hand, so a value that is missing or
     unusable falls back to its default, and a custom announcement that is
     unusable is left out and counted. Raises ``SettingsFileError`` if the file
     as a whole cannot be read.
@@ -99,11 +86,7 @@ def load_settings(path: Path) -> LoadedSettings:
 
 
 def save_settings(settings: Settings, path: Path) -> None:
-    """Write ``settings`` to ``path``, creating its folder if needed.
-
-    A save that is cut short leaves the previous settings in place. Raises
-    ``OSError`` if the file cannot be written.
-    """
+    """Raises ``OSError`` if the file cannot be written."""
     data = {
         "voice": settings.voice,
         "schedule_path": (
@@ -124,12 +107,10 @@ def save_settings(settings: Settings, path: Path) -> None:
 
 
 def _text(value: object) -> str | None:
-    """Return ``value`` trimmed if it is a string with something in it."""
     return value.strip() or None if isinstance(value, str) else None
 
 
 def _custom_announcement(value: object) -> CustomAnnouncement | None:
-    """Return one stored custom announcement, or None if it is unusable."""
     if not isinstance(value, dict):
         return None
     text, time, weekdays = value.get("text"), value.get("time"), value.get("weekdays")

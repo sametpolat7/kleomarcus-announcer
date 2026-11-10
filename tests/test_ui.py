@@ -1,8 +1,3 @@
-"""Tests for the window and the dialog, driven without a person at the screen.
-
-They need a display, as tkinter does; without one they are skipped.
-"""
-
 import datetime
 import gc
 import logging
@@ -65,7 +60,6 @@ def window(
 
 
 def pump(window: MainWindow, condition: Callable[[], bool]) -> None:
-    """Let the window run until ``condition`` holds; fail if it never does."""
     deadline = time.monotonic() + 5
     while not condition():
         assert time.monotonic() < deadline, "the condition never held"
@@ -90,7 +84,6 @@ def warnings(window: MainWindow) -> str:
 def choose(
     window: MainWindow, path: Path | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Press "Dosya Seç" and pick ``path`` in the file dialog, or cancel it."""
     monkeypatch.setattr(
         filedialog, "askopenfilename", lambda **options: str(path) if path else ""
     )
@@ -303,7 +296,6 @@ def test_template_without_the_placeholder_gives_an_alert(
     assert alerts == ["Şablonda “{ad_soyad}” yer tutucusu bulunmalıdır."] * 2
     assert app.settings.template == DEFAULT_TEMPLATE
     assert app.test_status is None
-    # What was typed stays in the box, to be corrected.
     assert window.template.get() == "Hoş geldiniz."
 
 
@@ -332,7 +324,6 @@ def test_custom_announcements_are_listed_by_time(window: MainWindow, app: App) -
         ("09:30", "Cumartesi", "Salon kapanıyor."),
         ("19:00", "Her gün", "Su içmeyi unutmayın."),
     ]
-    # The table is left alone while nothing changes, so it keeps its place.
     window.announcements.focus("1")
     window.show()
     assert window.announcements.focus() == "1"
@@ -448,10 +439,8 @@ def test_window_keeps_following_the_app_after_a_failed_update(
         choose(window, schedule, monkeypatch)
         assert window.activity.get() == "Sesler oluşturuluyor…"
         pump(window, lambda: "Bringing the window up to date failed" in caplog.text)
-        # The next looks still take in that the speech is ready.
         pump(window, lambda: window.activity.get() == "")
 
-    # An error that stays is logged once, not four times a second.
     assert caplog.text.count("Bringing the window up to date failed") == 1
     assert alerts == []
 
@@ -603,7 +592,6 @@ def test_choosing_days_starts_from_nothing_ticked(
     assert all(box.instate(["!disabled"]) for box in dialog.day_boxes)
     assert not any(day.get() for day in dialog.days)
 
-    # Days that were ticked by hand are kept when switching back and forth.
     dialog.days[1].set(True)
     dialog.every_day.set(True)
     dialog.choose_days()
@@ -627,7 +615,7 @@ def test_dialog_tries_out_the_text_without_saving_it(
     dialog.text.set("  Lütfen salonu temiz tutunuz.  ")
     dialog.test()
     assert dialog.test_status.get() == "Test anonsu hazırlanıyor…"
-    assert dialog.test_button.instate(["disabled"])  # one test at a time
+    assert dialog.test_button.instate(["disabled"])
     wait_for(app, lambda: app.test_status is Status.PLAYED)
 
     assert [text for text, _ in provider.calls] == ["Lütfen salonu temiz tutunuz."]

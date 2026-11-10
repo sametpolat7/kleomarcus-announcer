@@ -1,5 +1,3 @@
-"""Tests for deciding when a slot is due."""
-
 import datetime
 import threading
 
@@ -20,7 +18,6 @@ TIMETABLE = Timetable((MONDAY_SIX, MONDAY_SIX_OH_ONE, TUESDAY_SIX))
 def at(
     hour: int, minute: int, second: int = 0, *, days_later: int = 0
 ) -> datetime.datetime:
-    """Return a moment on the test Monday, or a number of days after it."""
     day = MONDAY + datetime.timedelta(days=days_later)
     return datetime.datetime.combine(day, datetime.time(hour, minute, second))
 
@@ -32,8 +29,6 @@ def ignore(date: datetime.date, slot: Slot) -> None:
 def make_scheduler(
     clock: FakeClock, timetable: Timetable = TIMETABLE
 ) -> tuple[Scheduler, list[Slot], list[tuple[datetime.date, Slot]]]:
-    """Return a scheduler that has begun at the clock's time and is driven by
-    hand from there, the slots it reports as due and those as missed."""
     due: list[Slot] = []
     missed: list[tuple[datetime.date, Slot]] = []
     scheduler = Scheduler(
@@ -70,16 +65,14 @@ def test_slots_that_came_and_went_between_two_looks_are_missed() -> None:
         (MONDAY, MONDAY_SIX),
         (MONDAY, MONDAY_SIX_OH_ONE),
     ]
-    # They come with their dates, the oldest first.
     assert missed_slots(TIMETABLE, at(18, 0, 30), at(9, 0, days_later=2)) == [
         (MONDAY, MONDAY_SIX_OH_ONE),
         (TUESDAY, TUESDAY_SIX),
     ]
-    assert missed_slots(TIMETABLE, at(18, 5), at(17, 0)) == []  # the clock went back
+    assert missed_slots(TIMETABLE, at(18, 5), at(17, 0)) == []
 
 
 def test_slot_of_the_minute_of_the_first_look_is_not_missed() -> None:
-    # 18:00 was dealt with at the first look.
     assert missed_slots(TIMETABLE, at(18, 0, 5), at(18, 0, 59)) == []
     assert missed_slots(TIMETABLE, at(18, 0, 59), at(18, 2)) == [
         (MONDAY, MONDAY_SIX_OH_ONE)
@@ -103,7 +96,6 @@ def test_scheduler_reports_a_slot_once_within_its_minute() -> None:
 
 
 def test_slot_whose_minute_began_before_the_scheduler_is_not_reported() -> None:
-    # It may have been announced by a run of the app that was just closed.
     clock = FakeClock(at(18, 0, 3))
     scheduler, due, missed = make_scheduler(clock)
 
@@ -122,7 +114,7 @@ def test_scheduler_reports_the_slots_it_slept_through() -> None:
     clock = FakeClock(at(17, 59, 30))
     scheduler, due, missed = make_scheduler(clock)
 
-    clock.now = at(18, 30)  # the computer slept through 18:00 and 18:01
+    clock.now = at(18, 30)
     scheduler.check()
 
     assert due == []
@@ -157,7 +149,7 @@ def test_slot_is_missed_when_a_short_sleep_makes_it_too_late() -> None:
     clock = FakeClock(at(17, 59, 50))
     scheduler, due, missed = make_scheduler(clock)
 
-    clock.now = at(18, 0, 35)  # 45 seconds without a look
+    clock.now = at(18, 0, 35)
     scheduler.check()
 
     assert (due, missed) == ([], [(MONDAY, MONDAY_SIX)])
@@ -202,7 +194,7 @@ def test_only_the_last_week_of_a_long_gap_is_reported_as_missed() -> None:
     clock = FakeClock(at(12, 0))
     scheduler, _, missed = make_scheduler(clock)
 
-    clock.now = at(12, 0, days_later=365)  # more likely a corrected clock
+    clock.now = at(12, 0, days_later=365)
     scheduler.check()
 
     assert len(missed) == len(TIMETABLE.slots)
@@ -273,8 +265,6 @@ def test_background_thread_reports_a_due_slot_with_its_date_and_stops() -> None:
 
 
 def test_scheduler_begins_when_it_is_started() -> None:
-    # The minute that is running at the start is left out, with no wait for
-    # the thread's first look.
     reported: list[Slot] = []
     done = threading.Event()
 

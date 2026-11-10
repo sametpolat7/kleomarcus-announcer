@@ -1,5 +1,3 @@
-"""Stand-ins and helpers shared by the test modules."""
-
 import datetime
 import time
 from collections.abc import Callable
@@ -22,12 +20,10 @@ ROWS = [
 
 
 def at(hour: int, minute: int = 0, second: int = 0) -> datetime.datetime:
-    """Return a moment on the test Monday."""
     return datetime.datetime.combine(MONDAY, datetime.time(hour, minute, second))
 
 
 def write_schedule(path: Path, rows: list[tuple[str, str, str]]) -> Path:
-    """Write a schedule file with the given name, day and time rows."""
     workbook = Workbook()
     sheet = workbook.active
     assert sheet is not None
@@ -39,7 +35,6 @@ def write_schedule(path: Path, rows: list[tuple[str, str, str]]) -> Path:
 
 
 def wait_for(app: App, condition: Callable[[], bool]) -> None:
-    """Keep polling ``app`` until ``condition`` holds; fail if it never does."""
     deadline = time.monotonic() + 5
     while not condition():
         assert time.monotonic() < deadline, "the condition never held"
@@ -48,8 +43,6 @@ def wait_for(app: App, condition: Callable[[], bool]) -> None:
 
 
 class FakeClock:
-    """A clock that the test moves by hand."""
-
     def __init__(self, now: datetime.datetime) -> None:
         self.now = now
 
@@ -58,8 +51,6 @@ class FakeClock:
 
 
 class FakeProvider:
-    """A provider that returns predictable audio and records what it was asked."""
-
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
         self.offline = False
@@ -73,9 +64,7 @@ class FakeProvider:
 
 
 class FakeOutput:
-    """An output that records what it was asked to play.
-
-    Each file is busy for one look, or for ever if ``endless`` is set.
+    """Each file is busy for one look, or for ever if ``endless`` is set.
     ``while_playing`` is called during a look with the file, which is where a
     test lets time pass.
     """

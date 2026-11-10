@@ -1,5 +1,3 @@
-"""Tests for reading and validating the Excel schedule."""
-
 import datetime
 import unicodedata
 import zipfile
