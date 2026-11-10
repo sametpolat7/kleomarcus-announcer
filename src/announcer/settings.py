@@ -39,24 +39,32 @@ class Settings:
             raise ValueError(f"The template has no {PLACEHOLDER} placeholder")
 
 
+@dataclass(frozen=True)
+class LoadedSettings:
+    """The settings read from a file, plus what had to be left out of them."""
+
+    settings: Settings
+    dropped: int = 0  # how many custom announcements were unusable
+
+
 def settings_path() -> Path:
     """Return where the settings file lives for the current user."""
     return Path(user_config_dir(APP_NAME, appauthor=False)) / "config.json"
 
 
-def load_settings(path: Path) -> Settings:
+def load_settings(path: Path) -> LoadedSettings:
     """Load the settings at ``path``, or the defaults if there is no such file.
 
     The file may have been edited by hand, so a value that is missing or
     unusable falls back to its default, and a custom announcement that is
-    unusable is left out. Raises ``SettingsFileError`` if the file as a whole
-    cannot be read.
+    unusable is left out and counted. Raises ``SettingsFileError`` if the file
+    as a whole cannot be read.
     """
     try:
         # "utf-8-sig" also accepts the byte order mark that Notepad may add.
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
-        return Settings()
+        return LoadedSettings(Settings())
     # A file nested deeply enough makes the parser raise ``RecursionError``.
     except (OSError, ValueError, RecursionError) as error:
         raise SettingsFileError(f"Cannot read {path}") from error
@@ -66,7 +74,14 @@ def load_settings(path: Path) -> Settings:
     voice = _text(data.get("voice"))
     schedule_path = _text(data.get("schedule_path"))
     template = data.get("template")
-    return Settings(
+    stored = data.get("custom_announcements")
+    found = (
+        [_custom_announcement(item) for item in stored]
+        if isinstance(stored, list)
+        else []
+    )
+    usable = tuple(item for item in found if item is not None)
+    settings = Settings(
         voice=voice or DEFAULT_VOICE,
         schedule_path=Path(schedule_path) if schedule_path else None,
         template=(
@@ -74,8 +89,9 @@ def load_settings(path: Path) -> Settings:
             if isinstance(template, str) and is_valid_template(template)
             else DEFAULT_TEMPLATE
         ),
-        custom_announcements=_custom_announcements(data.get("custom_announcements")),
+        custom_announcements=usable,
     )
+    return LoadedSettings(settings, dropped=len(found) - len(usable))
 
 
 def save_settings(settings: Settings, path: Path) -> None:
@@ -106,14 +122,6 @@ def save_settings(settings: Settings, path: Path) -> None:
 def _text(value: object) -> str | None:
     """Return ``value`` trimmed if it is a string with something in it."""
     return value.strip() or None if isinstance(value, str) else None
-
-
-def _custom_announcements(value: object) -> tuple[CustomAnnouncement, ...]:
-    """Return the usable custom announcements of a stored list."""
-    if not isinstance(value, list):
-        return ()
-    announcements = (_custom_announcement(item) for item in value)
-    return tuple(item for item in announcements if item is not None)
 
 
 def _custom_announcement(value: object) -> CustomAnnouncement | None:
