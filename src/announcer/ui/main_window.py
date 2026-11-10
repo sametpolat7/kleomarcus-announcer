@@ -14,6 +14,7 @@ from types import TracebackType
 from announcer import APP_NAME
 from announcer.app import App
 from announcer.loader import ScheduleFileError
+from announcer.logo import ICON_SIZES, icon_path
 from announcer.scheduler import LATE
 from announcer.today import Status
 from announcer.ui import texts
@@ -45,11 +46,6 @@ _WARNING_BACKGROUND = "#fff3cd"
 _WARNING_TEXT = "#4d3b00"
 _WARNING_LINES = 4  # how many are shown before the rest has to be scrolled to
 _NO_ROW = "none"  # the id of the line that says that a table is empty
-# The logo in several sizes. The largest comes first: macOS uses only that one.
-_ICONS = tuple(
-    Path(__file__).parent.parent / "assets" / f"icon-{size}.png"
-    for size in (256, 64, 32, 16)
-)
 _MAC_QUIT = "::tk::mac::Quit"  # what macOS calls for Quit in the menu and the Dock
 
 
@@ -70,7 +66,13 @@ def open_file(path: Path) -> None:
 
 def _set_icon(root: tk.Tk) -> None:
     """Put the logo on the window and its dialogs, the taskbar and the Dock."""
-    root.iconphoto(True, *(tk.PhotoImage(master=root, file=path) for path in _ICONS))
+    try:
+        root.iconphoto(
+            True,
+            *(tk.PhotoImage(master=root, file=icon_path(size)) for size in ICON_SIZES),
+        )
+    except tk.TclError:
+        _log.exception("Cannot show the icon")  # the app is as useful without it
 
 
 def tell_already_running() -> None:
