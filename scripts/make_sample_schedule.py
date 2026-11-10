@@ -8,9 +8,9 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-OUTPUT = Path(__file__).resolve().parent.parent / "sample_schedule.xlsx"
+from announcer.loader import REQUIRED_COLUMNS
 
-HEADER = ("Ad Soyad", "Gün", "Saat")
+OUTPUT = Path(__file__).resolve().parent.parent / "sample_schedule.xlsx"
 
 # Every name here is made up. Never add real athletes to this file.
 ROWS: tuple[tuple[str, str, time], ...] = (
@@ -33,7 +33,7 @@ def main() -> None:
     workbook = Workbook()
     sheet = workbook.worksheets[0]
     sheet.title = "Program"
-    sheet.append(HEADER)
+    sheet.append(REQUIRED_COLUMNS)
     for row in ROWS:
         sheet.append(row)
         sheet.cell(row=sheet.max_row, column=3).number_format = "hh:mm"
