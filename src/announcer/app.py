@@ -52,7 +52,9 @@ TEST_NAME = "Ayşe Yılmaz"  # a made-up athlete for the test announcement
 
 _WATCH = 2.0  # seconds between two looks at the schedule file
 _REREADS = 3  # how often a changed schedule file that cannot be read is retried
-_RETRY = datetime.timedelta(minutes=5)  # before missing speech is tried again
+# Before something that failed is tried again: missing speech, or a schedule
+# file that could not be read.
+_RETRY = datetime.timedelta(minutes=5)
 
 _log = logging.getLogger(__name__)
 
@@ -158,6 +160,7 @@ class App:
         self._read_file: _FileState = None
         self._seen_file: _FileState = None
         self._rereads = 0  # failed readings of the file as it is now
+        self._read_at = clock()  # when the file was last read, or tried to be
         self._stopped = threading.Event()
 
         self.generating = False  # speech is being generated right now
@@ -213,6 +216,7 @@ class App:
         """
         path = self.settings.schedule_path
         if path is not None:
+            self._read_at = self._clock()
             self._read_file = self._seen_file = _file_state(path)
             try:
                 self._use(path, load_schedule(path))
@@ -320,15 +324,16 @@ class App:
         """Take in what the background threads reported since the last call.
 
         This also reads the schedule file again when it was saved in the
-        meantime, and asks again for speech that could not be generated a
-        while ago. Returns whether anything changed.
+        meantime, and tries again what failed a while ago: reading that file,
+        or generating speech. Returns whether anything changed.
         """
         changed = False
         while True:
             try:
                 event = self._events.get_nowait()
             except queue.Empty:
-                return self._retry_speech() or changed
+                retried = self._retry_schedule()
+                return self._retry_speech() or retried or changed
             if isinstance(event, _FileSeen):
                 changed = self._follow(event.path, event.state) or changed
                 continue
@@ -381,6 +386,16 @@ class App:
             # next looks try again, a few times at most.
             self._rereads += 1
             self._read_file = _UNREAD
+        return True
+
+    def _retry_schedule(self) -> bool:
+        """Read again a schedule file that could not be read a while ago;
+        return whether that was done. There is no button for it, and a file
+        on a network drive may turn up without having changed."""
+        if self.schedule_error is None or abs(self._clock() - self._read_at) < _RETRY:
+            return False
+        _log.info("Trying again to read the schedule file")
+        self.refresh()
         return True
 
     def _retry_speech(self) -> bool:
