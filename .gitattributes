@@ -2,3 +2,4 @@
 * text=auto eol=lf
 *.xlsx binary
 *.wav binary
+*.png binary
