@@ -39,6 +39,8 @@ class Slot:
     weekday: int  # 0 is Monday, as in ``date.weekday()``
     time: datetime.time
     texts: tuple[str, ...]  # the sentences to speak, in order
+    # The athlete behind each text; empty for a custom announcement.
+    names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,10 @@ class Timetable:
             if slot.weekday == weekday and slot.time == time:
                 return slot
         return None
+
+    def slots_on(self, weekday: int) -> tuple[Slot, ...]:
+        """Return the slots of the given weekday, ordered by time."""
+        return tuple(slot for slot in self.slots if slot.weekday == weekday)
 
 
 def find_conflicts(
@@ -84,12 +90,15 @@ def build_timetable(
     weekdays where its slot is taken, by athletes or by a custom announcement
     earlier in the list, and each such case is reported as a conflict.
     """
-    names: dict[_Key, list[str]] = {}
+    listed: dict[_Key, list[str]] = {}
     for entry in entries:
-        names.setdefault((entry.weekday, entry.time), []).append(entry.name)
+        listed.setdefault((entry.weekday, entry.time), []).append(entry.name)
     # A name repeated within a slot, such as a duplicated row, is said once.
+    names = {
+        key: tuple(dict.fromkeys(slot_names)) for key, slot_names in listed.items()
+    }
     texts: dict[_Key, tuple[str, ...]] = {
-        key: tuple(render(template, name) for name in dict.fromkeys(slot_names))
+        key: tuple(render(template, name) for name in slot_names)
         for key, slot_names in names.items()
     }
 
@@ -104,7 +113,7 @@ def build_timetable(
             texts[key] = (announcement.text,)
             holders[key] = SlotHolder.CUSTOM_ANNOUNCEMENT
 
-    slots = tuple(Slot(*key, texts[key]) for key in sorted(texts))
+    slots = tuple(Slot(*key, texts[key], names.get(key, ())) for key in sorted(texts))
     return Timetable(slots, tuple(conflicts))
 
 
