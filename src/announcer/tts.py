@@ -7,6 +7,7 @@ that the app plays it without a network connection.
 
 import asyncio
 import hashlib
+import logging
 import queue
 import threading
 from collections.abc import Iterable
@@ -18,6 +19,8 @@ from platformdirs import user_cache_dir
 
 from announcer import APP_NAME
 from announcer.files import write_atomically
+
+_log = logging.getLogger(__name__)
 
 
 class TtsError(Exception):
@@ -119,7 +122,11 @@ class AudioCache:
                     return
                 try:
                     self.ensure(text)
-                except TtsError:
+                except TtsError as error:
+                    # One line each: without a network every sentence fails.
+                    _log.warning(
+                        'No speech for "%s": %s (%r)', text, error, error.__cause__
+                    )
                     failed.add(text)
 
         # Daemon threads, so a long generation never keeps the app from closing.
