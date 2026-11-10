@@ -11,7 +11,7 @@ import pytest
 
 from announcer.app import TEST_NAME, App, SlotTakenError, backup_copy
 from announcer.chime import CHIME_PATH
-from announcer.loader import ScheduleFileError
+from announcer.loader import ScheduleFileError, UnreadableFileError
 from announcer.models import CustomAnnouncement
 from announcer.settings import Settings, load_settings, save_settings
 from announcer.template import DEFAULT_TEMPLATE
@@ -226,6 +226,29 @@ def test_missing_speech_is_tried_again_every_few_minutes(
 
     assert not app.unspoken
     assert len(provider.calls) == asked + 3
+
+
+def test_schedule_file_that_cannot_be_read_is_tried_again_every_few_minutes(
+    app: App, schedule: Path, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def held(path: Path) -> None:
+        raise UnreadableFileError("held by another program for a moment")
+
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    with monkeypatch.context() as patch:
+        patch.setattr("announcer.app.load_schedule", held)
+        app.refresh()
+    assert app.schedule_error is not None
+
+    # The file looks no different once it can be read, so no change is seen.
+    clock.now += datetime.timedelta(minutes=4)
+    assert not app.poll()  # too early to try again
+    clock.now += datetime.timedelta(minutes=1)
+    assert app.poll()
+
+    assert app.schedule_error is None
+    assert app.refreshed_at == clock.now
 
 
 def test_slot_that_is_running_when_the_app_starts_is_not_announced(
