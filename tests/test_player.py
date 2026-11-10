@@ -3,7 +3,7 @@
 import threading
 import time
 import wave
-from collections.abc import Sequence
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -12,166 +12,387 @@ from announcer.chime import CHIME_PATH
 from announcer.player import Playback, PlaybackError, Player, PygameOutput
 
 CHIME = Path("chime.wav")
-AUDIO = {"Ayşe": Path("ayse.mp3"), "Mehmet": Path("mehmet.mp3")}
+AYSE, MEHMET, ZEYNEP = Path("ayse.mp3"), Path("mehmet.mp3"), Path("zeynep.mp3")
+AUDIO = {"Ayşe": AYSE, "Mehmet": MEHMET, "Zeynep": ZEYNEP}
+
+
+class FakeClock:
+    """A clock that the test moves by hand."""
+
+    def __init__(self) -> None:
+        self.now = 1_000_000.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 class FakeOutput:
-    """An output that records what it was asked to play."""
+    """An output that records what it was asked to play.
+
+    Each file is busy for one look, or for ever if ``endless`` is set.
+    ``while_playing`` is called during a look with the file, which is where a
+    test lets time pass.
+    """
 
     def __init__(self) -> None:
-        self.played: list[list[Path]] = []
-        self.interrupted = False
-        self.broken = False
+        self.played: list[Path] = []
+        self.opened = 0
+        self.closed = 0
+        self.no_device = False
+        self.unplayable: set[Path] = set()
+        self.endless = False
+        self.while_playing: Callable[[Path], None] = lambda path: None
+        self._busy = False
 
-    def play(self, paths: Sequence[Path]) -> None:
-        if self.broken:
+    def open(self) -> None:
+        if self.no_device:
             raise PlaybackError("no sound device")
-        self.played.append(list(paths))
+        self.opened += 1
 
-    def interrupt(self) -> None:
-        self.interrupted = True
+    def start(self, path: Path) -> None:
+        if path in self.unplayable:
+            raise PlaybackError(f"cannot play {path}")
+        self.played.append(path)
+        self._busy = True
+
+    def busy(self) -> bool:
+        if self._busy:
+            self._busy = self.endless
+            self.while_playing(self.played[-1])
+            return True
+        return False
+
+    def close(self) -> None:
+        self.closed += 1
 
 
-def make_player(output: FakeOutput) -> tuple[Player, list[Playback]]:
-    """Return a player over the fake audio above and the outcomes it reports."""
-    outcomes: list[Playback] = []
-    return Player(AUDIO.get, output, outcomes.append, chime=CHIME), outcomes
+@pytest.fixture(autouse=True)
+def no_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Take the real-time pauses out of the tests that use the fake output."""
+    monkeypatch.setattr(Player, "_GAP", 0.0)
+    monkeypatch.setattr(Player, "_POLL", 0.0)
 
 
-def test_chime_sounds_once_before_the_texts_in_order() -> None:
-    output = FakeOutput()
-    player, outcomes = make_player(output)
+@pytest.fixture
+def clock() -> FakeClock:
+    return FakeClock()
 
+
+@pytest.fixture
+def output() -> FakeOutput:
+    return FakeOutput()
+
+
+@pytest.fixture
+def outcomes() -> list[Playback]:
+    return []
+
+
+@pytest.fixture
+def player(output: FakeOutput, outcomes: list[Playback], clock: FakeClock) -> Player:
+    """A player over the fake audio above that reports into ``outcomes``."""
+    return Player(AUDIO.get, output, outcomes.append, chime=CHIME, clock=clock)
+
+
+def sleep_while_playing(
+    output: FakeOutput, clock: FakeClock, file: Path, seconds: float = 3 * 3600
+) -> None:
+    """Make the computer sleep for ``seconds`` while ``file`` is playing."""
+
+    def while_playing(path: Path) -> None:
+        if path == file:
+            clock.now += seconds
+
+    output.while_playing = while_playing
+
+
+def test_chime_sounds_once_before_the_texts_in_order(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
     player.play(["Mehmet", "Ayşe"])
 
-    assert output.played == [[CHIME, AUDIO["Mehmet"], AUDIO["Ayşe"]]]
-    assert outcomes == [Playback(("Mehmet", "Ayşe"), missing=(), failed=False)]
+    assert output.played == [CHIME, MEHMET, AYSE]
+    assert outcomes == [Playback(("Mehmet", "Ayşe"), missing=(), late=(), failed=False)]
 
 
-def test_text_without_speech_is_skipped_and_reported() -> None:
-    output = FakeOutput()
-    player, outcomes = make_player(output)
+def test_device_is_opened_and_closed_for_each_announcement(
+    player: Player, output: FakeOutput
+) -> None:
+    player.play(["Ayşe"])
+    player.play(["Mehmet"])
 
-    player.play(["Zeynep", "Ayşe", "Can"])
+    assert (output.opened, output.closed) == (2, 2)
 
-    assert output.played == [[CHIME, AUDIO["Ayşe"]]]
+
+def test_text_without_speech_is_skipped_and_reported(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    player.play(["Can", "Ayşe", "Elif"])
+
+    assert output.played == [CHIME, AYSE]
     assert outcomes == [
-        Playback(("Zeynep", "Ayşe", "Can"), missing=("Zeynep", "Can"), failed=False)
+        Playback(
+            ("Can", "Ayşe", "Elif"), missing=("Can", "Elif"), late=(), failed=False
+        )
     ]
 
 
-def test_nothing_sounds_when_no_text_has_speech() -> None:
-    output = FakeOutput()
-    player, outcomes = make_player(output)
-
-    player.play(["Zeynep"])
+def test_nothing_sounds_when_no_text_has_speech(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    player.play(["Can"])
 
     assert output.played == []
-    assert outcomes == [Playback(("Zeynep",), missing=("Zeynep",), failed=False)]
+    assert output.opened == 0
+    assert outcomes == [Playback(("Can",), missing=("Can",), late=(), failed=False)]
 
 
-def test_output_failure_is_reported() -> None:
-    output = FakeOutput()
-    output.broken = True
-    player, outcomes = make_player(output)
+def test_missing_device_is_reported(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    output.no_device = True
 
     player.play(["Ayşe"])
 
-    assert outcomes == [Playback(("Ayşe",), missing=(), failed=True)]
+    assert outcomes == [Playback(("Ayşe",), missing=(), late=(), failed=True)]
 
 
-def test_the_bundled_chime_is_the_default() -> None:
-    output = FakeOutput()
+def test_files_after_an_unplayable_one_are_still_played(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    output.unplayable = {MEHMET}
+
+    player.play(["Ayşe", "Mehmet", "Zeynep"])
+
+    assert output.played == [CHIME, AYSE, ZEYNEP]
+    assert outcomes == [
+        Playback(("Ayşe", "Mehmet", "Zeynep"), missing=(), late=(), failed=True)
+    ]
+    assert output.closed == 1
+
+
+def test_the_bundled_chime_is_the_default(output: FakeOutput) -> None:
     Player(AUDIO.get, output, lambda playback: None).play(["Ayşe"])
 
-    assert output.played == [[CHIME_PATH, AUDIO["Ayşe"]]]
+    assert output.played == [CHIME_PATH, AYSE]
 
 
-def test_background_thread_plays_the_queue_in_order() -> None:
-    output = FakeOutput()
-    outcomes: list[Playback] = []
-    done = threading.Event()
+def test_texts_after_a_sleep_are_skipped_as_late(
+    player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
+) -> None:
+    sleep_while_playing(output, clock, MEHMET)
 
-    def on_played(playback: Playback) -> None:
-        outcomes.append(playback)
-        if len(outcomes) == 2:
-            done.set()
+    player.play(["Ayşe", "Mehmet", "Zeynep"])
 
-    player = Player(AUDIO.get, output, on_played, chime=CHIME)
-    player.enqueue(["Ayşe"])
-    player.enqueue(["Mehmet"])
+    # Mehmet was cut off by the sleep, so he counts as late as well.
+    assert output.played == [CHIME, AYSE, MEHMET]
+    assert outcomes == [
+        Playback(
+            ("Ayşe", "Mehmet", "Zeynep"),
+            missing=(),
+            late=("Mehmet", "Zeynep"),
+            failed=False,
+        )
+    ]
+    assert output.closed == 1
+
+
+def test_sleep_during_the_chime_makes_every_text_late(
+    player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
+) -> None:
+    sleep_while_playing(output, clock, CHIME)
+
+    player.play(["Can", "Ayşe", "Mehmet"])
+
+    assert output.played == [CHIME]
+    assert outcomes == [
+        Playback(
+            ("Can", "Ayşe", "Mehmet"),
+            missing=("Can",),
+            late=("Ayşe", "Mehmet"),
+            failed=False,
+        )
+    ]
+
+
+def test_sleep_during_the_last_text_makes_only_it_late(
+    player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
+) -> None:
+    sleep_while_playing(output, clock, MEHMET)
+
+    player.play(["Ayşe", "Mehmet"])
+
+    assert outcomes[0].late == ("Mehmet",)
+
+
+def test_a_short_stall_is_not_a_sleep(
+    player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
+) -> None:
+    sleep_while_playing(output, clock, AYSE, seconds=5)
+
+    player.play(["Ayşe", "Mehmet"])
+
+    assert output.played == [CHIME, AYSE, MEHMET]
+    assert outcomes[0].late == ()
+
+
+def test_clock_set_back_is_not_a_sleep(
+    player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
+) -> None:
+    sleep_while_playing(output, clock, AYSE, seconds=-3600)
+
+    player.play(["Ayşe", "Mehmet"])
+
+    assert output.played == [CHIME, AYSE, MEHMET]
+    assert outcomes[0].late == ()
+
+
+def test_time_between_two_announcements_is_not_a_sleep(
+    player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
+) -> None:
+    player.play(["Ayşe"])
+    clock.now += 3600
+    player.play(["Mehmet"])
+
+    assert output.played == [CHIME, AYSE, CHIME, MEHMET]
+    assert [playback.late for playback in outcomes] == [(), ()]
+
+
+def run_queue(player: Player, outcomes: list[Playback], expected: int) -> None:
+    """Run the player's thread until it has reported ``expected`` outcomes."""
     player.start()
     try:
-        assert done.wait(timeout=5)
+        deadline = time.monotonic() + 5
+        while len(outcomes) < expected and time.monotonic() < deadline:
+            time.sleep(0.01)
     finally:
         player.stop()
 
-    assert output.played == [[CHIME, AUDIO["Ayşe"]], [CHIME, AUDIO["Mehmet"]]]
+
+def test_background_thread_plays_the_queue_in_order(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    player.enqueue(["Ayşe"])
+    player.enqueue(["Mehmet"])
+
+    run_queue(player, outcomes, expected=2)
+
+    assert output.played == [CHIME, AYSE, CHIME, MEHMET]
     assert [playback.texts for playback in outcomes] == [("Ayşe",), ("Mehmet",)]
 
 
-def test_background_thread_survives_a_failing_callback() -> None:
-    output = FakeOutput()
-    done = threading.Event()
+def test_texts_queued_before_a_sleep_are_skipped_as_late(
+    player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
+) -> None:
+    sleep_while_playing(output, clock, AYSE)
+    player.enqueue(["Ayşe"])
+    clock.now += 60
+    player.enqueue(["Mehmet", "Can"])
+    player.enqueue(["Zeynep"])
+
+    run_queue(player, outcomes, expected=3)
+
+    assert output.played == [CHIME, AYSE]
+    assert outcomes == [
+        Playback(("Ayşe",), missing=(), late=("Ayşe",), failed=False),
+        Playback(("Mehmet", "Can"), missing=(), late=("Mehmet", "Can"), failed=False),
+        Playback(("Zeynep",), missing=(), late=("Zeynep",), failed=False),
+    ]
+
+
+def test_texts_queued_after_the_wake_are_played(
+    player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
+) -> None:
+    def while_playing(path: Path) -> None:
+        if path == AYSE:
+            clock.now += 3 * 3600
+            # The scheduler fires a slot right after the wake, before the
+            # player has noticed the sleep.
+            player.enqueue(["Zeynep"])
+
+    output.while_playing = while_playing
+    player.enqueue(["Ayşe"])
+    player.enqueue(["Mehmet"])
+
+    run_queue(player, outcomes, expected=3)
+
+    assert output.played == [CHIME, AYSE, CHIME, ZEYNEP]
+    assert outcomes == [
+        Playback(("Ayşe",), missing=(), late=("Ayşe",), failed=False),
+        Playback(("Mehmet",), missing=(), late=("Mehmet",), failed=False),
+        Playback(("Zeynep",), missing=(), late=(), failed=False),
+    ]
+
+
+def test_waiting_behind_a_long_announcement_is_not_late(
+    player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
+) -> None:
+    # Every file takes eight seconds, with no sleep anywhere.
+    def while_playing(path: Path) -> None:
+        clock.now += 8
+
+    output.while_playing = while_playing
+    player.enqueue(["Ayşe", "Mehmet", "Zeynep"])
+    player.enqueue(["Mehmet"])
+
+    run_queue(player, outcomes, expected=2)
+
+    assert output.played == [CHIME, AYSE, MEHMET, ZEYNEP, CHIME, MEHMET]
+    assert [playback.late for playback in outcomes] == [(), ()]
+
+
+def test_background_thread_survives_a_failing_callback(
+    output: FakeOutput, clock: FakeClock
+) -> None:
+    reported: list[Playback] = []
 
     def on_played(playback: Playback) -> None:
+        reported.append(playback)
         if playback.texts == ("Ayşe",):
             raise RuntimeError("the first hand-over fails")
-        done.set()
 
-    player = Player(AUDIO.get, output, on_played, chime=CHIME)
-    player.start()
-    try:
-        player.enqueue(["Ayşe"])
-        player.enqueue(["Mehmet"])
-        assert done.wait(timeout=5)
-    finally:
-        player.stop()
+    player = Player(AUDIO.get, output, on_played, chime=CHIME, clock=clock)
+    player.enqueue(["Ayşe"])
+    player.enqueue(["Mehmet"])
 
-    assert output.played == [[CHIME, AUDIO["Ayşe"]], [CHIME, AUDIO["Mehmet"]]]
+    run_queue(player, reported, expected=2)
+
+    assert output.played == [CHIME, AYSE, CHIME, MEHMET]
 
 
-def test_stop_interrupts_the_output_and_ends_the_thread() -> None:
-    output = FakeOutput()
-    player, _ = make_player(output)
+def test_stop_ends_the_thread(player: Player) -> None:
     player.start()
 
     player.stop()
 
-    assert output.interrupted
     assert all(thread.name != "player" for thread in threading.enumerate())
 
 
-def test_announcement_cut_off_by_stop_is_not_reported() -> None:
+def test_announcement_cut_off_by_stop_is_not_reported(
+    player: Player,
+    output: FakeOutput,
+    outcomes: list[Playback],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Player, "_POLL", 0.01)
     playing = threading.Event()
-
-    class BlockingOutput(FakeOutput):
-        """Plays until it is interrupted."""
-
-        def __init__(self) -> None:
-            super().__init__()
-            self.released = threading.Event()
-
-        def play(self, paths: Sequence[Path]) -> None:
-            playing.set()
-            assert self.released.wait(timeout=5)
-
-        def interrupt(self) -> None:
-            self.released.set()
-
-    player, outcomes = make_player(BlockingOutput())
+    output.endless = True
+    output.while_playing = lambda path: playing.set()
+    player.enqueue(["Ayşe", "Mehmet"])
+    player.enqueue(["Zeynep"])
     player.start()
-    player.enqueue(["Ayşe"])
     assert playing.wait(timeout=5)
 
     player.stop()
 
+    assert output.played == [CHIME]
+    assert output.closed == 1
     assert outcomes == []
 
 
-def test_stop_drops_what_is_still_queued() -> None:
-    output = FakeOutput()
-    player, outcomes = make_player(output)
+def test_stop_drops_what_is_still_queued(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
     player.enqueue(["Ayşe"])
     player.enqueue(["Mehmet"])
 
@@ -183,13 +404,8 @@ def test_stop_drops_what_is_still_queued() -> None:
     assert outcomes == []
 
 
-def test_stopping_a_player_that_never_started_is_harmless() -> None:
-    output = FakeOutput()
-    player, _ = make_player(output)
-
+def test_stopping_a_player_that_never_started_is_harmless(player: Player) -> None:
     player.stop()
-
-    assert output.interrupted
 
 
 def write_silence(path: Path, seconds: float) -> Path:
@@ -203,112 +419,116 @@ def write_silence(path: Path, seconds: float) -> Path:
 
 
 @pytest.fixture
-def silent_device(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make pygame play to a device that makes no sound, as on a CI runner."""
+def real_player(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcomes: list[Playback]
+) -> Player:
+    """A player on pygame with a device that makes no sound, as on a CI runner.
+
+    The speech of a text is the file of that name in ``tmp_path``, and the
+    real pauses between files are back.
+    """
     monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
-
-
-@pytest.mark.usefixtures("silent_device")
-def test_pygame_output_plays_files_to_the_end(tmp_path: Path) -> None:
-    files = [
-        write_silence(tmp_path / "first.wav", 0.2),
-        write_silence(tmp_path / "second.wav", 0.2),
-    ]
-
-    started = time.perf_counter()
-    PygameOutput().play(files)
-    elapsed = time.perf_counter() - started
-
-    # Two files of 0.2 seconds and the pause between them.
-    assert 0.5 < elapsed < 5
-
-
-@pytest.mark.usefixtures("silent_device")
-def test_pygame_output_plays_the_bundled_chime() -> None:
-    PygameOutput().play([CHIME_PATH])
-
-
-@pytest.mark.usefixtures("silent_device")
-def test_pygame_output_can_be_used_again(tmp_path: Path) -> None:
-    output = PygameOutput()
-    file = write_silence(tmp_path / "short.wav", 0.1)
-
-    output.play([file])
-    output.play([file])
-
-
-@pytest.mark.usefixtures("silent_device")
-def test_pygame_output_stops_when_interrupted(tmp_path: Path) -> None:
-    output = PygameOutput()
-    files = [write_silence(tmp_path / "long.wav", 30)] * 2
-    thread = threading.Thread(target=output.play, args=(files,))
-
-    thread.start()
-    time.sleep(0.3)
-    output.interrupt()
-    thread.join(timeout=5)
-
-    assert not thread.is_alive()
-
-
-@pytest.mark.usefixtures("silent_device")
-def test_pygame_output_plays_nothing_after_an_interrupt(tmp_path: Path) -> None:
-    output = PygameOutput()
-    output.interrupt()
-
-    started = time.perf_counter()
-    output.play([write_silence(tmp_path / "long.wav", 30)])
-
-    assert time.perf_counter() - started < 5
-
-
-@pytest.mark.usefixtures("silent_device")
-def test_file_that_is_not_audio_is_a_playback_error(tmp_path: Path) -> None:
-    file = tmp_path / "broken.mp3"
-    file.write_text("not audio", encoding="utf-8")
-
-    with pytest.raises(PlaybackError):
-        PygameOutput().play([file])
-
-
-@pytest.mark.usefixtures("silent_device")
-def test_missing_file_is_a_playback_error(tmp_path: Path) -> None:
-    with pytest.raises(PlaybackError):
-        PygameOutput().play([tmp_path / "deleted.mp3"])
-
-
-@pytest.mark.usefixtures("silent_device")
-def test_files_after_an_unplayable_one_are_still_played(tmp_path: Path) -> None:
-    broken = tmp_path / "broken.mp3"
-    broken.write_bytes(b"")
-    files = [tmp_path / "deleted.mp3", broken, write_silence(tmp_path / "ok.wav", 0.4)]
-
-    started = time.perf_counter()
-    with pytest.raises(PlaybackError, match="2 of 3"):
-        PygameOutput().play(files)
-
-    assert time.perf_counter() - started > 0.4
-
-
-@pytest.mark.usefixtures("silent_device")
-def test_player_reports_a_file_that_went_missing(tmp_path: Path) -> None:
-    outcomes: list[Playback] = []
-    player = Player(
-        lambda text: tmp_path / "deleted.mp3",
+    monkeypatch.setattr(Player, "_GAP", 0.3)
+    monkeypatch.setattr(Player, "_POLL", 0.05)
+    return Player(
+        lambda text: tmp_path / text,
         PygameOutput(),
         outcomes.append,
-        chime=write_silence(tmp_path / "chime.wav", 0.1),
+        chime=write_silence(tmp_path / "chime.wav", 0.2),
     )
 
-    player.play(["Ayşe"])
 
-    assert outcomes == [Playback(("Ayşe",), missing=(), failed=True)]
+def test_pygame_plays_files_to_the_end(
+    tmp_path: Path, real_player: Player, outcomes: list[Playback]
+) -> None:
+    write_silence(tmp_path / "first.wav", 0.2)
+    write_silence(tmp_path / "second.wav", 0.2)
+
+    started = time.perf_counter()
+    real_player.play(["first.wav", "second.wav"])
+    elapsed = time.perf_counter() - started
+
+    # Three files of 0.2 seconds and two pauses of 0.3 seconds between them.
+    assert 0.9 < elapsed < 6
+    assert outcomes == [
+        Playback(("first.wav", "second.wav"), missing=(), late=(), failed=False)
+    ]
 
 
-def test_missing_sound_device_is_a_playback_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_pygame_plays_the_bundled_chime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcomes: list[Playback]
+) -> None:
+    monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
+    write_silence(tmp_path / "short.wav", 0.1)
+    player = Player(lambda text: tmp_path / text, PygameOutput(), outcomes.append)
+
+    player.play(["short.wav"])
+
+    assert outcomes == [Playback(("short.wav",), missing=(), late=(), failed=False)]
+
+
+def test_pygame_reports_a_missing_and_a_damaged_file_and_plays_the_rest(
+    tmp_path: Path, real_player: Player, outcomes: list[Playback]
+) -> None:
+    (tmp_path / "damaged.mp3").write_bytes(b"not audio")
+    write_silence(tmp_path / "good.wav", 0.4)
+
+    started = time.perf_counter()
+    real_player.play(["deleted.mp3", "damaged.mp3", "good.wav"])
+
+    assert time.perf_counter() - started > 0.6
+    assert outcomes == [
+        Playback(
+            ("deleted.mp3", "damaged.mp3", "good.wav"),
+            missing=(),
+            late=(),
+            failed=True,
+        )
+    ]
+
+
+def test_pygame_reports_a_missing_sound_device(
+    tmp_path: Path,
+    real_player: Player,
+    outcomes: list[Playback],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SDL_AUDIODRIVER", "no-such-driver")
+    write_silence(tmp_path / "short.wav", 0.1)
 
+    real_player.play(["short.wav"])
+
+    assert outcomes == [Playback(("short.wav",), missing=(), late=(), failed=True)]
+
+
+def test_pygame_stops_in_the_middle_of_a_file(
+    tmp_path: Path, real_player: Player, outcomes: list[Playback]
+) -> None:
+    write_silence(tmp_path / "long.wav", 30)
+    real_player.enqueue(["long.wav", "long.wav"])
+    real_player.start()
+    time.sleep(0.5)
+
+    started = time.perf_counter()
+    real_player.stop()
+
+    assert time.perf_counter() - started < 5
+    assert outcomes == []
+
+
+def test_pygame_output_reports_playback_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
+    output = PygameOutput()
+    output.open()
+    try:
+        with pytest.raises(PlaybackError):
+            output.start(tmp_path / "deleted.mp3")
+        assert not output.busy()
+    finally:
+        output.close()
+
+    monkeypatch.setenv("SDL_AUDIODRIVER", "no-such-driver")
     with pytest.raises(PlaybackError):
-        PygameOutput().play([write_silence(tmp_path / "short.wav", 0.1)])
+        output.open()
