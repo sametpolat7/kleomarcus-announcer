@@ -3,12 +3,10 @@
 import datetime
 import json
 import logging
-import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from openpyxl import Workbook
 
 from announcer.app import TEST_NAME, App, SlotTakenError, unreadable_copy
 from announcer.chime import CHIME_PATH
@@ -18,96 +16,18 @@ from announcer.settings import Settings, load_settings, save_settings
 from announcer.template import DEFAULT_TEMPLATE
 from announcer.timetable import SlotHolder
 from announcer.today import Status
-from fakes import FakeClock, FakeOutput, FakeProvider
+from support import (
+    ROWS,
+    FakeClock,
+    FakeOutput,
+    FakeProvider,
+    at,
+    wait_for,
+    write_schedule,
+)
 
-MONDAY = datetime.date(2026, 11, 9)
 SIX_PM, SEVEN_PM = datetime.time(18, 0), datetime.time(19, 0)
-ROWS = [
-    ("Ayşe Yılmaz", "Pazartesi", "18:00"),
-    ("Mehmet Demir", "Pazartesi", "18:00"),
-    ("Zeynep Kaya", "Salı", "20:00"),
-]
 WATER = CustomAnnouncement("Su içmeyi unutmayın.", SEVEN_PM)
-
-
-def at(hour: int, minute: int = 0, second: int = 0) -> datetime.datetime:
-    """Return a moment on the test Monday."""
-    return datetime.datetime.combine(MONDAY, datetime.time(hour, minute, second))
-
-
-def write_schedule(path: Path, rows: list[tuple[str, str, str]]) -> Path:
-    """Write a schedule file with the given name, day and time rows."""
-    workbook = Workbook()
-    sheet = workbook.active
-    assert sheet is not None
-    sheet.append(("Ad Soyad", "Gün", "Saat"))
-    for row in rows:
-        sheet.append(row)
-    workbook.save(path)
-    return path
-
-
-@pytest.fixture
-def clock() -> FakeClock:
-    return FakeClock(at(8))
-
-
-@pytest.fixture
-def provider() -> FakeProvider:
-    return FakeProvider()
-
-
-@pytest.fixture
-def output() -> FakeOutput:
-    return FakeOutput()
-
-
-@pytest.fixture
-def settings_file(tmp_path: Path) -> Path:
-    return tmp_path / "settings" / "config.json"
-
-
-@pytest.fixture
-def schedule(tmp_path: Path) -> Path:
-    return write_schedule(tmp_path / "schedule.xlsx", ROWS)
-
-
-@pytest.fixture
-def make_app(
-    tmp_path: Path,
-    settings_file: Path,
-    provider: FakeProvider,
-    output: FakeOutput,
-    clock: FakeClock,
-    no_waiting: None,
-) -> Iterator[Callable[[], App]]:
-    """Build apps over the fakes above; they are stopped after the test."""
-    apps: list[App] = []
-
-    def make() -> App:
-        app = App(
-            settings_file, tmp_path / "audio", provider, output, clock, interval=0.01
-        )
-        apps.append(app)
-        return app
-
-    yield make
-    for app in apps:
-        app.stop()
-
-
-@pytest.fixture
-def app(make_app: Callable[[], App]) -> App:
-    return make_app()
-
-
-def wait_for(app: App, condition: Callable[[], bool]) -> None:
-    """Keep polling ``app`` until ``condition`` holds; fail if it never does."""
-    deadline = time.monotonic() + 5
-    while not condition():
-        assert time.monotonic() < deadline, "the condition never held"
-        app.poll()
-        time.sleep(0.005)
 
 
 def wait_for_speech(app: App) -> None:

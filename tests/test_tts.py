@@ -13,7 +13,7 @@ from announcer.tts import (
     TtsError,
     audio_cache_dir,
 )
-from fakes import FakeProvider
+from support import FakeProvider
 
 VOICE = "tr-TR-EmelNeural"
 HELLO = "Ayşe Yılmaz, hoş geldiniz."

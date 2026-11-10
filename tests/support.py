@@ -1,11 +1,50 @@
-"""Stand-ins for the clock, the speech service and the audio output."""
+"""Stand-ins and helpers shared by the test modules."""
 
 import datetime
+import time
 from collections.abc import Callable
 from pathlib import Path
 
+from openpyxl import Workbook
+
+from announcer.app import App
 from announcer.player import PlaybackError
 from announcer.tts import TtsError
+
+MONDAY = datetime.date(2026, 11, 9)
+
+# A schedule of made-up athletes: name, day and time.
+ROWS = [
+    ("Ayşe Yılmaz", "Pazartesi", "18:00"),
+    ("Mehmet Demir", "Pazartesi", "18:00"),
+    ("Zeynep Kaya", "Salı", "20:00"),
+]
+
+
+def at(hour: int, minute: int = 0, second: int = 0) -> datetime.datetime:
+    """Return a moment on the test Monday."""
+    return datetime.datetime.combine(MONDAY, datetime.time(hour, minute, second))
+
+
+def write_schedule(path: Path, rows: list[tuple[str, str, str]]) -> Path:
+    """Write a schedule file with the given name, day and time rows."""
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.append(("Ad Soyad", "Gün", "Saat"))
+    for row in rows:
+        sheet.append(row)
+    workbook.save(path)
+    return path
+
+
+def wait_for(app: App, condition: Callable[[], bool]) -> None:
+    """Keep polling ``app`` until ``condition`` holds; fail if it never does."""
+    deadline = time.monotonic() + 5
+    while not condition():
+        assert time.monotonic() < deadline, "the condition never held"
+        app.poll()
+        time.sleep(0.005)
 
 
 class FakeClock:

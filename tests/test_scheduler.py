@@ -5,7 +5,7 @@ import threading
 
 from announcer.scheduler import Scheduler, due_slot, missed_slots
 from announcer.timetable import Slot, Timetable
-from fakes import FakeClock
+from support import FakeClock
 
 MONDAY = datetime.date(2026, 11, 9)
 SIX_PM = datetime.time(18, 0)
