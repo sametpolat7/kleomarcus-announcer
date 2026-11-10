@@ -13,19 +13,20 @@ from announcer.loader import REQUIRED_COLUMNS
 OUTPUT = Path(__file__).resolve().parent.parent / "sample_schedule.xlsx"
 
 # Every name here is made up. Never add real athletes to this file.
+# The rows are in alphabetical order of the names.
 ROWS: tuple[tuple[str, str, time], ...] = (
     ("Ayşe Yılmaz", "Pazartesi", time(18, 0)),
+    ("Ayşe Yılmaz", "Çarşamba", time(18, 0)),
+    ("Burak Aydın", "Cumartesi", time(11, 0)),
+    ("Can Öztürk", "Salı", time(17, 30)),
+    ("Can Öztürk", "Perşembe", time(17, 30)),
+    ("Deniz Arslan", "Perşembe", time(17, 30)),
+    ("Elif Şahin", "Salı", time(19, 0)),
+    ("Elif Şahin", "Pazar", time(12, 30)),
+    ("Emre Çelik", "Çarşamba", time(20, 0)),
     ("Mehmet Demir", "Pazartesi", time(18, 0)),
     ("Zeynep Kaya", "Pazartesi", time(19, 30)),
-    ("Can Öztürk", "Salı", time(17, 30)),
-    ("Elif Şahin", "Salı", time(19, 0)),
-    ("Ayşe Yılmaz", "Çarşamba", time(18, 0)),
-    ("Emre Çelik", "Çarşamba", time(20, 0)),
-    ("Deniz Arslan", "Perşembe", time(17, 30)),
-    ("Can Öztürk", "Perşembe", time(17, 30)),
     ("Zeynep Kaya", "Cuma", time(19, 30)),
-    ("Burak Aydın", "Cumartesi", time(11, 0)),
-    ("Elif Şahin", "Pazar", time(12, 30)),
 )
 
 
