@@ -43,8 +43,9 @@ def test_athletes_who_start_together_share_a_slot_in_file_order() -> None:
             MONDAY,
             SIX_PM,
             ("Mehmet Demir, hoş geldiniz.", "Ayşe Yılmaz, hoş geldiniz."),
+            ("Mehmet Demir", "Ayşe Yılmaz"),
         ),
-        Slot(TUESDAY, SEVEN_PM, ("Zeynep Kaya, hoş geldiniz.",)),
+        Slot(TUESDAY, SEVEN_PM, ("Zeynep Kaya, hoş geldiniz.",), ("Zeynep Kaya",)),
     )
     assert timetable.conflicts == ()
 
@@ -65,7 +66,8 @@ def test_slots_are_ordered_by_weekday_then_time() -> None:
 def test_name_repeated_within_a_slot_is_said_once() -> None:
     timetable = build_timetable([AYSE, MEHMET, AYSE], [], "{ad}")
 
-    assert timetable.slots == (Slot(MONDAY, SIX_PM, ("Ayşe Yılmaz", "Mehmet Demir")),)
+    names = ("Ayşe Yılmaz", "Mehmet Demir")
+    assert timetable.slots == (Slot(MONDAY, SIX_PM, names, names),)
 
 
 def test_same_athlete_in_two_slots_is_said_in_both() -> None:
@@ -74,8 +76,8 @@ def test_same_athlete_in_two_slots_is_said_in_both() -> None:
     timetable = build_timetable([AYSE, later], [], "{ad}")
 
     assert timetable.slots == (
-        Slot(MONDAY, SIX_PM, ("Ayşe Yılmaz",)),
-        Slot(MONDAY, SEVEN_PM, ("Ayşe Yılmaz",)),
+        Slot(MONDAY, SIX_PM, ("Ayşe Yılmaz",), ("Ayşe Yılmaz",)),
+        Slot(MONDAY, SEVEN_PM, ("Ayşe Yılmaz",), ("Ayşe Yılmaz",)),
     )
 
 
@@ -85,7 +87,7 @@ def test_custom_announcement_gets_a_slot_on_each_of_its_weekdays() -> None:
     timetable = build_timetable([AYSE], [reminder], TEMPLATE)
 
     assert timetable.slots == (
-        Slot(MONDAY, SIX_PM, ("Ayşe Yılmaz, hoş geldiniz.",)),
+        Slot(MONDAY, SIX_PM, ("Ayşe Yılmaz, hoş geldiniz.",), ("Ayşe Yılmaz",)),
         Slot(MONDAY, SEVEN_PM, ("Su içmeyi unutmayın.",)),
         Slot(WEDNESDAY, SEVEN_PM, ("Su içmeyi unutmayın.",)),
     )
@@ -116,9 +118,9 @@ def test_athletes_win_a_slot_that_a_custom_announcement_also_wants() -> None:
 
     # Only Monday is lost; the announcement still plays on Tuesday.
     assert timetable.slots == (
-        Slot(MONDAY, SIX_PM, ("Ayşe Yılmaz, hoş geldiniz.",)),
+        Slot(MONDAY, SIX_PM, ("Ayşe Yılmaz, hoş geldiniz.",), ("Ayşe Yılmaz",)),
         Slot(TUESDAY, SIX_PM, ("Su içmeyi unutmayın.",)),
-        Slot(TUESDAY, SEVEN_PM, ("Zeynep Kaya, hoş geldiniz.",)),
+        Slot(TUESDAY, SEVEN_PM, ("Zeynep Kaya, hoş geldiniz.",), ("Zeynep Kaya",)),
     )
     assert timetable.conflicts == (Conflict(reminder, MONDAY, SlotHolder.ATHLETES),)
 
@@ -165,7 +167,7 @@ def test_slot_at_finds_the_slot_of_a_weekday_and_minute() -> None:
     timetable = build_timetable([AYSE, ZEYNEP], [], "{ad}")
 
     assert timetable.slot_at(TUESDAY, SEVEN_PM) == Slot(
-        TUESDAY, SEVEN_PM, ("Zeynep Kaya",)
+        TUESDAY, SEVEN_PM, ("Zeynep Kaya",), ("Zeynep Kaya",)
     )
     assert timetable.slot_at(TUESDAY, SIX_PM) is None
     assert timetable.slot_at(WEDNESDAY, SEVEN_PM) is None
@@ -226,3 +228,26 @@ def test_announcement_saved_without_conflicts_gets_all_its_slots() -> None:
     assert timetable.slot_at(WEDNESDAY, SEVEN_PM) == Slot(
         WEDNESDAY, SEVEN_PM, ("Yeni",)
     )
+
+
+def test_slot_keeps_the_athletes_behind_its_texts() -> None:
+    reminder = custom("Su içmeyi unutmayın.", SEVEN_PM, MONDAY)
+
+    timetable = build_timetable([MEHMET, AYSE, MEHMET], [reminder], TEMPLATE)
+
+    athletes, announcement = timetable.slots
+    assert athletes.names == ("Mehmet Demir", "Ayşe Yılmaz")
+    assert len(athletes.texts) == len(athletes.names)
+    assert announcement.names == ()
+
+
+def test_slots_on_gives_the_slots_of_one_weekday_in_time_order() -> None:
+    reminder = custom("Su içmeyi unutmayın.", datetime.time(9, 0), MONDAY, TUESDAY)
+
+    timetable = build_timetable([AYSE, ZEYNEP], [reminder], TEMPLATE)
+
+    assert [slot.time for slot in timetable.slots_on(MONDAY)] == [
+        datetime.time(9, 0),
+        SIX_PM,
+    ]
+    assert timetable.slots_on(SUNDAY) == ()
