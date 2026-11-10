@@ -56,19 +56,21 @@ def outcome_status(playback: Playback) -> Status:
 def todays_rows(
     timetable: Timetable,
     now: datetime.datetime,
-    outcomes: Mapping[datetime.datetime, Status],
+    outcomes: Mapping[tuple[datetime.datetime, str], Status],
 ) -> tuple[Row, ...]:
     """Return the announcements of ``now``'s date, ordered by time.
 
     ``outcomes`` holds what is known about the slots that came due, keyed by
-    the moment they were due. The custom announcements that lost today's slot
-    to something else are listed too, so that the preview hides nothing.
+    the moment they were due and their summary, so an outcome is not taken
+    for that of something else that was put at the same time later. The
+    custom announcements that lost today's slot to something else are listed
+    too, so that the preview hides nothing.
     """
     rows: list[Row] = []
     upcoming = Status.NEXT
     for slot in timetable.slots_on(now.weekday()):
         due = datetime.datetime.combine(now.date(), slot.time)
-        status = outcomes.get(due)
+        status = outcomes.get((due, summary(slot)))
         if status is None and due + _MINUTE <= now:
             status = Status.PASSED
         elif status is None:

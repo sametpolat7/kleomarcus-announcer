@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from announcer.app import TEST_NAME, App, SlotTakenError, unreadable_copy
+from announcer.app import TEST_NAME, App, SlotTakenError, backup_copy
 from announcer.chime import CHIME_PATH
 from announcer.loader import RowProblem, ScheduleFileError, SkippedRow
 from announcer.models import CustomAnnouncement
@@ -471,9 +471,14 @@ def test_dropped_custom_announcements_are_counted(
 
     assert app.dropped_announcements == 1
     assert len(app.settings.custom_announcements) == 1
+    # The next save leaves the dropped one out, so the file is copied first.
+    assert app.settings_backed_up
+    app.set_template("Hoş geldiniz, {ad}.")
+    assert '"25:00"' not in settings_file.read_text(encoding="utf-8")
+    assert '"25:00"' in backup_copy(settings_file).read_text(encoding="utf-8")
 
 
-def test_unreadable_settings_are_set_aside_and_the_defaults_used(
+def test_unreadable_settings_are_copied_and_the_defaults_used(
     make_app: Callable[[], App], settings_file: Path
 ) -> None:
     settings_file.parent.mkdir(parents=True)
@@ -482,9 +487,95 @@ def test_unreadable_settings_are_set_aside_and_the_defaults_used(
     app = make_app()
     app.save_announcement(WATER)
 
-    assert app.settings_unreadable
-    assert unreadable_copy(settings_file).read_text(encoding="utf-8") == "{ not json"
+    assert (app.settings_unreadable, app.settings_backed_up) == (True, True)
+    assert backup_copy(settings_file).read_text(encoding="utf-8") == "{ not json"
     assert load_settings(settings_file).settings.custom_announcements == (WATER,)
+
+
+def test_settings_that_cannot_be_copied_are_reported_as_such(
+    make_app: Callable[[], App], settings_file: Path
+) -> None:
+    settings_file.mkdir(parents=True)  # a folder can be neither read nor copied
+
+    app = make_app()
+
+    assert (app.settings_unreadable, app.settings_backed_up) == (True, False)
+
+
+def test_settings_without_problems_are_not_copied(
+    make_app: Callable[[], App], settings_file: Path
+) -> None:
+    save_settings(Settings(custom_announcements=(WATER,)), settings_file)
+
+    app = make_app()
+
+    assert not app.settings_backed_up
+    assert not backup_copy(settings_file).exists()
+
+
+def test_athletes_keep_the_old_template_until_the_new_one_has_speech(
+    app: App,
+    schedule: Path,
+    provider: FakeProvider,
+    output: FakeOutput,
+    clock: FakeClock,
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    old = app.timetable.slots[0].texts
+
+    provider.offline = True
+    app.set_template("Hoş geldiniz, {ad}.")
+    wait_for_speech(app)
+
+    assert app.settings.template == "Hoş geldiniz, {ad}."
+    assert app.spoken_template == DEFAULT_TEMPLATE
+    assert app.timetable.slots[0].texts == old
+    assert len(app.unspoken) == 3
+    clock.now = at(18)
+    app.start()
+    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
+    assert len(output.played) == 3  # the chime and both athletes
+
+    provider.offline = False
+    app.refresh()
+    wait_for_speech(app)
+
+    assert app.spoken_template == "Hoş geldiniz, {ad}."
+    assert app.timetable.slots[0].texts[0] == "Hoş geldiniz, Ayşe Yılmaz."
+    assert not app.unspoken
+
+
+def test_template_with_stored_speech_is_spoken_at_once(
+    app: App, schedule: Path, provider: FakeProvider
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    app.set_template("Hoş geldiniz, {ad}.")
+    wait_for_speech(app)
+    provider.offline = True
+
+    app.set_template(DEFAULT_TEMPLATE)
+
+    assert not app.generating
+    assert app.spoken_template == DEFAULT_TEMPLATE
+
+
+def test_outcome_does_not_pass_to_what_is_put_at_that_time_later(
+    app: App, clock: FakeClock
+) -> None:
+    app.save_announcement(WATER)
+    wait_for_speech(app)
+    clock.now = at(19)
+    app.start()
+    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
+
+    clock.now = at(19, 5)
+    app.save_announcement(
+        CustomAnnouncement("Salon kapanıyor.", WATER.time), replacing=0
+    )
+
+    assert statuses(app) == [Status.PASSED]
 
 
 def test_actions_and_outcomes_are_logged_with_their_cause(
