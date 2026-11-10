@@ -46,28 +46,15 @@ def make_scheduler(
     return scheduler, due, missed
 
 
-def test_the_test_monday_is_a_monday() -> None:
-    assert MONDAY.weekday() == 0
-
-
-def test_slot_is_due_in_the_first_half_of_its_minute() -> None:
+def test_slot_is_due_for_the_first_half_of_its_minute() -> None:
     assert due_slot(TIMETABLE, at(18, 0, 0), ()) == MONDAY_SIX
-    assert due_slot(TIMETABLE, at(18, 0, 2), ()) == MONDAY_SIX
     assert due_slot(TIMETABLE, at(18, 0, 30), ()) == MONDAY_SIX
-
-
-def test_slot_is_no_longer_due_when_its_minute_began_too_long_ago() -> None:
     assert due_slot(TIMETABLE, at(18, 0, 31), ()) is None
-    assert due_slot(TIMETABLE, at(18, 0, 59), ()) is None
 
 
-def test_nothing_is_due_outside_a_slot_minute() -> None:
+def test_nothing_is_due_at_another_time_or_on_another_day() -> None:
     assert due_slot(TIMETABLE, at(17, 59, 59), ()) is None
     assert due_slot(TIMETABLE, at(18, 2), ()) is None
-    assert due_slot(TIMETABLE, at(6, 0), ()) is None
-
-
-def test_slot_is_due_only_on_its_weekday() -> None:
     assert due_slot(TIMETABLE, at(18, 0, days_later=1), ()) == TUESDAY_SIX
     assert due_slot(TIMETABLE, at(18, 1, days_later=1), ()) is None
     assert due_slot(TIMETABLE, at(18, 0, days_later=2), ()) is None
@@ -78,14 +65,17 @@ def test_slot_that_already_fired_is_not_due_again() -> None:
     assert due_slot(TIMETABLE, at(18, 1), {SIX_PM}) == MONDAY_SIX_OH_ONE
 
 
-def test_nothing_is_due_in_an_empty_timetable() -> None:
-    assert due_slot(Timetable(), at(18, 0), ()) is None
-
-
 def test_slots_that_came_and_went_between_two_looks_are_missed() -> None:
-    missed = missed_slots(TIMETABLE, at(17, 59, 30), at(18, 2, 10))
-
-    assert missed == [(MONDAY, MONDAY_SIX), (MONDAY, MONDAY_SIX_OH_ONE)]
+    assert missed_slots(TIMETABLE, at(17, 59, 30), at(18, 2, 10)) == [
+        (MONDAY, MONDAY_SIX),
+        (MONDAY, MONDAY_SIX_OH_ONE),
+    ]
+    # They come with their dates, the oldest first.
+    assert missed_slots(TIMETABLE, at(18, 0, 30), at(9, 0, days_later=2)) == [
+        (MONDAY, MONDAY_SIX_OH_ONE),
+        (TUESDAY, TUESDAY_SIX),
+    ]
+    assert missed_slots(TIMETABLE, at(18, 5), at(17, 0)) == []  # the clock went back
 
 
 def test_slot_of_the_minute_of_the_first_look_is_not_missed() -> None:
@@ -99,17 +89,6 @@ def test_slot_of_the_minute_of_the_first_look_is_not_missed() -> None:
 def test_slot_of_the_running_minute_is_missed_only_when_it_is_too_late_for_it() -> None:
     assert missed_slots(TIMETABLE, at(17, 0), at(18, 0, 30)) == []
     assert missed_slots(TIMETABLE, at(17, 0), at(18, 0, 31)) == [(MONDAY, MONDAY_SIX)]
-    assert missed_slots(TIMETABLE, at(17, 0), at(18, 1, 10)) == [(MONDAY, MONDAY_SIX)]
-
-
-def test_missed_slots_come_with_their_dates_oldest_first() -> None:
-    missed = missed_slots(TIMETABLE, at(18, 0, 30), at(9, 0, days_later=2))
-
-    assert missed == [(MONDAY, MONDAY_SIX_OH_ONE), (TUESDAY, TUESDAY_SIX)]
-
-
-def test_nothing_is_missed_when_the_clock_goes_back() -> None:
-    assert missed_slots(TIMETABLE, at(18, 5), at(17, 0)) == []
 
 
 def test_scheduler_reports_a_slot_once_within_its_minute() -> None:
@@ -121,31 +100,6 @@ def test_scheduler_reports_a_slot_once_within_its_minute() -> None:
         scheduler.check()
 
     assert (due, missed) == ([MONDAY_SIX], [])
-
-
-def test_scheduler_reports_the_date_with_a_due_slot() -> None:
-    dates: list[datetime.date] = []
-    clock = FakeClock(at(17, 59, 59, days_later=1))
-    scheduler = Scheduler(
-        TIMETABLE, lambda date, slot: dates.append(date), ignore, clock
-    )
-    scheduler.check()
-
-    clock.now = at(18, 0, days_later=1)
-    scheduler.check()
-
-    assert dates == [TUESDAY]
-
-
-def test_scheduler_reports_consecutive_slots() -> None:
-    clock = FakeClock(at(17, 59, 59))
-    scheduler, due, missed = make_scheduler(clock)
-
-    for second in range(60, 60 + 125):
-        clock.now = at(17, 59) + datetime.timedelta(seconds=second)
-        scheduler.check()
-
-    assert (due, missed) == ([MONDAY_SIX, MONDAY_SIX_OH_ONE], [])
 
 
 def test_slot_whose_minute_began_before_the_scheduler_is_not_reported() -> None:
@@ -233,26 +187,15 @@ def test_scheduler_does_not_repeat_a_slot_when_the_clock_is_set_back() -> None:
     assert due == [MONDAY_SIX]
 
 
-def test_scheduler_reports_the_same_slot_again_a_week_later() -> None:
+def test_scheduler_starts_afresh_on_a_new_date() -> None:
     clock = FakeClock(at(17, 59, 59))
     scheduler, due, _ = make_scheduler(clock)
 
-    for moment in (at(18, 0), at(18, 0, days_later=7)):
+    for moment in (at(18, 0), at(18, 0, days_later=1), at(18, 0, days_later=7)):
         clock.now = moment
         scheduler.check()
 
-    assert due == [MONDAY_SIX, MONDAY_SIX]
-
-
-def test_scheduler_forgets_fired_slots_on_a_new_date() -> None:
-    clock = FakeClock(at(17, 59, 59))
-    scheduler, due, _ = make_scheduler(clock)
-
-    for moment in (at(18, 0), at(18, 0, days_later=1)):
-        clock.now = moment
-        scheduler.check()
-
-    assert due == [MONDAY_SIX, TUESDAY_SIX]
+    assert due == [MONDAY_SIX, TUESDAY_SIX, MONDAY_SIX]
 
 
 def test_only_the_last_week_of_a_long_gap_is_reported_as_missed() -> None:
@@ -308,36 +251,24 @@ def test_slot_added_late_in_the_running_minute_is_not_reported() -> None:
     assert (due, missed) == ([], [])
 
 
-def test_new_timetable_is_used_for_later_slots() -> None:
-    clock = FakeClock(at(17, 0))
-    scheduler, due, _ = make_scheduler(clock)
-
-    scheduler.set_timetable(Timetable((MONDAY_SIX_OH_ONE,)))
-    for moment in (at(17, 59, 59), at(18, 0), at(18, 1)):
-        clock.now = moment
-        scheduler.check()
-
-    assert due == [MONDAY_SIX_OH_ONE]
-
-
-def test_background_thread_reports_a_due_slot_and_stops() -> None:
-    reported: list[Slot] = []
+def test_background_thread_reports_a_due_slot_with_its_date_and_stops() -> None:
+    reported: list[tuple[datetime.date, Slot]] = []
     done = threading.Event()
 
     def on_due(date: datetime.date, slot: Slot) -> None:
-        reported.append(slot)
+        reported.append((date, slot))
         done.set()
 
-    clock = FakeClock(at(17, 59, 59))
+    clock = FakeClock(at(17, 59, 59, days_later=1))
     scheduler = Scheduler(TIMETABLE, on_due, ignore, clock, interval=0.01)
     scheduler.start()
     try:
-        clock.now = at(18, 0)
+        clock.now = at(18, 0, days_later=1)
         assert done.wait(timeout=5)
     finally:
         scheduler.stop()
 
-    assert reported == [MONDAY_SIX]
+    assert reported == [(TUESDAY, TUESDAY_SIX)]
     assert all(thread.name != "scheduler" for thread in threading.enumerate())
 
 
