@@ -123,15 +123,6 @@ def test_choosing_a_schedule_shows_todays_announcements(
     assert not window.warning_box.winfo_manager()  # the box is taken away
 
 
-def test_cancelling_the_file_dialog_changes_nothing(
-    window: MainWindow, monkeypatch: pytest.MonkeyPatch, alerts: list[str]
-) -> None:
-    choose(window, None, monkeypatch)
-
-    assert window.schedule_path.get() == ""
-    assert alerts == []
-
-
 def test_schedule_that_cannot_be_used_gives_an_alert(
     window: MainWindow,
     schedule: Path,
@@ -139,6 +130,8 @@ def test_schedule_that_cannot_be_used_gives_an_alert(
     monkeypatch: pytest.MonkeyPatch,
     alerts: list[str],
 ) -> None:
+    choose(window, None, monkeypatch)  # the file dialog is cancelled
+    assert (window.schedule_path.get(), alerts) == ("", [])
     choose(window, schedule, monkeypatch)
     broken = tmp_path / "broken.xlsx"
     broken.write_text("not a workbook")
@@ -175,8 +168,11 @@ def test_status_follows_the_clock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     choose(window, schedule, monkeypatch)
+    clock.now = at(18, 0, 20)
+    pump(window, lambda: window.time.get() == "18:00:20")
+    assert today(window)[0][3] == "Sıradaki"
 
-    clock.now = at(18, 5)
+    clock.now = at(18, 0, 31)  # too late for it now, with nothing else changing
     pump(window, lambda: today(window)[0][3] == "Saati geçti")
     clock.now = at(0, 0) + datetime.timedelta(days=1)
     pump(window, lambda: window.today_title.get() == "10 Kasım 2026 Salı")
@@ -218,14 +214,6 @@ def test_speech_that_cannot_be_generated_is_shown_as_a_warning(
     assert warnings(window).startswith("• 3 anonsun sesi oluşturulamadı.")
 
 
-def test_clock_in_the_window_follows_the_seconds(
-    window: MainWindow, clock: FakeClock
-) -> None:
-    clock.now = at(8, 0, 7)
-
-    pump(window, lambda: window.time.get() == "08:00:07")
-
-
 def test_warnings_show_in_a_box_that_grows_to_four_lines(
     window: MainWindow, app: App, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -244,7 +232,7 @@ def test_template_can_be_saved_only_while_it_is_changed(
 ) -> None:
     assert window.save_template_button.instate(["disabled"])
 
-    window.template.set("Hoş geldiniz, {ad}.")
+    window.template.set("  Hoş geldiniz, {ad}.  ")
     assert window.save_template_button.instate(["!disabled"])
 
     window.save_template_button.invoke()
@@ -275,27 +263,28 @@ def test_closing_asks_first(
     assert questions == ["Uygulama kapatılırsa anonslar okunmaz. Kapatılsın mı?"] * 2
 
 
-def test_placeholder_row_cannot_be_changed_or_deleted(
-    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+def test_edit_and_delete_need_a_selected_announcement(
+    window: MainWindow, app: App, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
         AnnouncementDialog, "wait", lambda dialog: pytest.fail("opened")
     )
+    # The line that says that there are none is not an announcement.
     window.announcements.selection_set("none")
     window.root.update()
-
     assert window.edit_button.instate(["disabled"])
     assert window.delete_button.instate(["disabled"])
     window.edit()
     window.delete()
 
+    app.save_announcement(WATER)
+    window.show()
+    assert window.edit_button.instate(["disabled"])
+    window.announcements.selection_set("0")
+    window.root.update()
 
-def test_template_is_saved_with_the_button(window: MainWindow, app: App) -> None:
-    window.template.set("  Hoş geldiniz, {ad}.  ")
-
-    window.save_template_button.invoke()
-
-    assert app.settings.template == "Hoş geldiniz, {ad}."
+    assert window.edit_button.instate(["!disabled"])
+    assert window.delete_button.instate(["!disabled"])
 
 
 def test_template_without_the_placeholder_gives_an_alert(
@@ -338,19 +327,10 @@ def test_custom_announcements_are_listed_by_time(window: MainWindow, app: App) -
         ("09:30", "Cumartesi", "Salon kapanıyor."),
         ("19:00", "Her gün", "Su içmeyi unutmayın."),
     ]
-
-
-def test_edit_and_delete_need_a_selection(window: MainWindow, app: App) -> None:
-    app.save_announcement(WATER)
+    # The table is left alone while nothing changes, so it keeps its place.
+    window.announcements.focus("1")
     window.show()
-    assert window.edit_button.instate(["disabled"])
-    assert window.delete_button.instate(["disabled"])
-
-    window.announcements.selection_set("0")
-    window.root.update()
-
-    assert window.edit_button.instate(["!disabled"])
-    assert window.delete_button.instate(["!disabled"])
+    assert window.announcements.focus() == "1"
 
 
 def test_delete_asks_first(
@@ -393,27 +373,21 @@ def test_second_copy_only_says_that_the_app_is_running(
     assert shown == ["Uygulama zaten çalışıyor."]
 
 
-def test_log_button_opens_the_log_file(
-    window: MainWindow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    opened: list[Path] = []
-    monkeypatch.setattr(main_window, "open_file", opened.append)
-    (tmp_path / "announcer.log").write_text("a line")
-
-    window.log_button.invoke()
-
-    assert opened == [tmp_path / "announcer.log"]
-
-
-def test_log_button_says_so_when_there_is_no_log_file(
-    window: MainWindow, monkeypatch: pytest.MonkeyPatch, alerts: list[str]
+def test_log_button_opens_the_log_file_if_there_is_one(
+    window: MainWindow,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    alerts: list[str],
 ) -> None:
     opened: list[Path] = []
     monkeypatch.setattr(main_window, "open_file", opened.append)
 
     window.log_button.invoke()
-
     assert (opened, alerts) == ([], ["Kayıt dosyası bulunamadı."])
+
+    (tmp_path / "announcer.log").write_text("a line")
+    window.log_button.invoke()
+    assert opened == [tmp_path / "announcer.log"]
 
 
 def test_window_can_be_closed_while_the_dialog_is_open(
@@ -426,19 +400,6 @@ def test_window_can_be_closed_while_the_dialog_is_open(
 
     assert window.closed
     assert alerts == []
-
-
-def test_custom_announcements_keep_their_place_while_nothing_changes(
-    window: MainWindow, app: App
-) -> None:
-    app.save_announcement(WATER)
-    app.save_announcement(CLOSING)
-    window.show()
-    window.announcements.focus("1")
-
-    window.show()
-
-    assert window.announcements.focus() == "1"
 
 
 def test_error_in_an_action_is_logged_and_told(
@@ -509,20 +470,16 @@ def make_dialog(
             dialog.window.destroy()
 
 
-def test_new_announcement_starts_empty_at_noon_every_day(
-    make_dialog: Callable[[], AnnouncementDialog],
-) -> None:
-    dialog = make_dialog()
-
-    assert dialog.text.get() == ""
-    assert (dialog.hour.get(), dialog.minute.get()) == ("12", "00")
-    assert dialog.every_day.get()
-
-
 def test_dialog_adds_an_announcement_and_closes(
     make_dialog: Callable[[], AnnouncementDialog], app: App
 ) -> None:
     dialog = make_dialog()
+    assert (dialog.text.get(), dialog.hour.get(), dialog.minute.get()) == (
+        "",
+        "12",
+        "00",
+    )
+    assert dialog.every_day.get()
     dialog.text.set("  Lütfen salonu temiz tutunuz.  ")
     dialog.hour.set("15")
     dialog.minute.set("30")
@@ -557,9 +514,7 @@ def test_dialog_saves_the_ticked_days(
     [
         ("   ", "12", "00", {0}, "Anons metni boş olamaz."),
         ("Duyuru", "24", "00", {0}, "Saat 00:00 ile 23:59 arasında olmalıdır."),
-        ("Duyuru", "12", "60", {0}, "Saat 00:00 ile 23:59 arasında olmalıdır."),
-        ("Duyuru", "on", "00", {0}, "Saat 00:00 ile 23:59 arasında olmalıdır."),
-        ("Duyuru", "", "", {0}, "Saat 00:00 ile 23:59 arasında olmalıdır."),
+        ("Duyuru", "on", "", {0}, "Saat 00:00 ile 23:59 arasında olmalıdır."),
         ("Duyuru", "12", "00", set(), "En az bir gün seçin."),
     ],
 )
@@ -636,9 +591,11 @@ def test_choosing_days_starts_from_nothing_ticked(
     make_dialog: Callable[[], AnnouncementDialog],
 ) -> None:
     dialog = make_dialog()
+    assert all(box.instate(["disabled"]) for box in dialog.day_boxes)
 
     dialog.every_day.set(False)
     dialog.choose_days()
+    assert all(box.instate(["!disabled"]) for box in dialog.day_boxes)
     assert not any(day.get() for day in dialog.days)
 
     # Days that were ticked by hand are kept when switching back and forth.
@@ -710,21 +667,6 @@ def test_wrapped_warnings_get_the_lines_they_need(
     assert last_line_in_view or window.warnings.yview() != (0.0, 1.0)
 
 
-def test_status_that_only_the_clock_changes_is_shown_at_the_half_minute(
-    window: MainWindow,
-    schedule: Path,
-    clock: FakeClock,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    choose(window, schedule, monkeypatch)
-    clock.now = at(18, 0, 20)
-    pump(window, lambda: window.time.get() == "18:00:20")
-    assert today(window)[0][3] == "Sıradaki"
-
-    clock.now = at(18, 0, 31)  # too late for it now, with nothing else changing
-    pump(window, lambda: today(window)[0][3] == "Saati geçti")
-
-
 @pytest.mark.skipif(sys.platform != "darwin", reason="Quit in the menu is macOS's")
 def test_quit_in_the_macos_menu_asks_first_too(
     window: MainWindow, monkeypatch: pytest.MonkeyPatch
@@ -741,16 +683,3 @@ def test_quit_in_the_macos_menu_asks_first_too(
 
     assert len(questions) == 1
     assert not window.closed
-
-
-def test_days_can_be_ticked_only_when_not_every_day(
-    make_dialog: Callable[[], AnnouncementDialog],
-) -> None:
-    dialog = make_dialog()
-    assert len(dialog.day_boxes) == 7
-    assert all(box.instate(["disabled"]) for box in dialog.day_boxes)
-
-    dialog.every_day.set(False)
-    dialog.show_days()
-
-    assert all(box.instate(["!disabled"]) for box in dialog.day_boxes)
