@@ -45,6 +45,11 @@ _WARNING_BACKGROUND = "#fff3cd"
 _WARNING_TEXT = "#4d3b00"
 _WARNING_LINES = 4  # how many are shown before the rest has to be scrolled to
 _NO_ROW = "none"  # the id of the line that says that a table is empty
+# The logo in several sizes. The largest comes first: macOS uses only that one.
+_ICONS = tuple(
+    Path(__file__).parent.parent / "assets" / f"icon-{size}.png"
+    for size in (256, 64, 32, 16)
+)
 _MAC_QUIT = "::tk::mac::Quit"  # what macOS calls for Quit in the menu and the Dock
 
 
@@ -63,10 +68,16 @@ def open_file(path: Path) -> None:
         subprocess.run(["open", str(path)], check=False)
 
 
+def _set_icon(root: tk.Tk) -> None:
+    """Put the logo on the window and its dialogs, the taskbar and the Dock."""
+    root.iconphoto(True, *(tk.PhotoImage(master=root, file=path) for path in _ICONS))
+
+
 def tell_already_running() -> None:
     """Say that the app is running already, for a copy that was started on top."""
     root = tk.Tk()
     root.withdraw()  # only the message is shown
+    _set_icon(root)
     messagebox.showinfo(APP_NAME, texts.ALREADY_RUNNING, parent=root)
     root.destroy()
 
@@ -96,6 +107,7 @@ class MainWindow:
 
         self.root = tk.Tk()
         self.root.title(APP_NAME)
+        _set_icon(self.root)
         # Small enough for a laptop screen; the tables take up the difference.
         height = min(800, self.root.winfo_screenheight() - 120)
         self.root.geometry(f"860x{height}")
