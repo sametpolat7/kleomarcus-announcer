@@ -116,7 +116,7 @@ def test_choosing_a_schedule_shows_todays_announcements(
     assert window.schedule_path.get() == str(schedule)
     assert window.refreshed.get() == "Son yenileme: 09.11.2026 08:00:00"
     assert today(window) == [
-        ("18:00", "Sporcu", "Ayşe Yılmaz, Mehmet Demir", "Sıradaki")
+        ("18:00", "2 sporcu", "Ayşe Yılmaz, Mehmet Demir", "Sıradaki")
     ]
     pump(window, lambda: warnings(window) == "")
     assert not window.warning_box.winfo_manager()  # the box is taken away
