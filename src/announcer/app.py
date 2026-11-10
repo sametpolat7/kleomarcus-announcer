@@ -50,6 +50,9 @@ from announcer.tts import AudioCache, TtsError, TtsProvider
 
 TEST_NAME = "Ayşe Yılmaz"  # a made-up athlete for the test announcement
 
+_WATCH = datetime.timedelta(seconds=2)  # between two looks at the schedule file
+_RETRY = datetime.timedelta(minutes=5)  # before missing speech is tried again
+
 _log = logging.getLogger(__name__)
 
 
@@ -100,6 +103,10 @@ class _TestUnspoken:
 
 type _Event = _Due | _Missed | Playback | _Generated | _TestUnspoken
 
+# What tells a file from an earlier version of itself: when it was changed and
+# its size, or None if there is no such file.
+type _FileState = tuple[int, int] | None
+
 
 class App:
     """The state of the app and the actions on it.
@@ -135,10 +142,16 @@ class App:
         self.schedule_error: ScheduleFileError | None = None  # of the last reading
         self.refreshed_at: datetime.datetime | None = None  # the last good reading
         self.timetable = Timetable()
+        # What the schedule file looked like when it was last read, and when it
+        # was last looked at; a file that was saved since is read again.
+        self._read_file: _FileState = None
+        self._seen_file: _FileState = None
+        self._watched_at = clock()
 
         self.generating = False  # speech is being generated right now
         self.unspoken: tuple[str, ...] = ()  # the texts that have no speech
         self._regenerate = False  # the texts changed while generating
+        self._generated_at = clock()  # when speech was last asked for
 
         self.last_announcement: LastAnnouncement | None = None
         self.test_status: Status | None = None  # of the latest test announcement
@@ -172,6 +185,7 @@ class App:
         """
         path = self.settings.schedule_path
         if path is not None:
+            self._read_file = self._seen_file = _file_state(path)
             try:
                 self._use(path, load_schedule(path))
             except ScheduleFileError as error:
@@ -185,8 +199,10 @@ class App:
         Raises ``ScheduleFileError`` if it cannot be used and ``OSError`` if
         the choice cannot be saved; nothing changes then.
         """
+        state = _file_state(path)
         loaded = load_schedule(path)
         self._save(dataclasses.replace(self.settings, schedule_path=path))
+        self._read_file = self._seen_file = state
         self._use(path, loaded)
         self._rebuild()
 
@@ -250,7 +266,14 @@ class App:
         """
         if not is_valid_template(template):
             raise ValueError(f"The template has no {PLACEHOLDER} placeholder")
-        text = render(template, TEST_NAME)
+        self.preview(render(template, TEST_NAME))
+
+    def preview(self, text: str) -> None:
+        """Announce ``text`` once as a test, after what is queued.
+
+        The speech is generated first if it is not stored, which needs a
+        network connection. ``test_status`` tells how it went.
+        """
         _log.info('Test announcement requested: "%s"', text)
         self.test_status = Status.PLAYING
         threading.Thread(
@@ -264,6 +287,8 @@ class App:
     def poll(self) -> bool:
         """Take in what the background threads reported since the last call.
 
+        Now and then this also reads a schedule file again that was saved in
+        the meantime, and asks again for speech that could not be generated.
         Returns whether anything changed.
         """
         changed = False
@@ -271,7 +296,7 @@ class App:
             try:
                 event = self._events.get_nowait()
             except queue.Empty:
-                return changed
+                return self._keep_up() or changed
             changed = True
             match event:
                 case _Due(due, slot):
@@ -301,6 +326,32 @@ class App:
                         self._generate()
                 case _TestUnspoken():
                     self.test_status = Status.NO_SPEECH
+
+    def _keep_up(self) -> bool:
+        """Follow the schedule file and the missing speech; return whether
+        anything changed."""
+        now = self._clock()
+        if abs(now - self._watched_at) < _WATCH:
+            return False
+        self._watched_at = now
+        if (
+            self.unspoken
+            and not self.generating
+            and abs(now - self._generated_at) >= _RETRY
+        ):
+            _log.info("Trying again to generate the missing speech")
+            self._generate()
+        path = self.settings.schedule_path
+        if path is None:
+            return False
+        state = _file_state(path)
+        if state == self._read_file or state != self._seen_file:
+            # Unchanged, or still being written: wait until it has settled.
+            self._seen_file = state
+            return False
+        _log.info("The schedule file was changed; reading it again")
+        self.refresh()
+        return True
 
     def _load_settings(self) -> LoadedSettings:
         """Load the settings, or the defaults if the file cannot be read.
@@ -398,6 +449,7 @@ class App:
             self._regenerate = True  # once more when the running round ends
             return
         self._regenerate = False
+        self._generated_at = self._clock()
         template = self.settings.template
         wanted = build_timetable(
             self._entries, self.settings.custom_announcements, template
@@ -480,6 +532,15 @@ class App:
                 "%s skipped, the computer was asleep: %s", name, _quoted(playback.late)
             )
         self._events.put(playback)
+
+
+def _file_state(path: Path) -> _FileState:
+    """Return what tells a file from an earlier version of itself."""
+    try:
+        status = path.stat()
+    except OSError:
+        return None
+    return status.st_mtime_ns, status.st_size
 
 
 def backup_copy(settings_file: Path) -> Path:
