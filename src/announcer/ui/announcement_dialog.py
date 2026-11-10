@@ -31,6 +31,9 @@ class AnnouncementDialog:
         )
         self.window.resizable(False, False)
         self.window.transient(parent.winfo_toplevel())
+        self.window.geometry(
+            f"+{parent.winfo_rootx() + 60}+{parent.winfo_rooty() + 60}"
+        )
 
         time = existing.time if existing else datetime.time(12, 0)
         weekdays = existing.weekdays if existing else ALL_WEEKDAYS
@@ -102,6 +105,7 @@ class AnnouncementDialog:
 
     def wait(self) -> None:
         """Keep the main window out of reach until the dialog is closed."""
+        self.window.wait_visibility()
         self.window.grab_set()
         self.window.wait_window()
 

@@ -8,7 +8,7 @@ import sys
 import tkinter as tk
 from collections.abc import Callable
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font, messagebox, ttk
 from types import TracebackType
 
 from announcer import APP_NAME
@@ -151,9 +151,11 @@ class MainWindow:
             widths={"time": 60, "kind": 70, "text": 380, "status": 150},
             stretch="text",
         )
-        bold = ("TkDefaultFont", 0, "bold")
-        self.today.tag_configure(Status.NEXT.name, font=bold)
-        self.today.tag_configure(Status.PLAYING.name, font=bold)
+        # Kept on the window, as tkinter drops a font that nothing refers to.
+        self._bold = font.nametofont("TkDefaultFont").copy()
+        self._bold.configure(weight="bold")
+        self.today.tag_configure(Status.NEXT.name, font=self._bold)
+        self.today.tag_configure(Status.PLAYING.name, font=self._bold)
         self.today.tag_configure(Status.PASSED.name, foreground="#808080")
         for status in _PROBLEMS:
             self.today.tag_configure(status.name, foreground="#c0392b")
@@ -217,7 +219,6 @@ class MainWindow:
             relief="flat",
             highlightthickness=0,
             font="TkDefaultFont",
-            background=ttk.Style().lookup("TFrame", "background") or "",
         )
         self.warnings.grid(row=0, column=0, sticky="ew")
         scrollbar = ttk.Scrollbar(box, orient="vertical", command=self.warnings.yview)
@@ -333,20 +334,27 @@ class MainWindow:
 
     def _tick(self) -> None:
         """Take in what the app has to report, and follow the clock."""
-        changed = self._app.poll()
-        minute = self._clock().replace(second=0, microsecond=0)
-        if changed or minute != self._shown_minute:
-            self.show()
-        self._after = self.root.after(_POLL, self._tick)
+        try:
+            changed = self._app.poll()
+            minute = self._clock().replace(second=0, microsecond=0)
+            if changed or minute != self._shown_minute:
+                self.show()
+        except Exception:
+            # Not shown in a box: it would come up again four times a second.
+            _log.exception("Bringing the window up to date failed")
+        finally:
+            self._after = self.root.after(_POLL, self._tick)
 
     # What the operator can do
 
     def choose(self) -> None:
         """Ask for a schedule file and use it."""
+        current = self._app.settings.schedule_path
         chosen = filedialog.askopenfilename(
             parent=self.root,
             title="Program Dosyasını Seç",
             filetypes=[("Excel dosyası", "*.xlsx")],
+            initialdir=None if current is None else current.parent,
         )
         if not chosen:
             return
