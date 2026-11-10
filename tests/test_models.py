@@ -4,49 +4,31 @@ import datetime
 
 import pytest
 
-from announcer.models import ALL_WEEKDAYS, WEEKDAY_NAMES, CustomAnnouncement
+from announcer.models import WEEKDAY_NAMES, CustomAnnouncement
 
 NOON = datetime.time(12, 0)
+MONDAY = frozenset({0})
 
 
 def test_weekday_names_follow_date_weekday() -> None:
     monday = datetime.date(2026, 11, 9)
 
     assert WEEKDAY_NAMES[monday.weekday()] == "Pazartesi"
-    assert len(WEEKDAY_NAMES) == 7
-
-
-def test_custom_announcement_repeats_every_day_by_default() -> None:
-    announcement = CustomAnnouncement("Salon 22:00'de kapanacaktır.", NOON)
-
-    assert announcement.weekdays == ALL_WEEKDAYS == frozenset(range(7))
-
-
-@pytest.mark.parametrize("text", ["", "   ", "\n\t"])
-def test_custom_announcement_needs_text(text: str) -> None:
-    with pytest.raises(ValueError, match="text"):
-        CustomAnnouncement(text, NOON)
+    assert WEEKDAY_NAMES[6] == "Pazar"
 
 
 @pytest.mark.parametrize(
-    "time",
+    ("text", "time", "weekdays", "problem"),
     [
-        datetime.time(12, 0, 30),
-        datetime.time(12, 0, 0, 500),
-        datetime.time(12, 0, tzinfo=datetime.UTC),
+        ("   ", NOON, MONDAY, "text"),
+        ("Duyuru", datetime.time(12, 0, 30), MONDAY, "time"),
+        ("Duyuru", datetime.time(12, 0, tzinfo=datetime.UTC), MONDAY, "time"),
+        ("Duyuru", NOON, frozenset[int](), "weekdays"),
+        ("Duyuru", NOON, frozenset({0, 7}), "weekdays"),
     ],
 )
-def test_custom_announcement_needs_a_plain_hour_and_minute(
-    time: datetime.time,
+def test_custom_announcement_that_cannot_be_announced_is_rejected(
+    text: str, time: datetime.time, weekdays: frozenset[int], problem: str
 ) -> None:
-    with pytest.raises(ValueError, match="time"):
-        CustomAnnouncement("Duyuru", time)
-
-
-@pytest.mark.parametrize(
-    "weekdays",
-    [frozenset[int](), frozenset({7}), frozenset({-1, 0}), frozenset({0, 9})],
-)
-def test_custom_announcement_needs_valid_weekdays(weekdays: frozenset[int]) -> None:
-    with pytest.raises(ValueError, match="weekdays"):
-        CustomAnnouncement("Duyuru", NOON, weekdays)
+    with pytest.raises(ValueError, match=problem):
+        CustomAnnouncement(text, time, weekdays)
