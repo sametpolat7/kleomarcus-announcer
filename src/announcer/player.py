@@ -4,8 +4,10 @@ Texts to announce are queued and played on a background thread: one chime,
 then the stored speech of each text. A text without stored speech is skipped
 and reported, so the app can show it.
 
-Nothing is announced late. If the computer goes to sleep while texts are
-playing or waiting in the queue, they are skipped and reported when it wakes.
+Nothing is announced late after a sleep. If the computer goes to sleep while
+texts are playing or waiting in the queue, they are skipped and reported when
+it wakes. Only a sleep of under half a minute goes unnoticed, and what was
+playing then carries on by that much.
 """
 
 import logging
