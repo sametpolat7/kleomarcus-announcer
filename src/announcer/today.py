@@ -1,5 +1,3 @@
-"""Today's announcements and how each one fared, for the preview in the window."""
-
 import datetime
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -11,7 +9,7 @@ from announcer.timetable import Slot, Timetable
 
 
 class Status(Enum):
-    """Where an announcement stands. The UI turns these into Turkish words."""
+    """The UI turns these into Turkish words."""
 
     WAITING = "waiting"  # its time has not come yet
     NEXT = "next"  # the first one whose time has not come yet
@@ -27,20 +25,16 @@ class Status(Enum):
 
 @dataclass(frozen=True)
 class Row:
-    """One line of today's preview."""
-
     time: datetime.time
     summary: str  # the athletes' names, or the custom announcement's text
     status: Status
 
 
 def summary(slot: Slot) -> str:
-    """Return the athletes' names of a slot, or its custom announcement's text."""
     return ", ".join(slot.names) if slot.names else slot.texts[0]
 
 
 def outcome_status(playback: Playback) -> Status:
-    """Return how the announcement behind ``playback`` fared."""
     skipped = len(playback.missing) + len(playback.late)
     if playback.failed:
         return Status.NO_OUTPUT
@@ -56,9 +50,7 @@ def todays_rows(
     now: datetime.datetime,
     outcomes: Mapping[tuple[datetime.datetime, str], Status],
 ) -> tuple[Row, ...]:
-    """Return the announcements of ``now``'s date, ordered by time.
-
-    ``outcomes`` holds what is known about the slots that came due, keyed by
+    """``outcomes`` holds what is known about the slots that came due, keyed by
     the moment they were due and their summary, so an outcome is not taken
     for that of something else that was put at the same time later. The
     custom announcements that lost today's slot to something else are listed

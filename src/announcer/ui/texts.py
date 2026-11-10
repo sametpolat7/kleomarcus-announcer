@@ -1,7 +1,4 @@
-"""The Turkish wording of what the window shows.
-
-Nothing here touches tkinter, so the wording can be tested without a display.
-"""
+"""Nothing here touches tkinter, so the wording can be tested without a display."""
 
 import datetime
 from collections.abc import Iterable
@@ -18,7 +15,9 @@ from announcer.template import PLACEHOLDER
 from announcer.timetable import Conflict, SlotHolder
 from announcer.today import Status
 
-SLEEP_NOTICE = "Uyku modunda anonslar seslendirilmez. Bilgisayarınızı açık tutunuz."
+SLEEP_NOTICE = (
+    "Uyku modunda anonslar seslendirilmez. Bilgisayarınızı ve uygulamayı açık tutunuz."
+)
 NO_ROWS = "Bugün için anons yok."
 NO_ANNOUNCEMENTS = "Özel anons yok."
 CLOSE_QUESTION = "Uygulama kapatılırsa anonslar okunmaz. Kapatılsın mı?"
@@ -80,7 +79,6 @@ _MONTHS = (
 
 
 def days(weekdays: Iterable[int]) -> str:
-    """Return the weekdays of a custom announcement, in order."""
     chosen = sorted(weekdays)
     if chosen == sorted(ALL_WEEKDAYS):
         return "Her gün"
@@ -88,26 +86,22 @@ def days(weekdays: Iterable[int]) -> str:
 
 
 def today_title(now: datetime.datetime) -> str:
-    """Return the heading of the window, such as "9 Kasım 2026 Pazartesi"."""
     month, weekday = _MONTHS[now.month - 1], WEEKDAY_NAMES[now.weekday()]
     return f"{now.day} {month} {now.year} {weekday}"
 
 
 def last_loaded(moment: datetime.datetime | None) -> str:
-    """Return the line that says when the schedule file was last read."""
     when = f"{moment:%d.%m.%Y %H:%M:%S}" if moment else "—"
     return f"Son Yüklenme Tarihi: {when}"
 
 
 def last_announcement(last: LastAnnouncement | None) -> str:
-    """Return the line about the announcement that came due most recently."""
     if last is None:
         return "Son anons: —"
     return f"Son anons: {last.due:%H:%M} · {last.summary} · {STATUS[last.status]}"
 
 
 def activity(generating: bool, test: Status | None) -> str:
-    """Return the line about what the app is busy with, and the latest test."""
     parts = [
         "Sesler oluşturuluyor…" if generating else "",
         "" if test is None else _TEST_STATUS.get(test, STATUS[test]),
@@ -116,7 +110,6 @@ def activity(generating: bool, test: Status | None) -> str:
 
 
 def schedule_error(error: ScheduleFileError) -> str:
-    """Return why a schedule file cannot be used."""
     if isinstance(error, MissingColumnsError):
         return f"Sporcu listesinde şu sütunlar eksik: {', '.join(error.columns)}."
     if isinstance(error, WrongFileTypeError):
@@ -127,7 +120,6 @@ def schedule_error(error: ScheduleFileError) -> str:
 
 
 def conflict_alert(conflicts: Iterable[Conflict]) -> str:
-    """Return why a custom announcement cannot be saved."""
     lines = [
         f"• {WEEKDAY_NAMES[conflict.weekday]} {conflict.announcement.time:%H:%M}: "
         f"{_HOLDERS[conflict.holder]} var"
@@ -137,7 +129,7 @@ def conflict_alert(conflicts: Iterable[Conflict]) -> str:
 
 
 def warnings(app: App) -> list[str]:
-    """Return everything the operator should know about, most basic first."""
+    """The most basic warning comes first."""
     lines: list[str] = []
     copy = backup_copy(app.settings_file).name
     kept = (

@@ -1,6 +1,4 @@
-"""Write the bundled chime, ``src/announcer/assets/chime.wav``.
-
-Run with ``uv run scripts/make_chime.py`` after changing the sound in
+"""Run with ``uv run scripts/make_chime.py`` after changing the sound in
 ``announcer.chime``.
 """
 

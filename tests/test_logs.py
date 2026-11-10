@@ -1,5 +1,3 @@
-"""Tests for the log file."""
-
 import logging
 import re
 import sys

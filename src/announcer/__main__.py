@@ -14,7 +14,6 @@ _log = logging.getLogger(__name__)
 
 
 def main() -> None:
-    """Run the app until its window is closed."""
     log_file = log_path()
     configure_logging(log_file)
     settings_file = settings_path()

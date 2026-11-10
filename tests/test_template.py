@@ -1,5 +1,3 @@
-"""Tests for the announcement template."""
-
 import pytest
 
 from announcer.template import DEFAULT_TEMPLATE, is_valid_template, render

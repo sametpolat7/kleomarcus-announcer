@@ -1,6 +1,4 @@
-"""Combine athlete sessions and custom announcements into a weekly timetable.
-
-A slot is one weekday and minute. Athletes who start together share a slot. A
+"""A slot is one weekday and minute. Athletes who start together share a slot. A
 custom announcement needs a slot of its own: it may share one neither with
 athletes nor with another custom announcement.
 """
@@ -17,16 +15,12 @@ type _Key = tuple[int, datetime.time]  # weekday and time of a slot
 
 
 class SlotHolder(Enum):
-    """What already occupies a slot that a custom announcement asks for."""
-
     ATHLETES = "athletes"
     CUSTOM_ANNOUNCEMENT = "custom announcement"
 
 
 @dataclass(frozen=True)
 class Conflict:
-    """A weekday on which a custom announcement's slot is already taken."""
-
     announcement: CustomAnnouncement
     weekday: int
     holder: SlotHolder
@@ -34,8 +28,6 @@ class Conflict:
 
 @dataclass(frozen=True)
 class Slot:
-    """Everything announced at one weekday and minute, after a single chime."""
-
     weekday: int  # 0 is Monday, as in ``date.weekday()``
     time: datetime.time
     texts: tuple[str, ...]  # the sentences to speak, in order
@@ -45,20 +37,16 @@ class Slot:
 
 @dataclass(frozen=True)
 class Timetable:
-    """The week's slots, plus the custom announcements that had to be left out."""
-
     slots: tuple[Slot, ...] = ()  # ordered by weekday, then time
     conflicts: tuple[Conflict, ...] = ()
 
     def slot_at(self, weekday: int, time: datetime.time) -> Slot | None:
-        """Return the slot at the given weekday and minute, if there is one."""
         for slot in self.slots:
             if slot.weekday == weekday and slot.time == time:
                 return slot
         return None
 
     def slots_on(self, weekday: int) -> tuple[Slot, ...]:
-        """Return the slots of the given weekday, ordered by time."""
         return tuple(slot for slot in self.slots if slot.weekday == weekday)
 
 
@@ -67,10 +55,8 @@ def find_conflicts(
     entries: Iterable[AthleteEntry],
     others: Iterable[CustomAnnouncement],
 ) -> tuple[Conflict, ...]:
-    """Return the weekdays on which ``announcement`` would share a slot.
-
-    ``others`` are the custom announcements to check against. When an existing
-    announcement is being edited, leave its stored version out of them.
+    """When an existing announcement is being edited, leave its stored version
+    out of ``others``.
     """
     holders = {(entry.weekday, entry.time): SlotHolder.ATHLETES for entry in entries}
     for other in others:
@@ -84,9 +70,7 @@ def build_timetable(
     custom_announcements: Iterable[CustomAnnouncement],
     template: str,
 ) -> Timetable:
-    """Build the timetable; ``template`` turns each athlete into a sentence.
-
-    Athletes always keep their slot. A custom announcement is left out on the
+    """Athletes always keep their slot. A custom announcement is left out on the
     weekdays where its slot is taken, by athletes or by a custom announcement
     earlier in the list, and each such case is reported as a conflict.
     """
@@ -120,7 +104,6 @@ def build_timetable(
 def _conflicts(
     announcement: CustomAnnouncement, holders: Mapping[_Key, SlotHolder]
 ) -> tuple[Conflict, ...]:
-    """Return the weekdays, in order, on which ``announcement``'s slot is held."""
     return tuple(
         Conflict(announcement, weekday, holders[weekday, announcement.time])
         for weekday in sorted(announcement.weekdays)

@@ -1,5 +1,3 @@
-"""Tests for building the timetable and for the conflict rules."""
-
 import datetime
 
 from announcer.models import AthleteEntry, CustomAnnouncement
@@ -94,7 +92,6 @@ def test_athletes_win_a_slot_that_a_custom_announcement_also_wants() -> None:
 
     timetable = build_timetable([AYSE, ZEYNEP], [reminder], TEMPLATE)
 
-    # Only Monday is lost; the announcement still plays on Tuesday.
     assert timetable.slots == (
         Slot(MONDAY, SIX_PM, ("Ayşe Yılmaz, hoş geldiniz.",), ("Ayşe Yılmaz",)),
         Slot(TUESDAY, SIX_PM, ("Su içmeyi unutmayın.",)),
@@ -133,7 +130,6 @@ def test_conflicts_are_listed_per_announcement_then_weekday() -> None:
 
 
 def test_no_conflicts_for_a_free_slot() -> None:
-    # A minute after the athletes, and at another time than the other one.
     candidate = custom("Yeni", datetime.time(18, 1), MONDAY, WEDNESDAY)
     other = custom("Eski", SIX_PM, WEDNESDAY)
 

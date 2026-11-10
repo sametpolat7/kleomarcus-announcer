@@ -1,5 +1,3 @@
-"""The main window: today's announcements and everything the operator can do."""
-
 import datetime
 import logging
 import os
@@ -26,7 +24,6 @@ _log = logging.getLogger(__name__)
 _POLL = 250  # milliseconds between two looks at what the app has to report
 _PAD = 12
 
-# Statuses that mean an announcement was not heard, or not in full.
 _PROBLEMS = frozenset(
     {
         Status.PARTLY_PLAYED,
@@ -59,7 +56,6 @@ def _moment(now: datetime.datetime) -> tuple[datetime.datetime, bool]:
 
 
 def _resized(base: font.Font, by: int) -> font.Font:
-    """Return a copy of a font that is ``by`` points or pixels larger."""
     copy = base.copy()
     size = int(copy.cget("size"))  # negative when it is in pixels
     copy.configure(size=size + by if size > 0 else size - by)
@@ -67,7 +63,6 @@ def _resized(base: font.Font, by: int) -> font.Font:
 
 
 def open_file(path: Path) -> None:
-    """Show ``path`` in the program that the system opens such files with."""
     if sys.platform == "win32":
         os.startfile(path)
     else:
@@ -75,7 +70,6 @@ def open_file(path: Path) -> None:
 
 
 def _set_icon(root: tk.Tk) -> None:
-    """Put the logo on the window and its dialogs, the taskbar and the Dock."""
     try:
         root.iconphoto(
             True,
@@ -86,7 +80,6 @@ def _set_icon(root: tk.Tk) -> None:
 
 
 def tell_already_running() -> None:
-    """Say that the app is running already, for a copy that was started on top."""
     root = tk.Tk()
     root.withdraw()  # only the message is shown
     _set_icon(root)
@@ -95,11 +88,7 @@ def tell_already_running() -> None:
 
 
 class MainWindow:
-    """The window of the app. Everything here runs on the main thread.
-
-    ``log_file`` is what the "Kayıtlar" button opens. ``clock`` tells the
-    window when the minute or the day changes.
-    """
+    """Everything here runs on the main thread."""
 
     def __init__(
         self,
@@ -172,7 +161,6 @@ class MainWindow:
         self._after = self.root.after(_POLL, self._tick)
 
     def run(self) -> None:
-        """Show the window until it is closed."""
         self.root.mainloop()
 
     def ask_to_close(self) -> None:
@@ -184,7 +172,6 @@ class MainWindow:
             self.close()
 
     def close(self) -> None:
-        """Close the window, and with it a dialog that is open over it."""
         self.closed = True
         self.root.after_cancel(self._after)
         if self._on_mac:
@@ -195,7 +182,6 @@ class MainWindow:
         self.root.destroy()
 
     def show(self) -> None:
-        """Bring everything in the window up to date with the app."""
         if self.closed:
             return  # closed while a dialog was open; there is nothing to show
         app, now = self._app, self._clock()
@@ -212,8 +198,6 @@ class MainWindow:
         self._show_announcements()
         self._show_warnings()
         self._show_template_button()
-
-    # Building the window
 
     def _build_header(self, parent: ttk.Frame) -> ttk.Frame:
         header = ttk.Frame(parent)
@@ -246,7 +230,6 @@ class MainWindow:
         return section, box
 
     def _note(self, parent: tk.Misc, text: str | tk.StringVar) -> ttk.Label:
-        """Return a line of small, faint text, fixed or following a variable."""
         note = ttk.Label(parent, font=self._small, foreground=_GREY)
         if isinstance(text, str):
             note.configure(text=text)
@@ -350,7 +333,6 @@ class MainWindow:
         return section
 
     def _build_warnings(self, parent: ttk.Frame) -> tk.Frame:
-        """Return the coloured box of warnings, which shows only when there are any."""
         box = tk.Frame(parent, background=_WARNING_BACKGROUND, padx=10, pady=8)
         box.columnconfigure(0, weight=1)
         tk.Label(
@@ -402,10 +384,7 @@ class MainWindow:
         widths: dict[str, int],
         select: bool = True,
     ) -> ttk.Treeview:
-        """Return a table with a scrollbar, placed at the top of ``parent``.
-
-        The "text" column takes up the width that is left over.
-        """
+        """The "text" column takes up the width that is left over."""
         table = ttk.Treeview(
             parent,
             columns=tuple(columns),
@@ -423,8 +402,6 @@ class MainWindow:
         scrollbar.grid(row=0, column=1, sticky="ns")
         table.configure(yscrollcommand=scrollbar.set)
         return table
-
-    # Showing the app's state
 
     def _show_today(self, now: datetime.datetime) -> None:
         rows = self._app.rows()
@@ -454,19 +431,18 @@ class MainWindow:
         self._see_current()
 
     def _on_table_laid_out(self, event: tk.Event[ttk.Treeview]) -> None:
-        """Bring the current row into view once the table has its size. Only
-        then: a later resize must not undo what the operator scrolled to."""
+        """Only once the table has its size: a later resize must not undo what
+        the operator scrolled to."""
         if event.height > 1:
             self.today.unbind("<Configure>")
             self._see_current()
 
     def _see_current(self) -> None:
-        """Bring what is sounding now, or comes next, into view."""
         if self._current_row is not None:
             self.today.see(self._current_row)
 
     def _show_announcements(self) -> None:
-        """List the custom announcements by time; a row's id is its index."""
+        """A row's id is the index of its custom announcement."""
         announcements = self._app.settings.custom_announcements
         shown = [
             (
@@ -497,23 +473,19 @@ class MainWindow:
         self._show_buttons()
 
     def _selected(self) -> int | None:
-        """Return the index of the custom announcement that is selected, if any."""
         selected = self.announcements.selection()
         return int(selected[0]) if selected and selected[0] != _NO_ROW else None
 
     def _show_buttons(self) -> None:
-        """Let an announcement be changed or deleted only while one is selected."""
         state = "disabled" if self._selected() is None else "!disabled"
         self.edit_button.state([state])
         self.delete_button.state([state])
 
     def _show_template_button(self) -> None:
-        """Let the template be saved only while it differs from the stored one."""
         changed = self.template.get().strip() != self._app.settings.template
         self.save_template_button.state(["!disabled" if changed else "disabled"])
 
     def _show_warnings(self) -> None:
-        """List the warnings in their box, or take the box away if there are none."""
         lines = texts.warnings(self._app)
         if lines == self._shown_warnings:
             return
@@ -529,8 +501,6 @@ class MainWindow:
             self.warning_box.grid_remove()
 
     def _fit_warnings(self) -> None:
-        """Make the box as high as its warnings, up to a few lines; the rest
-        is reached with the scrollbar."""
         self.warnings.update_idletasks()  # so that the lines are laid out
         if self.warnings.winfo_width() > 1:
             lines = self.warnings.count("1.0", "end", "displaylines", return_ints=True)
@@ -547,7 +517,6 @@ class MainWindow:
             self._warnings_scrollbar.grid_remove()
 
     def _tick(self) -> None:
-        """Take in what the app has to report, and follow the clock."""
         try:
             changed = self._app.poll()
             now = self._clock()
@@ -564,10 +533,7 @@ class MainWindow:
         finally:
             self._after = self.root.after(_POLL, self._tick)
 
-    # What the operator can do
-
     def choose(self) -> None:
-        """Ask for a schedule file and use it."""
         current = self._app.settings.schedule_path
         chosen = filedialog.askopenfilename(
             parent=self.root,
@@ -588,7 +554,6 @@ class MainWindow:
         self.show()
 
     def save_template(self) -> None:
-        """Store the template as entered."""
         template = self.template.get().strip()
         if template == self._app.settings.template:
             return
@@ -602,7 +567,6 @@ class MainWindow:
         self.show()
 
     def test(self) -> None:
-        """Announce the template as entered, saved or not, with a made-up name."""
         try:
             self._app.test(self.template.get().strip())
         except ValueError:
@@ -610,19 +574,16 @@ class MainWindow:
         self.show()
 
     def add(self) -> None:
-        """Ask for a new custom announcement."""
         AnnouncementDialog(self.root, self._app).wait()
         self.show()
 
     def edit(self) -> None:
-        """Ask for changes to the selected custom announcement."""
         selected = self._selected()
         if selected is not None:
             AnnouncementDialog(self.root, self._app, selected).wait()
             self.show()
 
     def delete(self) -> None:
-        """Delete the selected custom announcement, after asking."""
         selected = self._selected()
         if selected is None:
             return
@@ -642,7 +603,6 @@ class MainWindow:
         self.show()
 
     def open_log(self) -> None:
-        """Show the log file."""
         if self._log_file.is_file():
             open_file(self._log_file)
         else:
@@ -658,7 +618,6 @@ class MainWindow:
         error: BaseException,
         trace: TracebackType | None,
     ) -> None:
-        """Log an error that an action in the window did not handle, and say so."""
         _log.error("An action in the window failed", exc_info=(kind, error, trace))
         self._alert(
             APP_NAME, "Beklenmeyen bir hata oluştu. Ayrıntılar kayıt dosyasındadır."

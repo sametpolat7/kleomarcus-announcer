@@ -1,5 +1,3 @@
-"""Tests for writing files atomically."""
-
 from pathlib import Path
 
 import pytest

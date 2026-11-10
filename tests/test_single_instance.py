@@ -1,5 +1,3 @@
-"""Tests for letting only one copy of the app run."""
-
 import errno
 import sys
 from pathlib import Path

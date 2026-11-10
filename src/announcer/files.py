@@ -1,17 +1,11 @@
-"""Write files so that a reader never sees one that is half-written."""
-
 import os
 import tempfile
 from pathlib import Path
 
 
 def write_atomically(path: Path, data: bytes) -> None:
-    """Write ``data`` to ``path``, creating its folder if needed.
-
-    The data goes to a temporary file that is flushed to disk and then
-    replaces ``path``. A write that is cut short, even by a power loss,
-    therefore leaves the previous file, or no file, in place. Raises
-    ``OSError`` if the file cannot be written.
+    """A write that is cut short, even by a power loss, leaves the previous
+    file, or no file, in place. Raises ``OSError`` if the file cannot be written.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     # A unique name, so two writers of the same file cannot disturb each other.
