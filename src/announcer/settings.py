@@ -6,6 +6,7 @@ schedule file, the announcement template and the custom announcements.
 
 import datetime
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from platformdirs import user_config_dir
 
 from announcer import APP_NAME
 from announcer.models import CustomAnnouncement
-from announcer.template import DEFAULT_TEMPLATE, is_valid_template
+from announcer.template import DEFAULT_TEMPLATE, PLACEHOLDER, is_valid_template
 
 DEFAULT_VOICE = "tr-TR-EmelNeural"
 
@@ -32,6 +33,10 @@ class Settings:
     schedule_path: Path | None = None  # the Excel file that was loaded last
     template: str = DEFAULT_TEMPLATE
     custom_announcements: tuple[CustomAnnouncement, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not is_valid_template(self.template):
+            raise ValueError(f"The template has no {PLACEHOLDER} placeholder")
 
 
 def settings_path() -> Path:
@@ -52,7 +57,8 @@ def load_settings(path: Path) -> Settings:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return Settings()
-    except (OSError, ValueError) as error:
+    # A file nested deeply enough makes the parser raise ``RecursionError``.
+    except (OSError, ValueError, RecursionError) as error:
         raise SettingsFileError(f"Cannot read {path}") from error
     if not isinstance(data, dict):
         raise SettingsFileError(f"{path} does not hold a JSON object")
@@ -75,9 +81,10 @@ def load_settings(path: Path) -> Settings:
 def save_settings(settings: Settings, path: Path) -> None:
     """Write ``settings`` to ``path``, creating its folder if needed.
 
-    The text goes to a temporary file that then replaces the old one, so an
-    interrupted save cannot leave a half-written file behind. Raises
-    ``OSError`` if the file cannot be written.
+    The text goes to a temporary file that is flushed to disk and then
+    replaces the old one, so a save cut short, even by a power loss, leaves
+    the previous settings in place. Raises ``OSError`` if the file cannot be
+    written.
     """
     data = {
         "voice": settings.voice,
@@ -96,9 +103,10 @@ def save_settings(settings: Settings, path: Path) -> None:
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.tmp")
-    temporary.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    with temporary.open("w", encoding="utf-8") as file:
+        file.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        file.flush()
+        os.fsync(file.fileno())
     temporary.replace(path)
 
 

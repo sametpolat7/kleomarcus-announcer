@@ -50,6 +50,11 @@ def test_defaults() -> None:
     )
 
 
+def test_template_without_the_placeholder_is_rejected() -> None:
+    with pytest.raises(ValueError, match="placeholder"):
+        Settings(template="Antrenmanınız başlamıştır.")
+
+
 def test_missing_file_gives_the_defaults(path: Path) -> None:
     assert load_settings(path) == Settings()
 
@@ -118,7 +123,26 @@ def test_file_with_a_byte_order_mark_loads(path: Path) -> None:
 
 @pytest.mark.parametrize(
     "content",
-    [b"", b"{", b'{"voice": }', b"[]", b'"text"', b"null", b"\xff\xfe\x00"],
+    [
+        b"",
+        b"{",
+        b'{"voice": }',
+        b"[]",
+        b'"text"',
+        b"null",
+        b"\xff\xfe\x00",
+        b"[" * 200_000,
+    ],
+    ids=[
+        "empty",
+        "cut short",
+        "missing value",
+        "list",
+        "text",
+        "null",
+        "not utf-8",
+        "deeply nested",
+    ],
 )
 def test_unreadable_file_is_an_error(path: Path, content: bytes) -> None:
     path.write_bytes(content)
