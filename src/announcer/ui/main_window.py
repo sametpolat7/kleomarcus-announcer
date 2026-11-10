@@ -116,8 +116,9 @@ class MainWindow:
         # Small enough for a laptop screen; the tables take up the difference.
         height = min(800, self.root.winfo_screenheight() - 120)
         self.root.geometry(f"860x{height}")
-        # At this size everything still fits, with three lines of warnings.
-        self.root.minsize(720, 720)
+        # At 720 high everything still fits, with three lines of warnings. On
+        # a lower screen the window stays in view and today's table gives way.
+        self.root.minsize(720, min(720, height))
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         self.root.protocol("WM_DELETE_WINDOW", self.ask_to_close)
@@ -199,7 +200,7 @@ class MainWindow:
         self.time.set(f"{now:%H:%M:%S}")
         self.last_announcement.set(texts.last_announcement(app.last_announcement))
         self.activity.set(texts.activity(app.generating, app.test_status))
-        self._show_today()
+        self._show_today(now)
         self._show_announcements()
         self._show_warnings()
         self._show_template_button()
@@ -253,8 +254,7 @@ class MainWindow:
             widths={"day": 90, "time": 60, "text": 360, "status": 150},
             select=False,  # there is nothing to do with a row but read it
         )
-        # Also once the window is laid out, and whenever it is resized.
-        self.today.bind("<Configure>", lambda event: self._see_current())
+        self.today.bind("<Configure>", self._on_table_laid_out)
         self.today.tag_configure(Status.NEXT.name, font=self._bold)
         self.today.tag_configure(Status.PLAYING.name, font=self._bold, foreground=_BLUE)
         for status in _DONE:
@@ -390,9 +390,9 @@ class MainWindow:
 
     # Showing the app's state
 
-    def _show_today(self) -> None:
+    def _show_today(self, now: datetime.datetime) -> None:
         rows = self._app.rows()
-        day = WEEKDAY_NAMES[self._clock().weekday()]
+        day = WEEKDAY_NAMES[now.weekday()]
         shown = [
             (day, f"{row.time:%H:%M}", row.summary, texts.STATUS[row.status])
             for row in rows
@@ -416,6 +416,13 @@ class MainWindow:
         ]
         self._current_row = current[0] if current else None
         self._see_current()
+
+    def _on_table_laid_out(self, event: tk.Event[ttk.Treeview]) -> None:
+        """Bring the current row into view once the table has its size. Only
+        then: a later resize must not undo what the operator scrolled to."""
+        if event.height > 1:
+            self.today.unbind("<Configure>")
+            self._see_current()
 
     def _see_current(self) -> None:
         """Bring what is sounding now, or comes next, into view."""
