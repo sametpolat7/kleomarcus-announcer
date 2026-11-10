@@ -58,8 +58,8 @@ uv run kleomarcus-announcer
 
 ## Schedule file
 
-The schedule is an `.xlsx` workbook. The first visible worksheet needs a
-header row with these columns, in any order:
+The schedule is an Excel workbook; only `.xlsx` files are accepted. The first
+visible worksheet needs a header row with these columns, in any order:
 
 | Column     | Content                                    | Example       |
 | ---------- | ------------------------------------------ | ------------- |
@@ -83,8 +83,9 @@ fictional names.
 ## How it behaves
 
 - **Announcement text.** Athletes are announced with a template, by default
-  `{ad}, antrenmanınız başlamıştır. İyi antrenmanlar dileriz.`, where `{ad}`
-  stands for the name. A new template is used once all of its speech exists.
+  `{ad_soyad}, antrenmanınız başlamıştır. İyi antrenmanlar dileriz.`, where
+  `{ad_soyad}` stands for the name and may be moved anywhere in the sentence.
+  A new template is used once all of its speech exists.
 - **Timing.** A session is announced within the first 30 seconds of its
   minute, by an app that was already running when the minute began. The app
   does not keep the computer awake: an announcement that falls into a sleep
