@@ -1,18 +1,34 @@
 [project]
 name = "kleomarcus-announcer"
 version = "0.1.0"
-description = "Scheduled lobby voice announcements for Kleomarcus Spor Akademi."
+description = "Calls every athlete by name, right on time: lobby announcements for Kleomarcus Spor Akademi."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Samet Polat" }]
 requires-python = ">=3.14"
+keywords = ["announcements", "text-to-speech", "scheduler", "tkinter", "excel"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: MacOS X",
+  "Environment :: Win32 (MS Windows)",
+  "Intended Audience :: End Users/Desktop",
+  "Natural Language :: Turkish",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
 dependencies = [
   "edge-tts>=7.3.1",
   "openpyxl>=3.1.5",
   "platformdirs>=4.14.5",
   "pygame-ce>=2.5.8",
 ]
+
+[project.urls]
+Repository = "https://github.com/sametpolat7/kleomarcus-announcer"
+Issues = "https://github.com/sametpolat7/kleomarcus-announcer/issues"
 
 [project.gui-scripts]
 kleomarcus-announcer = "announcer.__main__:main"
