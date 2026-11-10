@@ -72,7 +72,7 @@ def find_conflicts(
     ``others`` are the custom announcements to check against. When an existing
     announcement is being edited, leave its stored version out of them.
     """
-    holders = _athlete_slots(entries)
+    holders = {(entry.weekday, entry.time): SlotHolder.ATHLETES for entry in entries}
     for other in others:
         for weekday in other.weekdays:
             holders.setdefault((weekday, other.time), SlotHolder.CUSTOM_ANNOUNCEMENT)
@@ -115,11 +115,6 @@ def build_timetable(
 
     slots = tuple(Slot(*key, texts[key], names.get(key, ())) for key in sorted(texts))
     return Timetable(slots, tuple(conflicts))
-
-
-def _athlete_slots(entries: Iterable[AthleteEntry]) -> dict[_Key, SlotHolder]:
-    """Return the slots that athletes occupy."""
-    return {(entry.weekday, entry.time): SlotHolder.ATHLETES for entry in entries}
 
 
 def _conflicts(
