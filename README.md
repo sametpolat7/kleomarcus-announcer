@@ -74,8 +74,8 @@ regard to case or Turkish accents. A row with a missing name, an unknown day
 or an invalid time is skipped and reported in the window; the rest of the
 schedule still loads.
 
-Write times with a colon. Excel may turn a dotted value such as `18.30` into a
-number or a date, and such a row is skipped.
+Write times with a colon. Text such as `18.30` is accepted too, but Excel may
+turn a dotted value into a number or a date, and such a row is skipped.
 
 [`sample_schedule.xlsx`](sample_schedule.xlsx) is a working example with
 fictional names.
@@ -113,11 +113,11 @@ again, which also replaces a sentence that sounds cut off.
 
 ## Privacy
 
-The schedule never leaves the computer as a file. To be spoken, each sentence,
-including the athlete's name, is sent once to Microsoft Edge's online
-read-aloud service through [edge-tts](https://github.com/rany2/edge-tts), an
-unofficial client for it. The log and the stored speech contain athlete names
-and stay on the computer.
+The schedule file never leaves the computer. To be spoken, each sentence,
+including the athlete's name, is sent to Microsoft Edge's online read-aloud
+service whenever its speech is generated, through
+[edge-tts](https://github.com/rany2/edge-tts), an unofficial client for it.
+The log and the stored speech contain athlete names and stay on the computer.
 
 > [!IMPORTANT]
 > This is a public repository. Never commit a real schedule: `.gitignore`
@@ -145,6 +145,7 @@ The code lives in `src/announcer`, in small modules with one job each:
 | `scheduler`                 | Decide when a slot is due                                   |
 | `tts`                       | Generate speech and keep it on disk                         |
 | `player`, `chime`           | Play the chime and the speech                               |
+| `logo`                      | Draw the logo and the window icons                          |
 | `settings`, `files`, `logs` | Settings, safe file writes and the log                      |
 | `app`, `today`              | Tie everything together behind the window                   |
 | `ui`                        | The tkinter window and its Turkish wording                  |
