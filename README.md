@@ -45,11 +45,12 @@ Requires [uv](https://docs.astral.sh/uv/). It installs the pinned Python 3.14
 and all dependencies on first use.
 
 ```bash
-uv sync                 # create the environment
-uv run pytest           # tests
-uv run ruff check       # lint
-uv run ruff format      # format
-uv run mypy             # type check
+uv sync                      # create the environment
+uv run kleomarcus-announcer  # start the app
+uv run pytest                # tests
+uv run ruff check            # lint
+uv run ruff format           # format
+uv run mypy                  # type check
 ```
 
 GitHub Actions runs the same checks on Windows and macOS for every pull request
