@@ -135,7 +135,7 @@ def test_schedule_that_cannot_be_used_gives_an_alert(
     choose(window, schedule, monkeypatch)
     broken, notes = tmp_path / "broken.xlsx", tmp_path / "notes.txt"
     broken.write_text("not a workbook")
-    notes.write_text("Ayşe Yılmaz")
+    notes.write_text("a list of names")
 
     choose(window, broken, monkeypatch)
     choose(window, notes, monkeypatch)
