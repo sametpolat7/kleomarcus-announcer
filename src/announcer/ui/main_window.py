@@ -90,7 +90,8 @@ class MainWindow:
         # Small enough for a laptop screen; the tables take up the difference.
         height = min(800, self.root.winfo_screenheight() - 120)
         self.root.geometry(f"860x{height}")
-        self.root.minsize(720, 600)
+        # At this size everything still fits, with four lines of warnings.
+        self.root.minsize(720, 680)
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         self.root.protocol("WM_DELETE_WINDOW", self.ask_to_close)
@@ -118,7 +119,7 @@ class MainWindow:
         frame = ttk.Frame(self.root, padding=_PAD)
         frame.grid(sticky="nsew")
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(2, weight=1, minsize=150)
+        frame.rowconfigure(2, weight=1, minsize=110)
         self._build_header(frame).grid(row=0, sticky="ew")
         self.warning_box = self._build_warnings(frame)
         self.warning_box.grid(row=1, sticky="ew", pady=(_PAD, 0))
