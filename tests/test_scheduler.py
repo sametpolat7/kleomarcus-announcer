@@ -211,6 +211,31 @@ def test_background_thread_reports_a_due_slot_and_stops() -> None:
     assert all(thread.name != "scheduler" for thread in threading.enumerate())
 
 
+def test_background_thread_survives_a_failing_callback() -> None:
+    clock = FakeClock(at(18, 0))
+    reported: list[Slot] = []
+    failed = threading.Event()
+    done = threading.Event()
+
+    def on_due(slot: Slot) -> None:
+        if not failed.is_set():
+            failed.set()
+            raise RuntimeError("the first hand-over fails")
+        reported.append(slot)
+        done.set()
+
+    scheduler = Scheduler(TIMETABLE, on_due, clock, interval=0.01)
+    scheduler.start()
+    try:
+        assert failed.wait(timeout=5)
+        clock.now = at(18, 1)
+        assert done.wait(timeout=5)
+    finally:
+        scheduler.stop()
+
+    assert reported == [MONDAY_SIX_OH_ONE]
+
+
 def test_stopping_a_scheduler_that_never_started_is_harmless() -> None:
     scheduler, reported = make_scheduler(FakeClock(at(18, 0)))
 
