@@ -148,9 +148,39 @@ def test_warnings_for_a_settings_file_with_problems(
     unreadable = make_app()
 
     assert texts.warnings(dropped)[0] == (
-        "Ayarlar dosyasındaki 1 özel anons geçersiz olduğu için yok sayıldı."
+        "Ayarlar dosyasındaki 1 özel anons geçersiz olduğu için yok sayıldı. "
+        "Dosyanın bir kopyası “config.json.backup” adıyla saklandı."
     )
     assert texts.warnings(unreadable)[0] == (
         "Ayarlar dosyası okunamadı; varsayılan ayarlar kullanılıyor. "
-        "Eski dosya “config.json.unreadable” adıyla saklandı."
+        "Dosyanın bir kopyası “config.json.backup” adıyla saklandı."
     )
+
+
+def test_warning_for_a_settings_file_that_could_not_be_copied(
+    make_app: Callable[[], App], settings_file: Path
+) -> None:
+    settings_file.mkdir(parents=True)
+
+    assert texts.warnings(make_app())[0] == (
+        "Ayarlar dosyası okunamadı; varsayılan ayarlar kullanılıyor. "
+        "Dosya yedeklenemedi; kaydedilen ilk değişiklik onun üzerine yazılır."
+    )
+
+
+def test_warning_while_a_new_template_has_no_speech(
+    app: App, schedule: Path, provider: FakeProvider
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for(app, lambda: not app.generating)
+    provider.offline = True
+
+    app.set_template("Hoş geldiniz, {ad}.")
+    wait_for(app, lambda: not app.generating)
+
+    assert texts.warnings(app) == [
+        "3 anonsun sesi oluşturulamadı. İnternet bağlantısını kontrol edip "
+        "“Yenile”ye basın.",
+        "Yeni şablonun sesleri hazır olana kadar sporcular önceki şablonla "
+        "anons ediliyor.",
+    ]

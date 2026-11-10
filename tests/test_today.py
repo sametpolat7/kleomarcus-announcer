@@ -24,8 +24,12 @@ def at(hour: int, minute: int = 0, second: int = 0) -> datetime.datetime:
     return datetime.datetime.combine(MONDAY, datetime.time(hour, minute, second))
 
 
+ATHLETES, REMINDER = "Ayşe Yılmaz, Mehmet Demir", "Su içmeyi unutmayın."
+
+
 def statuses(
-    now: datetime.datetime, outcomes: dict[datetime.datetime, Status] | None = None
+    now: datetime.datetime,
+    outcomes: dict[tuple[datetime.datetime, str], Status] | None = None,
 ) -> list[Status]:
     return [row.status for row in todays_rows(TIMETABLE, now, outcomes or {})]
 
@@ -69,16 +73,32 @@ def test_slot_is_not_passed_while_its_minute_runs() -> None:
 
 
 def test_known_outcome_is_shown_instead_of_the_clock() -> None:
-    outcomes = {at(18): Status.PLAYED, at(19): Status.PLAYING}
+    outcomes = {
+        (at(18), ATHLETES): Status.PLAYED,
+        (at(19), REMINDER): Status.PLAYING,
+    }
 
     assert statuses(at(19, 0, 2), outcomes) == [Status.PLAYED, Status.PLAYING]
-    assert statuses(at(17), {at(18): Status.ASLEEP}) == [Status.ASLEEP, Status.NEXT]
+    assert statuses(at(17), {(at(18), ATHLETES): Status.ASLEEP}) == [
+        Status.ASLEEP,
+        Status.NEXT,
+    ]
 
 
 def test_outcome_of_another_day_does_not_count() -> None:
     yesterday = at(18) - datetime.timedelta(days=1)
 
-    assert statuses(at(17), {yesterday: Status.PLAYED}) == [Status.NEXT, Status.WAITING]
+    assert statuses(at(17), {(yesterday, ATHLETES): Status.PLAYED}) == [
+        Status.NEXT,
+        Status.WAITING,
+    ]
+
+
+def test_outcome_of_what_was_at_that_time_before_does_not_count() -> None:
+    # The slot at 19:00 held another announcement when it came due.
+    outcomes = {(at(19), "Salon kapanıyor."): Status.PLAYED}
+
+    assert statuses(at(19, 30), outcomes) == [Status.PASSED, Status.PASSED]
 
 
 def test_custom_announcement_that_lost_todays_slot_is_listed_after_the_winner() -> None:

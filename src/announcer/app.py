@@ -10,6 +10,7 @@ import dataclasses
 import datetime
 import logging
 import queue
+import shutil
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -82,12 +83,14 @@ class _Missed:
     """A slot's minute went by while the computer was asleep."""
 
     due: datetime.datetime
+    slot: Slot
 
 
 @dataclass(frozen=True)
 class _Generated:
     """A round of speech generation ended."""
 
+    template: str  # the template that the round was for
     unspoken: tuple[str, ...]  # the texts that still have no speech
 
 
@@ -118,10 +121,14 @@ class App:
         self._clock = clock
         self._events: queue.SimpleQueue[_Event] = queue.SimpleQueue()
 
-        self.settings_unreadable = False  # the file was set aside at the start
+        self.settings_unreadable = False  # the defaults are in use instead
+        self.settings_backed_up = False  # a copy of a file with problems was kept
         loaded = self._load_settings()
         self.settings: Settings = loaded.settings
         self.dropped_announcements: int = loaded.dropped
+        # The template that athletes are announced with. It follows the one in
+        # the settings as soon as there is speech for every athlete with it.
+        self.spoken_template: str = self.settings.template
 
         self._entries: tuple[AthleteEntry, ...] = ()
         self.skipped_rows: tuple[SkippedRow, ...] = ()
@@ -135,7 +142,7 @@ class App:
 
         self.last_announcement: LastAnnouncement | None = None
         self.test_status: Status | None = None  # of the latest test announcement
-        self._outcomes: dict[datetime.datetime, Status] = {}
+        self._outcomes: dict[tuple[datetime.datetime, str], Status] = {}
         self._summaries: dict[datetime.datetime, str] = {}  # of the slots playing
 
         self._cache = AudioCache(cache_directory, provider, self.settings.voice)
@@ -184,10 +191,12 @@ class App:
         self._rebuild()
 
     def set_template(self, template: str) -> None:
-        """Announce athletes with ``template`` from now on.
+        """Announce athletes with ``template`` once its speech is generated.
 
-        Raises ``ValueError`` if it has no place for the name and ``OSError``
-        if it cannot be saved; nothing changes then.
+        Until then, and for as long as the speech cannot be generated, the
+        athletes are announced with the template before it. Raises
+        ``ValueError`` if the template has no place for the name and
+        ``OSError`` if it cannot be saved; nothing changes then.
         """
         self._save(dataclasses.replace(self.settings, template=template))
         _log.info('Template changed to "%s"', template)
@@ -268,50 +277,56 @@ class App:
                 case _Due(due, slot):
                     # Outcomes of earlier days are of no use to today's preview.
                     self._outcomes = {
-                        moment: status
-                        for moment, status in self._outcomes.items()
-                        if moment.date() == due.date()
+                        key: status
+                        for key, status in self._outcomes.items()
+                        if key[0].date() == due.date()
                     }
-                    self._outcomes[due] = Status.PLAYING
+                    self._outcomes[due, summary(slot)] = Status.PLAYING
                     self._summaries[due] = summary(slot)
-                case _Missed(due):
-                    self._outcomes[due] = Status.ASLEEP
+                case _Missed(due, slot):
+                    self._outcomes[due, summary(slot)] = Status.ASLEEP
                 case Playback(due=None):
                     self.test_status = outcome_status(event)
                 case Playback(due=due) if due is not None:
                     status = outcome_status(event)
-                    self._outcomes[due] = status
-                    self.last_announcement = LastAnnouncement(
-                        due, self._summaries.pop(due, ""), status
-                    )
-                case _Generated(unspoken):
+                    announced = self._summaries.pop(due, "")
+                    self._outcomes[due, announced] = status
+                    self.last_announcement = LastAnnouncement(due, announced, status)
+                case _Generated(template, unspoken):
                     self.generating = False
                     self.unspoken = unspoken
+                    if not unspoken:
+                        self._speak_with(template)
                     if self._regenerate:
                         self._generate()
                 case _TestUnspoken():
                     self.test_status = Status.NO_SPEECH
 
     def _load_settings(self) -> LoadedSettings:
-        """Load the settings, or set an unreadable file aside and use defaults."""
+        """Load the settings, or the defaults if the file cannot be read.
+
+        A file that cannot be read, or that holds something unusable, is
+        copied first: the next save writes the file anew without that.
+        """
         path = self.settings_file
         try:
             loaded = load_settings(path)
         except SettingsFileError:
             _log.exception("Cannot read the settings; starting with the defaults")
             self.settings_unreadable = True
-            # Kept under another name, so the next save does not destroy it.
-            try:
-                path.replace(unreadable_copy(path))
-            except OSError:
-                _log.exception("Cannot set the unreadable settings file aside")
-            return LoadedSettings(Settings())
+            loaded = LoadedSettings(Settings())
         if loaded.dropped:
             _log.warning(
                 "%d unusable custom announcement(s) in %s left out",
                 loaded.dropped,
                 path,
             )
+        if self.settings_unreadable or loaded.dropped:
+            try:
+                shutil.copyfile(path, backup_copy(path))
+                self.settings_backed_up = True
+            except OSError:
+                _log.exception("Cannot keep a copy of the settings file")
         return loaded
 
     def _save(self, settings: Settings) -> None:
@@ -342,10 +357,15 @@ class App:
             _log.warning("Row %d of the schedule skipped: %s", skipped.row, problems)
 
     def _rebuild(self) -> None:
-        """Build the timetable anew and bring the threads and speech up to date."""
+        """Build the timetable anew and generate the speech that is missing."""
+        self._build()
+        self._generate()
+
+    def _build(self) -> None:
+        """Build the timetable anew and announce by it from now on."""
         known = self.timetable.conflicts
         self.timetable = build_timetable(
-            self._entries, self.settings.custom_announcements, self.settings.template
+            self._entries, self.settings.custom_announcements, self.spoken_template
         )
         for conflict in self.timetable.conflicts:
             if conflict not in known:
@@ -358,26 +378,46 @@ class App:
                     conflict.holder.value,
                 )
         self._scheduler.set_timetable(self.timetable)
-        self._generate()
+
+    def _speak_with(self, template: str) -> None:
+        """Announce athletes with ``template``, now that its speech is there."""
+        if template not in (self.spoken_template, self.settings.template):
+            return  # the speech is for a template that was replaced meanwhile
+        if template != self.spoken_template:
+            _log.info('Athletes are announced with "%s" from now on', template)
+            self.spoken_template = template
+            self._build()
 
     def _generate(self) -> None:
-        """Generate the speech that is not stored yet, on a background thread."""
+        """Generate the speech that is not stored yet, on a background thread.
+
+        The speech is that of the template in the settings, which is not
+        announced with before all of it is there.
+        """
         if self.generating:
             self._regenerate = True  # once more when the running round ends
             return
         self._regenerate = False
-        texts = tuple(text for slot in self.timetable.slots for text in slot.texts)
+        template = self.settings.template
+        wanted = build_timetable(
+            self._entries, self.settings.custom_announcements, template
+        )
+        texts = tuple(text for slot in wanted.slots for text in slot.texts)
         todo = sum(self._cache.find(text) is None for text in dict.fromkeys(texts))
         if not todo:
             self.unspoken = ()
+            self._speak_with(template)
             return
         _log.info("Generating speech for %d sentence(s)", todo)
         self.generating = True
         threading.Thread(
-            target=self._generate_all, args=(texts,), name="speech", daemon=True
+            target=self._generate_all,
+            args=(template, texts),
+            name="speech",
+            daemon=True,
         ).start()
 
-    def _generate_all(self, texts: tuple[str, ...]) -> None:
+    def _generate_all(self, template: str, texts: tuple[str, ...]) -> None:
         """Generate the speech for ``texts`` and report what is left; on a thread."""
         unspoken = texts
         try:
@@ -386,7 +426,7 @@ class App:
         except Exception:
             _log.exception("Generating speech failed")
         finally:
-            self._events.put(_Generated(unspoken))
+            self._events.put(_Generated(template, unspoken))
 
     def _test(self, text: str) -> None:
         """Generate the speech of the test announcement and queue it; on a thread."""
@@ -394,9 +434,12 @@ class App:
             self._cache.ensure(text)
         except TtsError as error:
             _log.warning("No speech for the test: %s (%r)", error, error.__cause__)
-            self._events.put(_TestUnspoken())
+        except Exception:
+            _log.exception("Generating the speech for the test failed")
         else:
             self._player.enqueue((text,))
+            return
+        self._events.put(_TestUnspoken())
 
     def _on_due(self, date: datetime.date, slot: Slot) -> None:
         """Hand a due slot to the player; called on the scheduler's thread."""
@@ -413,7 +456,7 @@ class App:
             f"{due:%Y-%m-%d %H:%M}",
             _quoted(slot.texts),
         )
-        self._events.put(_Missed(due))
+        self._events.put(_Missed(due, slot))
 
     def _on_played(self, playback: Playback) -> None:
         """Note how an announcement went; called on the player's thread."""
@@ -439,9 +482,9 @@ class App:
         self._events.put(playback)
 
 
-def unreadable_copy(settings_file: Path) -> Path:
-    """Return where a settings file that cannot be read is set aside."""
-    return settings_file.with_name(f"{settings_file.name}.unreadable")
+def backup_copy(settings_file: Path) -> Path:
+    """Return where a copy of a settings file with problems is kept."""
+    return settings_file.with_name(f"{settings_file.name}.backup")
 
 
 def _quoted(texts: Iterable[str]) -> str:

@@ -6,7 +6,7 @@ Nothing here touches tkinter, so the wording can be tested without a display.
 import datetime
 from collections.abc import Iterable
 
-from announcer.app import App, LastAnnouncement, unreadable_copy
+from announcer.app import App, LastAnnouncement, backup_copy
 from announcer.loader import MissingColumnsError, RowProblem, ScheduleFileError
 from announcer.models import ALL_WEEKDAYS, WEEKDAY_NAMES
 from announcer.template import PLACEHOLDER
@@ -128,24 +128,28 @@ def conflict_alert(conflicts: Iterable[Conflict]) -> str:
 def warnings(app: App) -> list[str]:
     """Return everything the operator should know about, most basic first."""
     lines: list[str] = []
+    copy = backup_copy(app.settings_file).name
+    kept = (
+        f" Dosyanın bir kopyası “{copy}” adıyla saklandı."
+        if app.settings_backed_up
+        else " Dosya yedeklenemedi; kaydedilen ilk değişiklik onun üzerine yazılır."
+    )
     if app.settings_unreadable:
-        kept = unreadable_copy(app.settings_file).name
         lines.append(
-            "Ayarlar dosyası okunamadı; varsayılan ayarlar kullanılıyor. "
-            f"Eski dosya “{kept}” adıyla saklandı."
+            "Ayarlar dosyası okunamadı; varsayılan ayarlar kullanılıyor." + kept
         )
     if app.dropped_announcements:
         lines.append(
             f"Ayarlar dosyasındaki {app.dropped_announcements} özel anons "
-            "geçersiz olduğu için yok sayıldı."
+            "geçersiz olduğu için yok sayıldı." + kept
         )
     if app.settings.schedule_path is None:
         lines.append(
             "Program dosyası seçilmedi. “Dosya Seç” ile bir Excel dosyası seçin."
         )
     if app.schedule_error is not None:
-        kept = " Son okunan program kullanılıyor." if app.refreshed_at else ""
-        lines.append(schedule_error(app.schedule_error) + kept)
+        last = " Son okunan program kullanılıyor." if app.refreshed_at else ""
+        lines.append(schedule_error(app.schedule_error) + last)
     for skipped in app.skipped_rows:
         problems = ", ".join(_ROW_PROBLEMS[problem] for problem in skipped.problems)
         lines.append(f"Program dosyasında {skipped.row}. satır atlandı: {problems}.")
@@ -161,4 +165,9 @@ def warnings(app: App) -> list[str]:
             f"{len(app.unspoken)} anonsun sesi oluşturulamadı. İnternet bağlantısını "
             "kontrol edip “Yenile”ye basın."
         )
+        if app.spoken_template != app.settings.template:
+            lines.append(
+                "Yeni şablonun sesleri hazır olana kadar sporcular önceki şablonla "
+                "anons ediliyor."
+            )
     return lines
