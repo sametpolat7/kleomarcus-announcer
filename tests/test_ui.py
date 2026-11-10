@@ -698,6 +698,9 @@ def test_wrapped_warnings_get_the_lines_they_need(
 ) -> None:
     long = "Bu uyarı pencereden çok daha geniş olduğu için birkaç satıra yayılır. " * 4
     monkeypatch.setattr("announcer.ui.texts.warnings", lambda app: [long, "Kısa."])
+    if sys.platform != "darwin":
+        # Only macOS lays a window out while it is kept off the screen.
+        window.root.deiconify()
     window.root.geometry("720x680")
 
     window.show()

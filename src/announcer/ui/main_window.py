@@ -462,7 +462,12 @@ class MainWindow:
         """Make the box as high as its warnings, up to a few lines; the rest
         is reached with the scrollbar."""
         self.warnings.update_idletasks()  # so that the lines are laid out
-        lines = self.warnings.count("1.0", "end", "displaylines", return_ints=True)
+        if self.warnings.winfo_width() > 1:
+            lines = self.warnings.count("1.0", "end", "displaylines", return_ints=True)
+        else:
+            # The window is not laid out yet, so nothing wraps so far. The
+            # box is fitted again as soon as it gets its width.
+            lines = int(self.warnings.index("end-1c").split(".")[0])
         height = max(1, min(lines, _WARNING_LINES))
         if height != int(self.warnings.cget("height")):
             self.warnings.configure(height=height)
