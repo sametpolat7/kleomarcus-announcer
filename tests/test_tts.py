@@ -1,5 +1,6 @@
 """Tests for the speech cache and the Edge provider, without a network."""
 
+import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -171,6 +172,43 @@ def test_ensure_all_offline_keeps_what_is_stored(
 
     assert cache.ensure_all([HELLO, BYE]) == (BYE,)
     assert cache.find(HELLO) is not None
+
+
+def test_ensure_all_generates_several_sentences_at_a_time(tmp_path: Path) -> None:
+    together = threading.Barrier(3, timeout=5)
+
+    class WaitingProvider:
+        """Answers only once three requests are under way at the same time."""
+
+        def synthesize(self, text: str, voice: str) -> bytes:
+            together.wait()
+            return text.encode()
+
+    cache = AudioCache(tmp_path / "audio", WaitingProvider(), VOICE)
+    texts = [f"Sporcu {number}" for number in range(6)]
+
+    assert cache.ensure_all(texts) == ()
+    assert all(cache.find(text) is not None for text in texts)
+
+
+def test_ensure_all_reports_failures_in_the_order_given(
+    cache: AudioCache, provider: FakeProvider
+) -> None:
+    texts = [f"Sporcu {number}" for number in range(20)]
+    provider.unspeakable = set(texts[::2])
+
+    assert cache.ensure_all(texts) == tuple(texts[::2])
+
+
+def test_two_caches_can_share_a_folder(
+    tmp_path: Path, cache: AudioCache, provider: FakeProvider
+) -> None:
+    other = AudioCache(tmp_path / "audio", provider, VOICE)
+
+    assert cache.ensure(HELLO) == other.ensure(HELLO)
+    assert other.ensure_all([HELLO, BYE]) == ()
+    assert cache.find(BYE) is not None
+    assert len(provider.calls) == 2
 
 
 def test_ensure_all_of_nothing(cache: AudioCache, provider: FakeProvider) -> None:

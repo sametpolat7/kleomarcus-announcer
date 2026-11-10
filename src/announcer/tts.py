@@ -7,6 +7,7 @@ that the app plays it without a network connection.
 
 import asyncio
 import hashlib
+import queue
 import threading
 from collections.abc import Iterable
 from pathlib import Path
@@ -16,6 +17,7 @@ import edge_tts
 from platformdirs import user_cache_dir
 
 from announcer import APP_NAME
+from announcer.files import write_atomically
 
 
 class TtsError(Exception):
@@ -69,11 +71,12 @@ class AudioCache:
     use from several threads.
     """
 
+    _WORKERS = 4  # sentences generated at the same time
+
     def __init__(self, directory: Path, provider: TtsProvider, voice: str) -> None:
         self._directory = directory
         self._provider = provider
         self._voice = voice
-        self._lock = threading.Lock()  # one generation at a time
 
     def find(self, text: str) -> Path | None:
         """Return the stored speech for ``text``, or None if there is none yet."""
@@ -86,17 +89,10 @@ class AudioCache:
         Raises ``TtsError`` if it cannot be generated or stored.
         """
         path = self._path(text)
-        with self._lock:
-            if path.is_file():
-                return path
+        if not path.is_file():
             audio = self._provider.synthesize(text, self._voice)
             try:
-                self._directory.mkdir(parents=True, exist_ok=True)
-                # Written under another name first, so a file that exists is
-                # always complete.
-                temporary = path.with_name(f"{path.name}.tmp")
-                temporary.write_bytes(audio)
-                temporary.replace(path)
+                write_atomically(path, audio)
             except OSError as error:
                 raise TtsError(f"Cannot store speech in {self._directory}") from error
         return path
@@ -105,15 +101,37 @@ class AudioCache:
         """Generate the speech that is not stored yet for ``texts``.
 
         Returns the texts that still have no speech, for example because there
-        is no network connection.
+        is no network connection. Several sentences are generated at a time,
+        since each one takes a few seconds.
         """
-        failed: list[str] = []
-        for text in dict.fromkeys(texts):
-            try:
-                self.ensure(text)
-            except TtsError:
-                failed.append(text)
-        return tuple(failed)
+        wanted = tuple(dict.fromkeys(texts))
+        todo: queue.SimpleQueue[str] = queue.SimpleQueue()
+        for text in wanted:
+            if self.find(text) is None:
+                todo.put(text)
+        failed: set[str] = set()
+
+        def work() -> None:
+            while True:
+                try:
+                    text = todo.get_nowait()
+                except queue.Empty:
+                    return
+                try:
+                    self.ensure(text)
+                except TtsError:
+                    failed.add(text)
+
+        # Daemon threads, so a long generation never keeps the app from closing.
+        workers = [
+            threading.Thread(target=work, name="speech", daemon=True)
+            for _ in range(min(self._WORKERS, todo.qsize()))
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        return tuple(text for text in wanted if text in failed)
 
     def _path(self, text: str) -> Path:
         digest = hashlib.sha256(f"{self._voice}\n{text}".encode()).hexdigest()
