@@ -1,7 +1,7 @@
 [project]
 name = "kleomarcus-announcer"
 version = "0.1.0"
-description = "Calls every athlete by name, right on time: lobby announcements for Kleomarcus Spor Akademi."
+description = "Scheduled voice announcements for a sports club lobby, read from an Excel schedule."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
