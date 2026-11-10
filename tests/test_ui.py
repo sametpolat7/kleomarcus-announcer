@@ -17,6 +17,7 @@ import pytest
 from announcer.app import App
 from announcer.models import ALL_WEEKDAYS, CustomAnnouncement
 from announcer.template import DEFAULT_TEMPLATE
+from announcer.today import Status
 from announcer.ui import main_window
 from announcer.ui.announcement_dialog import AnnouncementDialog
 from announcer.ui.main_window import MainWindow
@@ -99,7 +100,9 @@ def test_fresh_window_asks_for_a_schedule(window: MainWindow) -> None:
     assert window.schedule_path.get() == ""
     assert window.refreshed.get() == "Son yenileme: —"
     assert window.today_title.get() == "9 Kasım 2026 Pazartesi"
-    assert today(window) == []
+    assert today(window) == [("", "", "Bugün için anons yok.", "")]
+    assert announcements(window) == [("", "", "Özel anons yok.")]
+    assert window.time.get() == "08:00:00"
     assert window.last_announcement.get() == "Son anons: —"
     assert window.template.get() == DEFAULT_TEMPLATE
     assert warnings(window).startswith("• Program dosyası seçilmedi.")
@@ -115,7 +118,8 @@ def test_choosing_a_schedule_shows_todays_announcements(
     assert today(window) == [
         ("18:00", "Sporcu", "Ayşe Yılmaz, Mehmet Demir", "Sıradaki")
     ]
-    pump(window, lambda: warnings(window) == "Uyarı yok.")
+    pump(window, lambda: warnings(window) == "")
+    assert not window.warning_box.winfo_manager()  # the box is taken away
 
 
 def test_cancelling_the_file_dialog_changes_nothing(
@@ -213,6 +217,78 @@ def test_speech_that_cannot_be_generated_is_shown_as_a_warning(
     assert warnings(window).startswith("• 3 anonsun sesi oluşturulamadı.")
 
 
+def test_clock_in_the_window_follows_the_seconds(
+    window: MainWindow, clock: FakeClock
+) -> None:
+    clock.now = at(8, 0, 7)
+
+    pump(window, lambda: window.time.get() == "08:00:07")
+
+
+def test_warnings_show_in_a_box_that_grows_to_four_lines(
+    window: MainWindow, app: App, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert window.warning_box.winfo_manager() == "grid"
+    assert window.warnings.cget("height") == 1
+
+    typos = [("", "Funday", "akşam")] * 6
+    choose(window, write_schedule(tmp_path / "typos.xlsx", typos), monkeypatch)
+
+    assert warnings(window).count("satır atlandı") == 6
+    assert window.warnings.cget("height") == 4
+
+
+def test_template_can_be_saved_only_while_it_is_changed(
+    window: MainWindow, app: App
+) -> None:
+    assert window.save_template_button.instate(["disabled"])
+
+    window.template.set("Hoş geldiniz, {ad}.")
+    assert window.save_template_button.instate(["!disabled"])
+
+    window.save_template_button.invoke()
+    assert app.settings.template == "Hoş geldiniz, {ad}."
+    assert window.save_template_button.instate(["disabled"])
+
+    window.template.set(f"  {app.settings.template}  ")
+    assert window.save_template_button.instate(["disabled"])
+
+
+def test_closing_asks_first(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answers = iter([False, True])
+    questions: list[str] = []
+
+    def askyesno(title: str, message: str, **options: object) -> bool:
+        questions.append(message)
+        return next(answers)
+
+    monkeypatch.setattr(messagebox, "askyesno", askyesno)
+
+    window.ask_to_close()
+    assert not window.closed
+
+    window.ask_to_close()
+    assert window.closed
+    assert questions == ["Uygulama kapatılırsa anonslar okunmaz. Kapatılsın mı?"] * 2
+
+
+def test_placeholder_row_cannot_be_changed_or_deleted(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        AnnouncementDialog, "wait", lambda dialog: pytest.fail("opened")
+    )
+    window.announcements.selection_set("none")
+    window.root.update()
+
+    assert window.edit_button.instate(["disabled"])
+    assert window.delete_button.instate(["disabled"])
+    window.edit()
+    window.delete()
+
+
 def test_template_is_saved_with_the_button(window: MainWindow, app: App) -> None:
     window.template.set("  Hoş geldiniz, {ad}.  ")
 
@@ -301,6 +377,19 @@ def test_delete_asks_first(
     assert questions == ["“Salon kapanıyor.” anonsu silinsin mi?"] * 2
     assert announcements(window) == [("19:00", "Her gün", "Su içmeyi unutmayın.")]
     assert window.delete_button.instate(["disabled"])
+
+
+def test_second_copy_only_says_that_the_app_is_running(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shown: list[str] = []
+    monkeypatch.setattr(
+        messagebox, "showinfo", lambda title, message, **options: shown.append(message)
+    )
+
+    main_window.tell_already_running()
+
+    assert shown == ["Uygulama zaten çalışıyor."]
 
 
 def test_log_button_opens_the_log_file(
@@ -540,6 +629,45 @@ def test_dialog_shows_the_announcement_it_changes(
         WATER,
         CustomAnnouncement("Salon kapanıyor.", datetime.time(9, 45), frozenset({5})),
     )
+
+
+def test_choosing_days_starts_from_nothing_ticked(
+    make_dialog: Callable[[], AnnouncementDialog],
+) -> None:
+    dialog = make_dialog()
+
+    dialog.every_day.set(False)
+    dialog.choose_days()
+    assert not any(day.get() for day in dialog.days)
+
+    # Days that were ticked by hand are kept when switching back and forth.
+    dialog.days[1].set(True)
+    dialog.every_day.set(True)
+    dialog.choose_days()
+    dialog.every_day.set(False)
+    dialog.choose_days()
+    assert [day.get() for day in dialog.days] == [False, True] + [False] * 5
+
+
+def test_dialog_tries_out_the_text_without_saving_it(
+    make_dialog: Callable[[], AnnouncementDialog],
+    app: App,
+    provider: FakeProvider,
+    alerts: list[str],
+) -> None:
+    app.start()
+    dialog = make_dialog()
+
+    dialog.test()
+    assert alerts == ["Anons metni boş olamaz."]
+
+    dialog.text.set("  Lütfen salonu temiz tutunuz.  ")
+    dialog.test()
+    wait_for(app, lambda: app.test_status is Status.PLAYED)
+
+    assert [text for text, _ in provider.calls] == ["Lütfen salonu temiz tutunuz."]
+    assert app.settings.custom_announcements == ()
+    assert dialog.window.winfo_exists()
 
 
 def test_days_can_be_ticked_only_when_not_every_day(

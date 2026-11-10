@@ -14,7 +14,10 @@ from announcer.timetable import Conflict, SlotHolder
 from announcer.today import Status
 
 SLEEP_NOTICE = "Uyku modunda anonslar seslendirilmez."
-NO_WARNINGS = "Uyarı yok."
+NO_ROWS = "Bugün için anons yok."
+NO_ANNOUNCEMENTS = "Özel anons yok."
+CLOSE_QUESTION = "Uygulama kapatılırsa anonslar okunmaz. Kapatılsın mı?"
+ALREADY_RUNNING = "Uygulama zaten çalışıyor."
 TEMPLATE_HINT = f"“{PLACEHOLDER}” yerine sporcunun adı ve soyadı okunur."
 TEMPLATE_NEEDS_PLACEHOLDER = f"Şablonda “{PLACEHOLDER}” yer tutucusu bulunmalıdır."
 CANNOT_SAVE = "Değişiklik kaydedilemedi. Ayrıntılar kayıt dosyasındadır."
