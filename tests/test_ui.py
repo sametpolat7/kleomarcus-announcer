@@ -100,10 +100,9 @@ def choose(
 def test_fresh_window_asks_for_a_schedule(window: MainWindow) -> None:
     assert window.schedule_path.get() == ""
     assert window.loaded.get() == "Son Yüklenme Tarihi: —"
-    assert window.today_title.get() == "9 Kasım 2026 Pazartesi"
+    assert window.heading.get() == "9 Kasım 2026 Pazartesi  ·  08:00:00"
     assert today(window) == [("", "", "Bugün için anons yok.", "")]
     assert announcements(window) == [("", "", "Özel anons yok.")]
-    assert window.time.get() == "08:00:00"
     assert window.last_announcement.get() == "Son anons: —"
     assert window.template.get() == DEFAULT_TEMPLATE
     assert warnings(window).startswith("• Sporcu listesi seçilmedi.")
@@ -174,13 +173,13 @@ def test_status_follows_the_clock(
 ) -> None:
     choose(window, schedule, monkeypatch)
     clock.now = at(18, 0, 20)
-    pump(window, lambda: window.time.get() == "18:00:20")
+    pump(window, lambda: window.heading.get().endswith("18:00:20"))
     assert today(window)[0][3] == "Sıradaki"
 
     clock.now = at(18, 0, 31)  # too late for it now, with nothing else changing
     pump(window, lambda: today(window)[0][3] == "Saati geçti")
     clock.now = at(0, 0) + datetime.timedelta(days=1)
-    pump(window, lambda: window.today_title.get() == "10 Kasım 2026 Salı")
+    pump(window, lambda: window.heading.get().startswith("10 Kasım 2026 Salı"))
 
     assert today(window) == [("Salı", "20:00", "Zeynep Kaya", "Sıradaki")]
 
