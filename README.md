@@ -4,7 +4,7 @@
 
 <h1 align="center">Kleomarcus Announcer</h1>
 
-<p align="center"><strong>Calls every athlete by name, right on time.</strong></p>
+<p align="center">Scheduled voice announcements for a sports club lobby.</p>
 
 <p align="center">
   <a href="https://github.com/sametpolat7/kleomarcus-announcer/actions/workflows/ci.yml"><img src="https://github.com/sametpolat7/kleomarcus-announcer/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
@@ -24,19 +24,19 @@ and calls each athlete by name through the computer's speakers.
 
 ## Features
 
-- **Schedule from Excel.** One row per session. Save the file and the app
-  picks up the change by itself.
-- **A natural Turkish voice.** Each sentence is generated once, stored on the
-  computer and played from there, so a lost connection does not silence a
-  known schedule.
+- **Schedule from Excel.** One row per session. A saved file is read again
+  automatically.
+- **Turkish text-to-speech.** Each sentence is generated once, stored on the
+  computer and played from there, so stored announcements play without a
+  connection.
 - **Custom announcements.** Free text at a fixed time, every day or on chosen
   weekdays, such as a closing reminder.
-- **Today at a glance.** Every announcement of the day with its status:
-  waiting, next, playing, played or skipped, and why.
-- **On time or not at all.** Nothing is played late after a restart or a
-  sleep; what was missed is shown instead.
-- **Made for a front desk.** One window with a Turkish interface, a test
-  button, a warning for every problem and a log file.
+- **Today's announcements.** A table of the day's announcements with the
+  status of each: waiting, next, playing, played or skipped, and why.
+- **No late announcements.** An announcement missed during a restart or a
+  sleep is not played afterwards; it is shown as skipped.
+- **Turkish interface.** One window with a test button, warnings for problems
+  and a log file.
 
 ## Getting started
 
