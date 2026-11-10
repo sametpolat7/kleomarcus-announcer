@@ -33,6 +33,17 @@ _PROBLEMS = frozenset(
         Status.CONFLICT,
     }
 )
+_DONE = frozenset({Status.PLAYED, Status.PASSED})  # over, and nothing to act on
+
+# Colours that read well on a light and on a dark window alike.
+_GREY = "#808080"
+_RED = "#c0392b"
+_BLUE = "#2e86de"
+# The warnings stand on a colour of their own, so their text has one too.
+_WARNING_BACKGROUND = "#fff3cd"
+_WARNING_TEXT = "#4d3b00"
+_WARNING_LINES = 4  # how many are shown before the rest has to be scrolled to
+_NO_ROW = "none"  # the id of the line that says that a table is empty
 
 
 def open_file(path: Path) -> None:
@@ -41,6 +52,14 @@ def open_file(path: Path) -> None:
         os.startfile(path)
     else:
         subprocess.run(["open", str(path)], check=False)
+
+
+def tell_already_running() -> None:
+    """Say that the app is running already, for a copy that was started on top."""
+    root = tk.Tk()
+    root.withdraw()  # only the message is shown
+    messagebox.showinfo(APP_NAME, texts.ALREADY_RUNNING, parent=root)
+    root.destroy()
 
 
 class MainWindow:
@@ -69,12 +88,12 @@ class MainWindow:
         self.root = tk.Tk()
         self.root.title(APP_NAME)
         # Small enough for a laptop screen; the tables take up the difference.
-        height = min(740, self.root.winfo_screenheight() - 120)
+        height = min(800, self.root.winfo_screenheight() - 120)
         self.root.geometry(f"860x{height}")
         self.root.minsize(720, 600)
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
-        self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.root.protocol("WM_DELETE_WINDOW", self.ask_to_close)
         # Tk prints an error in a button's command to a console that a
         # windowed app does not have.
         self.root.report_callback_exception = self._report_error
@@ -82,21 +101,32 @@ class MainWindow:
         self.schedule_path = tk.StringVar()
         self.refreshed = tk.StringVar()
         self.today_title = tk.StringVar()
+        self.time = tk.StringVar()
         self.last_announcement = tk.StringVar()
         self.template = tk.StringVar(value=app.settings.template)
         self.activity = tk.StringVar()
 
+        # Kept on the window, as tkinter drops a font that nothing refers to.
+        self._bold = font.nametofont("TkDefaultFont").copy()
+        self._bold.configure(weight="bold")
+        self._large = self._bold.copy()
+        size = int(self._large.cget("size"))  # negative when it is in pixels
+        self._large.configure(size=size + 4 if size > 0 else size - 4)
+
+        # Top to bottom: what the operator looks at, then what is rarely
+        # changed. Today's table takes whatever height is left over.
         frame = ttk.Frame(self.root, padding=_PAD)
         frame.grid(sticky="nsew")
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(1, weight=3, minsize=150)
-        frame.rowconfigure(3, weight=1, minsize=110)
-        self._build_schedule(frame).grid(row=0, sticky="ew")
-        self._build_today(frame).grid(row=1, sticky="nsew", pady=(_PAD, 0))
-        self._build_template(frame).grid(row=2, sticky="ew", pady=(_PAD, 0))
-        self._build_announcements(frame).grid(row=3, sticky="nsew", pady=(_PAD, 0))
-        self._build_warnings(frame).grid(row=4, sticky="ew", pady=(_PAD, 0))
-        self._build_footer(frame).grid(row=5, sticky="ew", pady=(_PAD, 0))
+        frame.rowconfigure(2, weight=1, minsize=150)
+        self._build_header(frame).grid(row=0, sticky="ew")
+        self.warning_box = self._build_warnings(frame)
+        self.warning_box.grid(row=1, sticky="ew", pady=(_PAD, 0))
+        self._build_today(frame).grid(row=2, sticky="nsew", pady=(_PAD, 0))
+        self._build_schedule(frame).grid(row=3, sticky="ew", pady=(_PAD, 0))
+        self._build_template(frame).grid(row=4, sticky="ew", pady=(_PAD, 0))
+        self._build_announcements(frame).grid(row=5, sticky="ew", pady=(_PAD, 0))
+        self._build_footer(frame).grid(row=6, sticky="ew", pady=(_PAD, 0))
 
         self.show()
         self._after = self.root.after(_POLL, self._tick)
@@ -104,6 +134,14 @@ class MainWindow:
     def run(self) -> None:
         """Show the window until it is closed."""
         self.root.mainloop()
+
+    def ask_to_close(self) -> None:
+        """Close the window if the operator means it: it ends the announcements."""
+        if messagebox.askyesno(
+            APP_NAME, texts.CLOSE_QUESTION, default="no", parent=self.root
+        ):
+            _log.info("Closed by the operator")
+            self.close()
 
     def close(self) -> None:
         """Close the window, and with it a dialog that is open over it."""
@@ -122,55 +160,68 @@ class MainWindow:
         self._shown_minute = now.replace(second=0, microsecond=0)
         path = app.settings.schedule_path
         self.schedule_path.set("" if path is None else str(path))
+        self._schedule_entry.xview_moveto(1)  # the file's name is at the end
         self.refreshed.set(texts.refreshed(app.refreshed_at))
         self.today_title.set(texts.today_title(now))
+        self.time.set(f"{now:%H:%M:%S}")
         self.last_announcement.set(texts.last_announcement(app.last_announcement))
         self.activity.set(texts.activity(app.generating, app.test_status))
         self._show_today()
         self._show_announcements()
         self._show_warnings()
+        self._show_template_button()
 
     # Building the window
+
+    def _build_header(self, parent: ttk.Frame) -> ttk.Frame:
+        header = ttk.Frame(parent)
+        header.columnconfigure(0, weight=1)
+        ttk.Label(header, textvariable=self.today_title, font=self._large).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(header, textvariable=self.time, font=self._large).grid(
+            row=0, column=1, sticky="e"
+        )
+        return header
 
     def _build_schedule(self, parent: ttk.Frame) -> ttk.LabelFrame:
         box = ttk.LabelFrame(parent, text="Program Dosyası", padding=8)
         box.columnconfigure(0, weight=1)
-        ttk.Entry(box, textvariable=self.schedule_path, state="readonly").grid(
-            row=0, column=0, sticky="ew"
+        self._schedule_entry = ttk.Entry(
+            box, textvariable=self.schedule_path, state="readonly"
         )
+        self._schedule_entry.grid(row=0, column=0, sticky="ew")
         self.choose_button = ttk.Button(box, text="Dosya Seç…", command=self.choose)
         self.choose_button.grid(row=0, column=1, padx=(8, 0))
         self.refresh_button = ttk.Button(box, text="Yenile", command=self.refresh)
         self.refresh_button.grid(row=0, column=2, padx=(8, 0))
-        ttk.Label(box, textvariable=self.refreshed).grid(
-            row=1, column=0, columnspan=3, sticky="w", pady=(6, 0)
-        )
         return box
 
     def _build_today(self, parent: ttk.Frame) -> ttk.LabelFrame:
         box = ttk.LabelFrame(parent, text="Bugünün Anonsları", padding=8)
         box.columnconfigure(0, weight=1)
-        box.rowconfigure(1, weight=1)
-        ttk.Label(box, textvariable=self.today_title).grid(row=0, column=0, sticky="w")
+        box.rowconfigure(0, weight=1)
         self.today = self._table(
             box,
-            row=1,
             height=6,
             columns={"time": "Saat", "kind": "Tür", "text": "Anons", "status": "Durum"},
             widths={"time": 60, "kind": 70, "text": 380, "status": 150},
-            stretch="text",
+            select=False,  # there is nothing to do with a row but read it
         )
-        # Kept on the window, as tkinter drops a font that nothing refers to.
-        self._bold = font.nametofont("TkDefaultFont").copy()
-        self._bold.configure(weight="bold")
         self.today.tag_configure(Status.NEXT.name, font=self._bold)
-        self.today.tag_configure(Status.PLAYING.name, font=self._bold)
-        self.today.tag_configure(Status.PASSED.name, foreground="#808080")
+        self.today.tag_configure(Status.PLAYING.name, font=self._bold, foreground=_BLUE)
+        for status in _DONE:
+            self.today.tag_configure(status.name, foreground=_GREY)
         for status in _PROBLEMS:
-            self.today.tag_configure(status.name, foreground="#c0392b")
-        ttk.Label(box, textvariable=self.last_announcement).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(6, 0)
+            self.today.tag_configure(status.name, foreground=_RED)
+        self.today.tag_configure(_NO_ROW, foreground=_GREY)
+        notes = ttk.Frame(box)
+        notes.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        notes.columnconfigure(0, weight=1)
+        ttk.Label(notes, textvariable=self.last_announcement).grid(
+            row=0, column=0, sticky="w"
         )
+        ttk.Label(notes, textvariable=self.refreshed).grid(row=0, column=1, sticky="e")
         return box
 
     def _build_template(self, parent: ttk.Frame) -> ttk.LabelFrame:
@@ -179,6 +230,7 @@ class MainWindow:
         entry = ttk.Entry(box, textvariable=self.template)
         entry.grid(row=0, column=0, sticky="ew")
         entry.bind("<Return>", lambda event: self.save_template())
+        self.template.trace_add("write", lambda *args: self._show_template_button())
         self.save_template_button = ttk.Button(
             box, text="Kaydet", command=self.save_template
         )
@@ -193,19 +245,20 @@ class MainWindow:
     def _build_announcements(self, parent: ttk.Frame) -> ttk.LabelFrame:
         box = ttk.LabelFrame(parent, text="Özel Anonslar", padding=8)
         box.columnconfigure(0, weight=1)
-        box.rowconfigure(0, weight=1)
         self.announcements = self._table(
             box,
-            row=0,
             height=3,
             columns={"time": "Saat", "days": "Günler", "text": "Anons"},
             widths={"time": 60, "days": 200, "text": 320},
-            stretch="text",
         )
+        self.announcements.tag_configure(_NO_ROW, foreground=_GREY)
         self.announcements.bind(
             "<<TreeviewSelect>>", lambda event: self._show_buttons()
         )
         self.announcements.bind("<Double-1>", lambda event: self.edit())
+        self.announcements.bind("<Return>", lambda event: self.edit())
+        self.announcements.bind("<Delete>", lambda event: self.delete())
+        self.announcements.bind("<BackSpace>", lambda event: self.delete())
         buttons = ttk.Frame(box)
         buttons.grid(row=0, column=2, sticky="n", padx=(8, 0))
         self.add_button = ttk.Button(buttons, text="Ekle…", command=self.add)
@@ -217,22 +270,36 @@ class MainWindow:
             button.grid(row=row, column=0, sticky="ew", pady=(0, 6))
         return box
 
-    def _build_warnings(self, parent: ttk.Frame) -> ttk.LabelFrame:
-        box = ttk.LabelFrame(parent, text="Uyarılar", padding=8)
+    def _build_warnings(self, parent: ttk.Frame) -> tk.Frame:
+        """Return the coloured box of warnings, which shows only when there are any."""
+        box = tk.Frame(parent, background=_WARNING_BACKGROUND, padx=10, pady=8)
         box.columnconfigure(0, weight=1)
+        tk.Label(
+            box,
+            text="Uyarılar",
+            font=self._bold,
+            background=_WARNING_BACKGROUND,
+            foreground=_WARNING_TEXT,
+        ).grid(row=0, column=0, sticky="w")
         self.warnings = tk.Text(
             box,
-            height=3,
+            height=1,
             wrap="word",
             state="disabled",
             relief="flat",
+            borderwidth=0,
             highlightthickness=0,
             font="TkDefaultFont",
+            cursor="arrow",
+            background=_WARNING_BACKGROUND,
+            foreground=_WARNING_TEXT,
         )
-        self.warnings.grid(row=0, column=0, sticky="ew")
-        scrollbar = ttk.Scrollbar(box, orient="vertical", command=self.warnings.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        self.warnings.configure(yscrollcommand=scrollbar.set)
+        self.warnings.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        self._warnings_scrollbar = ttk.Scrollbar(
+            box, orient="vertical", command=self.warnings.yview
+        )
+        self._warnings_scrollbar.grid(row=1, column=1, sticky="ns")
+        self.warnings.configure(yscrollcommand=self._warnings_scrollbar.set)
         return box
 
     def _build_footer(self, parent: ttk.Frame) -> ttk.Frame:
@@ -249,28 +316,30 @@ class MainWindow:
     @staticmethod
     def _table(
         parent: ttk.LabelFrame,
-        row: int,
         height: int,
         columns: dict[str, str],
         widths: dict[str, int],
-        stretch: str,
+        select: bool = True,
     ) -> ttk.Treeview:
-        """Return a table with a scrollbar, placed in ``row`` of ``parent``."""
+        """Return a table with a scrollbar, placed at the top of ``parent``.
+
+        The "text" column takes up the width that is left over.
+        """
         table = ttk.Treeview(
             parent,
             columns=tuple(columns),
             show="headings",
             height=height,
-            selectmode="browse",
+            selectmode="browse" if select else "none",
         )
         for name, heading in columns.items():
             table.heading(name, text=heading, anchor="w")
             table.column(
-                name, width=widths[name], minwidth=widths[name], stretch=name == stretch
+                name, width=widths[name], minwidth=widths[name], stretch=name == "text"
             )
-        table.grid(row=row, column=0, sticky="nsew")
+        table.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=table.yview)
-        scrollbar.grid(row=row, column=1, sticky="ns")
+        scrollbar.grid(row=0, column=1, sticky="ns")
         table.configure(yscrollcommand=scrollbar.set)
         return table
 
@@ -294,6 +363,10 @@ class MainWindow:
         for index, (row, values) in enumerate(zip(rows, shown, strict=True)):
             self.today.insert(
                 "", "end", iid=str(index), values=values, tags=row.status.name
+            )
+        if not rows:
+            self.today.insert(
+                "", "end", iid=_NO_ROW, values=("", "", texts.NO_ROWS, ""), tags=_NO_ROW
             )
         # Bring what is sounding now, or comes next, into view.
         current = [
@@ -323,17 +396,36 @@ class MainWindow:
         self.announcements.delete(*self.announcements.get_children())
         for row, values in shown:
             self.announcements.insert("", "end", iid=row, values=values)
+        if not shown:
+            self.announcements.insert(
+                "",
+                "end",
+                iid=_NO_ROW,
+                values=("", "", texts.NO_ANNOUNCEMENTS),
+                tags=_NO_ROW,
+            )
         if selected and self.announcements.exists(selected[0]):
             self.announcements.selection_set(selected[0])
         self._show_buttons()
 
+    def _selected(self) -> int | None:
+        """Return the index of the custom announcement that is selected, if any."""
+        selected = self.announcements.selection()
+        return int(selected[0]) if selected and selected[0] != _NO_ROW else None
+
     def _show_buttons(self) -> None:
         """Let an announcement be changed or deleted only while one is selected."""
-        state = "!disabled" if self.announcements.selection() else "disabled"
+        state = "disabled" if self._selected() is None else "!disabled"
         self.edit_button.state([state])
         self.delete_button.state([state])
 
+    def _show_template_button(self) -> None:
+        """Let the template be saved only while it differs from the stored one."""
+        changed = self.template.get().strip() != self._app.settings.template
+        self.save_template_button.state(["!disabled" if changed else "disabled"])
+
     def _show_warnings(self) -> None:
+        """List the warnings in their box, or take the box away if there are none."""
         lines = texts.warnings(self._app)
         if lines == self._shown_warnings:
             return
@@ -341,16 +433,25 @@ class MainWindow:
         self.warnings.configure(state="normal")
         self.warnings.delete("1.0", "end")
         self.warnings.insert("1.0", "\n".join(f"• {line}" for line in lines))
-        if not lines:
-            self.warnings.insert("1.0", texts.NO_WARNINGS)
-        self.warnings.configure(state="disabled")
+        self.warnings.configure(
+            state="disabled", height=min(len(lines), _WARNING_LINES)
+        )
+        if len(lines) > _WARNING_LINES:
+            self._warnings_scrollbar.grid()
+        else:
+            self._warnings_scrollbar.grid_remove()
+        if lines:
+            self.warning_box.grid()
+        else:
+            self.warning_box.grid_remove()
 
     def _tick(self) -> None:
         """Take in what the app has to report, and follow the clock."""
         try:
             changed = self._app.poll()
-            minute = self._clock().replace(second=0, microsecond=0)
-            if changed or minute != self._shown_minute:
+            now = self._clock()
+            self.time.set(f"{now:%H:%M:%S}")
+            if changed or now.replace(second=0, microsecond=0) != self._shown_minute:
                 self.show()
             self._update_failed = False
         except Exception:
@@ -420,17 +521,17 @@ class MainWindow:
 
     def edit(self) -> None:
         """Ask for changes to the selected custom announcement."""
-        selected = self.announcements.selection()
-        if selected:
-            AnnouncementDialog(self.root, self._app, int(selected[0])).wait()
+        selected = self._selected()
+        if selected is not None:
+            AnnouncementDialog(self.root, self._app, selected).wait()
             self.show()
 
     def delete(self) -> None:
         """Delete the selected custom announcement, after asking."""
-        selected = self.announcements.selection()
-        if not selected:
+        selected = self._selected()
+        if selected is None:
             return
-        announcement = self._app.settings.custom_announcements[int(selected[0])]
+        announcement = self._app.settings.custom_announcements[selected]
         if not messagebox.askyesno(
             "Özel Anonsu Sil",
             f"“{announcement.text}” anonsu silinsin mi?",
@@ -438,7 +539,7 @@ class MainWindow:
         ):
             return
         try:
-            self._app.delete_announcement(int(selected[0]))
+            self._app.delete_announcement(selected)
         except OSError:
             _log.exception("Cannot save the deletion of a custom announcement")
             self._alert("Özel Anonslar", texts.CANNOT_SAVE)

@@ -11,6 +11,8 @@ from announcer.ui import texts
 
 _log = logging.getLogger(__name__)
 
+_NO_TEXT = "Anons metni boş olamaz."
+
 
 class AnnouncementDialog:
     """A window over the main one with the text, time and days of an announcement.
@@ -78,7 +80,7 @@ class AnnouncementDialog:
                 text=label,
                 variable=self.every_day,
                 value=value,
-                command=self.show_days,
+                command=self.choose_days,
             ).grid(row=0, column=column, padx=(0, 16))
         week = ttk.Frame(frame)
         week.grid(row=6, column=0, sticky="w", pady=(0, 16))
@@ -91,12 +93,16 @@ class AnnouncementDialog:
         self.show_days()
 
         buttons = ttk.Frame(frame)
-        buttons.grid(row=7, column=0, sticky="e")
+        buttons.grid(row=7, column=0, sticky="ew")
+        buttons.columnconfigure(0, weight=1)
+        ttk.Button(buttons, text="Test", command=self.test).grid(
+            row=0, column=0, sticky="w"
+        )
         ttk.Button(buttons, text="Vazgeç", command=self.window.destroy).grid(
-            row=0, column=0, padx=(0, 8)
+            row=0, column=1, padx=(0, 8)
         )
         ttk.Button(buttons, text="Kaydet", command=self.save, default="active").grid(
-            row=0, column=1
+            row=0, column=2
         )
 
         self.window.bind("<Return>", lambda event: self.save())
@@ -108,6 +114,14 @@ class AnnouncementDialog:
         self.window.wait_visibility()
         self.window.grab_set()
         self.window.wait_window()
+
+    def test(self) -> None:
+        """Announce the text as entered, saved or not, so it can be heard first."""
+        text = self.text.get().strip()
+        if text:
+            self._app.preview(text)
+        else:
+            self._alert(_NO_TEXT)
 
     def save(self) -> None:
         """Save what was entered and close; say why if it cannot be saved."""
@@ -128,7 +142,7 @@ class AnnouncementDialog:
         """Return the announcement as entered; say why if it is not valid."""
         text = self.text.get().strip()
         if not text:
-            self._alert("Anons metni boş olamaz.")
+            self._alert(_NO_TEXT)
             return None
         try:
             time = datetime.time(int(self.hour.get()), int(self.minute.get()))
@@ -144,6 +158,14 @@ class AnnouncementDialog:
             self._alert("En az bir gün seçin.")
             return None
         return CustomAnnouncement(text, time, weekdays)
+
+    def choose_days(self) -> None:
+        """Follow a switch between every day and chosen days."""
+        if not self.every_day.get() and all(day.get() for day in self.days):
+            # Start from nothing ticked: ticking two days beats unticking five.
+            for day in self.days:
+                day.set(False)
+        self.show_days()
 
     def show_days(self) -> None:
         """Let the weekdays be ticked only when the choice is not every day."""
