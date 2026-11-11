@@ -70,6 +70,8 @@ def open_file(path: Path) -> None:
 
 
 def _set_icon(root: tk.Tk) -> None:
+    if sys.platform == "darwin" and getattr(sys, "frozen", False):
+        return  # the packaged app's own icon has the margin that macOS expects
     try:
         root.iconphoto(
             True,
