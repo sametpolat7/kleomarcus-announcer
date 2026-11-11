@@ -115,8 +115,8 @@ class MainWindow:
         # Small enough for a laptop screen; the tables take up the difference.
         screen_height = self.root.winfo_screenheight()
         height = min(800, screen_height - 120)
-        # A little above the middle of the screen. Left to itself, Windows may
-        # put the window so low that its bottom is behind the taskbar.
+        # Left to itself, Windows may put the window so low that its bottom is
+        # behind the taskbar.
         left = max((self.root.winfo_screenwidth() - 860) // 2, 0)
         top = max((screen_height - height) // 2 - 40, 0)
         self.root.geometry(f"860x{height}+{left}+{top}")

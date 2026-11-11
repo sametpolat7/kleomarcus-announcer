@@ -1,7 +1,5 @@
 name: Release
 
-# A pull request only builds the downloads and checks that the packaged app
-# makes an announcement. A tag such as v1.0.0 also publishes them as a release.
 on:
   push:
     tags: ["v*"]
