@@ -4,7 +4,7 @@
 #
 # It writes ``dist/Kleomarcus Announcer.app`` on macOS and the folder
 # ``dist/Kleomarcus Announcer`` on Windows, which ``installer.iss`` turns into
-# a setup program. The version comes from ``pyproject.toml``.
+# a setup program.
 
 import subprocess
 import sys
@@ -83,7 +83,7 @@ analysis = Analysis(
 executable = EXE(
     PYZ(analysis.pure),
     analysis.scripts,
-    exclude_binaries=True,  # they go into the folder below, not into the file
+    exclude_binaries=True,
     name=APP_NAME,
     console=False,
     upx=False,

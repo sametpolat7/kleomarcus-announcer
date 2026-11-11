@@ -101,7 +101,6 @@ def render_png(size: int, margin: float = 0.0) -> bytes:
 
 
 def render_ico() -> bytes:
-    """Return the logo as the contents of a Windows icon file."""
     images = [render_png(size) for size in ICO_SIZES]
     at = 6 + 16 * len(images)  # past the header and the list of images
     entries = b""

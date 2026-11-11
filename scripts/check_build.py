@@ -1,6 +1,4 @@
-"""Check that the packaged app works: it starts, reads the sample schedule,
-generates the speech and makes an announcement, on a sound device that plays
-nothing. Run with ``uv run scripts/check_build.py`` and the path of the app's
+"""Run with ``uv run scripts/check_build.py`` and the path of the app's
 executable file, as a user who has no settings of the app yet. It needs a
 network connection and takes up to three minutes.
 """
