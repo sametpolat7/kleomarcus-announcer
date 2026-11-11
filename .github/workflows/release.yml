@@ -1,0 +1,128 @@
+name: Release
+
+# A pull request only builds the downloads and checks them. A tag such as
+# v1.0.0 also publishes them as a release.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Read the version
+        shell: bash
+        run: echo "VERSION=$(uv version --short)" >> "$GITHUB_ENV"
+
+      - name: Check that the tag names the version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: test "$GITHUB_REF_NAME" = "v$VERSION"
+
+      - name: Build the app
+        run: uv run pyinstaller packaging/announcer.spec
+
+      - name: Build the installer (Windows)
+        if: runner.os == 'Windows'
+        run: iscc "/DAppVersion=$env:VERSION" packaging\installer.iss
+
+      - name: Install the app (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $setup = Start-Process -Wait -PassThru `
+            -FilePath "dist\Kleomarcus-Announcer-$env:VERSION-windows-x64-setup.exe" `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+          exit $setup.ExitCode
+
+      - name: Check the installed app (Windows)
+        if: runner.os == 'Windows'
+        run: >
+          uv run scripts/check_build.py
+          "$env:LOCALAPPDATA\Programs\Kleomarcus Announcer\Kleomarcus Announcer.exe"
+          --screenshot screenshot.png
+
+      - name: Build the disk image (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir dist/dmg
+          mv "dist/Kleomarcus Announcer.app" dist/dmg/
+          ln -s /Applications dist/dmg/Applications
+          hdiutil create -volname "Kleomarcus Announcer" -srcfolder dist/dmg \
+            -format UDZO "dist/Kleomarcus-Announcer-$VERSION-macos-$(uname -m).dmg"
+
+      - name: Check the app on the disk image (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          hdiutil attach dist/*.dmg -mountpoint dist/mounted -nobrowse -readonly
+          uv run scripts/check_build.py \
+            "dist/mounted/Kleomarcus Announcer.app/Contents/MacOS/Kleomarcus Announcer" \
+            --screenshot screenshot.png
+          hdiutil detach dist/mounted
+
+      - name: Keep the download
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: download-${{ runner.os }}
+          path: |
+            dist/*-setup.exe
+            dist/*.dmg
+          if-no-files-found: error
+
+      - name: Keep the picture of the screen
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: screenshot-${{ runner.os }}
+          path: screenshot.png
+
+  publish:
+    name: Publish the release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to create the release
+      id-token: write # to sign the attestation
+      attestations: write # to store it
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: download-*
+          path: downloads
+          merge-multiple: true
+
+      # Lets anyone check that a download was built here, from this tag.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: downloads/*
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" downloads/*
+          --repo "$GITHUB_REPOSITORY"
+          --title "Kleomarcus Announcer ${GITHUB_REF_NAME#v}"
+          --generate-notes
+          --verify-tag
