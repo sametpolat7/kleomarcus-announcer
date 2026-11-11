@@ -19,6 +19,9 @@
 AppId={{6D65C92A-80BE-49D3-A0E3-9873DA699B35}
 AppName={#AppName}
 AppVersion={#AppVersion}
+; The running app holds this mutex (announcer.single_instance), so the app
+; is neither updated nor removed while it is open.
+AppMutex=KleomarcusAnnouncerRunning
 AppPublisher=Samet Polat
 AppPublisherURL=https://github.com/sametpolat7/kleomarcus-announcer
 VersionInfoVersion={#AppVersion}
@@ -39,6 +42,10 @@ Name: "turkish"; MessagesFile: "compiler:Languages\Turkish.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
+
+[InstallDelete]
+; Files that the new version no longer has must not stay from the old one.
+Type: filesandordirs; Name: "{app}\_internal"
 
 [Files]
 Source: "..\dist\{#AppName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

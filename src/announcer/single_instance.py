@@ -4,9 +4,14 @@ from pathlib import Path
 from typing import IO
 
 if sys.platform == "win32":
+    import ctypes
     import msvcrt
 else:
     import fcntl
+
+# The installer cannot see the lock below, so on Windows the app also holds a
+# mutex of this name: ``AppMutex`` in ``packaging/installer.iss``.
+MUTEX_NAME = "KleomarcusAnnouncerRunning"
 
 
 def claim(path: Path) -> IO[bytes] | None:
@@ -23,6 +28,8 @@ def claim(path: Path) -> IO[bytes] | None:
         if sys.platform == "win32":
             file.seek(0)
             msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
+            # Never closed, so it is held until the app ends, like the lock.
+            ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
         else:
             fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as error:
