@@ -1,6 +1,6 @@
-"""The first worksheet must have a header row with the columns ``Ad Soyad``,
-``Gün`` and ``Saat``. Rows that cannot be used are reported, not fatal, so a
-single typo does not silence the whole schedule.
+"""The first visible worksheet must have a header row with the columns
+``Ad Soyad``, ``Gün`` and ``Saat``. Rows that cannot be used are reported, not
+fatal, so a single typo does not silence the whole schedule.
 """
 
 import datetime
