@@ -30,10 +30,12 @@ def windows_icon():
 def mac_icon():
     iconset = ICONS / "icon.iconset"
     iconset.mkdir(exist_ok=True)
+    sizes = (16, 32, 64, 128, 256, 512, 1024)  # pixels a side
+    images = {size: render_png(size, MAC_MARGIN) for size in sizes}
     for points in (16, 32, 128, 256, 512):
         for scale, suffix in ((1, ""), (2, "@2x")):
-            image = render_png(points * scale, MAC_MARGIN)
-            (iconset / f"icon_{points}x{points}{suffix}.png").write_bytes(image)
+            name = f"icon_{points}x{points}{suffix}.png"
+            (iconset / name).write_bytes(images[points * scale])
     subprocess.run(["iconutil", "--convert", "icns", iconset], check=True)
     return iconset.with_suffix(".icns")
 
