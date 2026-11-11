@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from announcer import VERSION
 from announcer.app import TEST_NAME, App, SlotTakenError, backup_copy
 from announcer.chime import CHIME_PATH
 from announcer.loader import ScheduleFileError, UnreadableFileError
@@ -674,6 +675,7 @@ def test_actions_and_outcomes_are_logged_with_their_cause(
     wait_for(app, lambda: statuses(app)[1] is Status.ASLEEP)
 
     log = caplog.text
+    assert f"Version {VERSION} started" in log
     assert "Schedule loaded from" in log
     assert "3 session(s), 0 row(s) skipped" in log
     assert 'Custom announcement added: "Su içmeyi unutmayın." at 19:00 on every' in log

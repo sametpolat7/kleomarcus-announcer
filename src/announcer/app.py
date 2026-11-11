@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from announcer import VERSION
 from announcer.loader import (
     LoadedSchedule,
     ScheduleFileError,
@@ -162,7 +163,9 @@ class App:
         self._player = Player(self._cache.find, output, self._on_played)
 
     def start(self) -> None:
-        _log.info("Started; the settings are in %s", self.settings_file)
+        _log.info(
+            "Version %s started; the settings are in %s", VERSION, self.settings_file
+        )
         now = self._clock()
         self._scheduler.start()
         self._player.start()
