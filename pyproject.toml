@@ -1,6 +1,6 @@
 [project]
 name = "kleomarcus-announcer"
-version = "0.1.0"
+version = "1.0.0"
 description = "Scheduled voice announcements for a sports club lobby, read from an Excel schedule."
 readme = "README.md"
 license = "MIT"
@@ -9,7 +9,7 @@ authors = [{ name = "Samet Polat" }]
 requires-python = ">=3.14"
 keywords = ["announcements", "text-to-speech", "scheduler", "tkinter", "excel"]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 5 - Production/Stable",
   "Environment :: MacOS X",
   "Environment :: Win32 (MS Windows)",
   "Intended Audience :: End Users/Desktop",
