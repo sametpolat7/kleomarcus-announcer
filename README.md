@@ -54,9 +54,12 @@ start:
 
 - **Windows** shows "Windows protected your PC". Choose **More info**, then
   **Run anyway**.
-- **macOS** says that the app cannot be verified. Open **System Settings**,
-  then **Privacy & Security**, and choose **Open Anyway** next to the app's
-  name.
+- **macOS** says that Apple could not verify that the app is free of malware.
+  Choose **Done**, then open **System Settings**, go to **Privacy & Security**,
+  scroll down to **Security** and choose **Open Anyway**. The button is there
+  for about an hour after the attempt to open the app. Confirm in the dialog
+  that follows and enter the login password. On macOS 12 and earlier,
+  Control-click the app and choose **Open** instead.
 
 Whether a download was built by this repository can be checked with the
 [GitHub CLI](https://cli.github.com):
