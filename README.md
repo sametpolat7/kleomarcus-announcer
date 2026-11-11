@@ -189,10 +189,11 @@ Windows, a folder that [Inno Setup](https://jrsoftware.org/isinfo.php) turns
 into the installer (`packaging/installer.iss`).
 
 The [release workflow](.github/workflows/release.yml) does this on both
-systems for every pull request, installs the result and checks that it
-starts. To publish a version, set it in `pyproject.toml`, merge, and push a
-tag with the same number, such as `v1.0.0`: the workflow then attaches the
-downloads to a new release.
+systems for every pull request, installs the result and checks that the
+packaged app generates speech and makes an announcement
+(`scripts/check_build.py`). To publish a version, set it in `pyproject.toml`,
+merge, and push a tag with the same number, such as `v1.0.0`, on `main`: the
+workflow then attaches the downloads to a new release.
 
 ## License
 

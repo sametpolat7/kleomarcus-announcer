@@ -1,7 +1,7 @@
 name: Release
 
-# A pull request only builds the downloads and checks them. A tag such as
-# v1.0.0 also publishes them as a release.
+# A pull request only builds the downloads and checks that the packaged app
+# makes an announcement. A tag such as v1.0.0 also publishes them as a release.
 on:
   push:
     tags: ["v*"]
@@ -35,10 +35,15 @@ jobs:
         shell: bash
         run: echo "VERSION=$(uv version --short)" >> "$GITHUB_ENV"
 
-      - name: Check that the tag names the version
+      - name: Check that the tag names the version and is on main
         if: github.ref_type == 'tag'
         shell: bash
-        run: test "$GITHUB_REF_NAME" = "v$VERSION"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF_NAME" = "v$VERSION"
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)
+          test "$status" = identical || test "$status" = behind
 
       - name: Build the app
         run: uv run pyinstaller packaging/announcer.spec
