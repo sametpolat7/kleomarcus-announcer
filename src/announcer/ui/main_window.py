@@ -113,8 +113,13 @@ class MainWindow:
         self.root.title(APP_NAME)
         _set_icon(self.root)
         # Small enough for a laptop screen; the tables take up the difference.
-        height = min(800, self.root.winfo_screenheight() - 120)
-        self.root.geometry(f"860x{height}")
+        screen_height = self.root.winfo_screenheight()
+        height = min(800, screen_height - 120)
+        # A little above the middle of the screen. Left to itself, Windows may
+        # put the window so low that its bottom is behind the taskbar.
+        left = max((self.root.winfo_screenwidth() - 860) // 2, 0)
+        top = max((screen_height - height) // 2 - 40, 0)
+        self.root.geometry(f"860x{height}+{left}+{top}")
         # At 760 high everything still fits, with three lines of warnings. On
         # a lower screen the window stays in view and today's table gives way.
         self.root.minsize(720, min(760, height))

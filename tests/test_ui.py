@@ -643,6 +643,26 @@ def test_dialog_shows_how_the_test_went(
     assert dialog.test_button.instate(["!disabled"])
 
 
+@pytest.fixture
+def low_screen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The screen of a small laptop, for a window that is opened after this."""
+    monkeypatch.setattr(tk.Misc, "winfo_screenwidth", lambda self: 1024)
+    monkeypatch.setattr(tk.Misc, "winfo_screenheight", lambda self: 768)
+
+
+def test_window_starts_where_all_of_it_is_on_a_low_screen(
+    low_screen: None, window: MainWindow
+) -> None:
+    window.root.update_idletasks()
+
+    size, left, top = window.root.geometry().split("+")
+
+    assert (size, left) == ("860x648", "82")  # in the middle, from side to side
+    # 80 pixels are room enough for the title bar and the taskbar of Windows.
+    # macOS moves the window down a little, to below its menu bar.
+    assert int(top) + 648 + 80 <= 768
+
+
 def test_wrapped_warnings_get_the_lines_they_need(
     window: MainWindow, app: App, monkeypatch: pytest.MonkeyPatch
 ) -> None:
