@@ -118,7 +118,9 @@ fictional names.
 - **Delay.** **Gecikme süresi** moves every announcement, of athletes and
   custom ones alike, by 1 to 10 minutes: with a delay of one minute, a
   session listed for 19:00 is announced at 19:01. Today's table shows the
-  time at which an announcement is made.
+  time at which an announcement is made. A change of the delay repeats
+  nothing that was announced, and what a shorter delay puts behind the clock
+  is announced at once.
 - **Read again.** **Tekrar Oku** reads the selected row of today's table once
   more, with the chime and everyone in that row. It is there for a row whose
   time has come, whether it was announced or skipped, and the row then tells
