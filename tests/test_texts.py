@@ -8,7 +8,7 @@ from announcer.loader import (
     UnreadableFileError,
     WrongFileTypeError,
 )
-from announcer.models import ALL_WEEKDAYS, CustomAnnouncement
+from announcer.models import ALL_WEEKDAYS, DELAYS, SPEEDS, CustomAnnouncement
 from announcer.timetable import Conflict, SlotHolder
 from announcer.today import Status
 from announcer.ui import texts
@@ -24,6 +24,24 @@ def test_every_status_has_a_word() -> None:
 def test_words_of_the_tables() -> None:
     assert texts.days(ALL_WEEKDAYS) == "Her gün"
     assert texts.days({3, 1}) == "Salı, Perşembe"
+
+
+def test_words_of_the_settings() -> None:
+    assert [texts.speed(speed) for speed in SPEEDS] == [
+        "0.8×",
+        "0.9×",
+        "1.0× (Normal)",
+        "1.1×",
+        "1.2×",
+    ]
+    assert [texts.delay(minutes) for minutes in DELAYS] == [
+        "Yok",
+        "1 dk",
+        "2 dk",
+        "3 dk",
+        "5 dk",
+        "10 dk",
+    ]
 
 
 def test_activity() -> None:
@@ -148,4 +166,21 @@ def test_warning_while_a_new_template_has_no_speech(
         "birkaç dakikada bir yeniden denenir.",
         "Yeni şablonun sesleri hazır olana kadar sporcular önceki şablonla "
         "anons ediliyor.",
+    ]
+
+
+def test_warning_while_a_new_speed_has_no_speech(
+    app: App, schedule: Path, provider: FakeProvider
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for(app, lambda: not app.generating)
+    provider.offline = True
+
+    app.set_speed(0.9)
+    wait_for(app, lambda: not app.generating)
+
+    assert texts.warnings(app) == [
+        "3 anonsun sesi oluşturulamadı. İnternet bağlantısını kontrol edin; "
+        "birkaç dakikada bir yeniden denenir.",
+        "Yeni ses hızının sesleri hazır olana kadar anonslar önceki hızla okunuyor.",
     ]

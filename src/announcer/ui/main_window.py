@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 import tkinter as tk
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from tkinter import filedialog, font, messagebox, ttk
 from types import TracebackType
@@ -13,9 +13,9 @@ from announcer import APP_NAME
 from announcer.app import App
 from announcer.loader import ScheduleFileError
 from announcer.logo import ICON_SIZES, icon_path
-from announcer.models import WEEKDAY_NAMES
+from announcer.models import DELAYS, SPEEDS, WEEKDAY_NAMES
 from announcer.scheduler import LATE
-from announcer.today import Status
+from announcer.today import Row, Status
 from announcer.ui import texts
 from announcer.ui.announcement_dialog import AnnouncementDialog
 
@@ -44,6 +44,9 @@ _WARNING_BACKGROUND = "#fff3cd"
 _WARNING_TEXT = "#4d3b00"
 _WARNING_LINES = 3  # how many are shown before the rest has to be scrolled to
 _TEMPLATE_TITLE = "Varsayılan Anons Şablonu"
+_OPTIONS_TITLE = "Anons Ayarları"
+_BUTTON_WIDTH = 10  # in characters; one width, so that the two tables line up
+_MIN_TEXT_WIDTH = 200  # pixels, of the column that takes up the slack
 _NO_ROW = "none"  # the id of the line that says that a table is empty
 _MAC_QUIT = "::tk::mac::Quit"  # what macOS calls for Quit in the menu and the Dock
 
@@ -103,6 +106,7 @@ class MainWindow:
         self._clock = clock
         self._shown_at: tuple[datetime.datetime, bool] | None = None
         self._shown_rows: list[tuple[str, str, str, str]] | None = None
+        self._rows: tuple[Row, ...] = ()  # of today's table, as they are shown
         self._shown_announcements: list[tuple[str, tuple[str, str, str]]] | None = None
         self._shown_warnings: list[str] | None = None
         self._current_row: str | None = None  # of today's table: sounding, or next
@@ -161,7 +165,11 @@ class MainWindow:
         self._build_today(frame).grid(row=2, sticky="nsew", pady=(_PAD, 0))
         self._build_template(frame).grid(row=3, sticky="ew", pady=(_PAD, 0))
         self._build_announcements(frame).grid(row=4, sticky="ew", pady=(_PAD, 0))
-        self._build_schedule(frame).grid(row=5, sticky="ew", pady=(_PAD, 0))
+        bottom = ttk.Frame(frame)
+        bottom.columnconfigure(0, weight=1)
+        bottom.grid(row=5, sticky="ew", pady=(_PAD, 0))
+        self._build_schedule(bottom).grid(row=0, column=0, sticky="nsew")
+        self._build_options(bottom).grid(row=0, column=1, sticky="nsew", padx=(_PAD, 0))
         self._build_footer(frame).grid(row=6, sticky="ew", pady=(_PAD, 0))
 
         self.show()
@@ -201,6 +209,8 @@ class MainWindow:
         self.time.set(f"{now:%H:%M:%S}")
         self.last_announcement.set(texts.last_announcement(app.last_announcement))
         self.activity.set(texts.activity(app.generating, app.test_status))
+        self.speed_box.current(SPEEDS.index(app.settings.speed))
+        self.delay_box.current(DELAYS.index(app.settings.delay))
         self._show_today(now)
         self._show_announcements()
         self._show_warnings()
@@ -277,10 +287,12 @@ class MainWindow:
                 "text": "Ad Soyad",
                 "status": "Durum",
             },
-            widths={"day": 90, "time": 60, "text": 360, "status": 150},
-            select=False,  # there is nothing to do with a row but read it
+            widths={"day": 90, "time": 60, "text": 300, "status": 150},
         )
         self.today.bind("<Configure>", self._on_table_laid_out)
+        self.today.bind("<<TreeviewSelect>>", lambda event: self._show_replay_button())
+        self.today.bind("<Double-1>", self._on_double_click)
+        self.today.bind("<Return>", lambda event: self.replay())
         self.today.tag_configure(Status.NEXT.name, font=self._bold)
         self.today.tag_configure(Status.PLAYING.name, font=self._bold, foreground=_BLUE)
         for status in _DONE:
@@ -288,10 +300,48 @@ class MainWindow:
         for status in _PROBLEMS:
             self.today.tag_configure(status.name, foreground=_RED)
         self.today.tag_configure(_NO_ROW, foreground=_GREY)
+        self.replay_button = ttk.Button(
+            box, text="Tekrar Oku", width=_BUTTON_WIDTH, command=self.replay
+        )
+        self.replay_button.grid(row=0, column=2, sticky="n", padx=(8, 0))
         ttk.Label(box, textvariable=self.last_announcement).grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(6, 0)
+            row=1, column=0, columnspan=3, sticky="w", pady=(6, 0)
         )
         return section
+
+    def _build_options(self, parent: ttk.Frame) -> ttk.Frame:
+        section, box = self._section(parent, _OPTIONS_TITLE)
+        self.speed_box = self._choice(
+            box, 0, "Ses hızı", map(texts.speed, SPEEDS), self.choose_speed
+        )
+        self.delay_box = self._choice(
+            box, 1, "Gecikme süresi", map(texts.delay, DELAYS), self.choose_delay
+        )
+        return section
+
+    @staticmethod
+    def _choice(
+        box: ttk.LabelFrame,
+        row: int,
+        name: str,
+        values: Iterable[str],
+        command: Callable[[], None],
+    ) -> ttk.Combobox:
+        # Close together, so that the box is no higher than the one beside it.
+        gap = 2 if row else 0
+        ttk.Label(box, text=name).grid(row=row, column=0, sticky="w", pady=(gap, 0))
+        choice = ttk.Combobox(box, values=tuple(values), state="readonly", width=12)
+        choice.grid(row=row, column=1, sticky="e", padx=(12, 0), pady=(gap, 0))
+
+        def chosen(event: object) -> None:
+            choice.selection_clear()  # Windows marks the text that was chosen
+            command()
+
+        choice.bind("<<ComboboxSelected>>", chosen)
+        # The wheel is for scrolling the tables: over a choice it would change
+        # a setting by accident.
+        choice.bind("<MouseWheel>", lambda event: "break")
+        return choice
 
     def _build_template(self, parent: ttk.Frame) -> ttk.Frame:
         section, box = self._section(parent, _TEMPLATE_TITLE)
@@ -336,6 +386,7 @@ class MainWindow:
         for row, button in enumerate(
             (self.add_button, self.edit_button, self.delete_button)
         ):
+            button.configure(width=_BUTTON_WIDTH)
             button.grid(row=row, column=0, sticky="ew", pady=(0, 6))
         return section
 
@@ -389,20 +440,25 @@ class MainWindow:
         height: int,
         columns: dict[str, str],
         widths: dict[str, int],
-        select: bool = True,
     ) -> ttk.Treeview:
-        """The "text" column takes up the width that is left over."""
+        """The "text" column takes up the width that is left over, and gives
+        way in a narrow window.
+        """
         table = ttk.Treeview(
             parent,
             columns=tuple(columns),
             show="headings",
             height=height,
-            selectmode="browse" if select else "none",
+            selectmode="browse",
         )
         for name, heading in columns.items():
+            slack = name == "text"
             table.heading(name, text=heading, anchor="w")
             table.column(
-                name, width=widths[name], minwidth=widths[name], stretch=name == "text"
+                name,
+                width=widths[name],
+                minwidth=_MIN_TEXT_WIDTH if slack else widths[name],
+                stretch=slack,
             )
         table.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=table.yview)
@@ -420,6 +476,8 @@ class MainWindow:
         if shown == self._shown_rows:
             return  # left alone, so that it keeps its place while scrolled
         self._shown_rows = shown
+        selected = self._selected_row()
+        self._rows = rows
         self.today.delete(*self.today.get_children())
         for index, (row, values) in enumerate(zip(rows, shown, strict=True)):
             self.today.insert(
@@ -429,6 +487,15 @@ class MainWindow:
             self.today.insert(
                 "", "end", iid=_NO_ROW, values=("", "", texts.NO_ROWS, ""), tags=_NO_ROW
             )
+        if selected is not None:
+            # The same announcement, whatever its status and its place are now.
+            same = [
+                str(index)
+                for index, row in enumerate(rows)
+                if (row.time, row.summary) == (selected.time, selected.summary)
+            ]
+            self.today.selection_set(same[:1])
+        self._show_replay_button()
         current = [
             str(index)
             for index, row in enumerate(rows)
@@ -447,6 +514,22 @@ class MainWindow:
     def _see_current(self) -> None:
         if self._current_row is not None:
             self.today.see(self._current_row)
+
+    def _selected_row(self) -> Row | None:
+        """A row's id in today's table is its index among the rows shown."""
+        selected = self.today.selection()
+        if not selected or selected[0] == _NO_ROW:
+            return None
+        return self._rows[int(selected[0])]
+
+    def _show_replay_button(self) -> None:
+        row = self._selected_row()
+        replayable = row is not None and row.replayable
+        self.replay_button.state(["!disabled" if replayable else "disabled"])
+
+    def _on_double_click(self, event: tk.Event[ttk.Treeview]) -> None:
+        if self.today.identify_row(event.y):  # not on the headings or below the rows
+            self.replay()
 
     def _show_announcements(self) -> None:
         """A row's id is the index of its custom announcement."""
@@ -579,6 +662,29 @@ class MainWindow:
         except ValueError:
             self._alert(_TEMPLATE_TITLE, texts.TEMPLATE_NEEDS_PLACEHOLDER)
         self.show()
+
+    def replay(self) -> None:
+        row = self._selected_row()
+        if row is not None and self._app.replay(row):
+            self.show()
+
+    def choose_speed(self) -> None:
+        speed = SPEEDS[self.speed_box.current()]
+        if speed != self._app.settings.speed:
+            self._change(self._app.set_speed, speed)
+
+    def choose_delay(self) -> None:
+        delay = DELAYS[self.delay_box.current()]
+        if delay != self._app.settings.delay:
+            self._change(self._app.set_delay, delay)
+
+    def _change[Value](self, setting: Callable[[Value], None], value: Value) -> None:
+        try:
+            setting(value)
+        except OSError:
+            _log.exception("Cannot save a setting")
+            self._alert(_OPTIONS_TITLE, texts.CANNOT_SAVE)
+        self.show()  # with what is in use, so the old value after a failure
 
     def add(self) -> None:
         AnnouncementDialog(self.root, self._app).wait()

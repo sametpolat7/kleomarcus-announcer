@@ -6,7 +6,7 @@ import time
 import tkinter as tk
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 import pytest
 
@@ -17,7 +17,15 @@ from announcer.today import Status
 from announcer.ui import announcement_dialog, main_window
 from announcer.ui.announcement_dialog import AnnouncementDialog
 from announcer.ui.main_window import MainWindow
-from support import ROWS, FakeClock, FakeProvider, at, wait_for, write_schedule
+from support import (
+    ROWS,
+    FakeClock,
+    FakeOutput,
+    FakeProvider,
+    at,
+    wait_for,
+    write_schedule,
+)
 
 WATER = CustomAnnouncement("Su içmeyi unutmayın.", datetime.time(19, 0))
 CLOSING = CustomAnnouncement("Salon kapanıyor.", datetime.time(9, 30), frozenset({5}))
@@ -90,6 +98,23 @@ def choose(
     window.choose_button.invoke()
 
 
+def pick(box: ttk.Combobox, label: str) -> None:
+    box.set(label)
+    box.event_generate("<<ComboboxSelected>>")
+
+
+def select(window: MainWindow, row: str) -> None:
+    window.today.selection_set(row)
+    window.root.update()  # the buttons follow the selection
+
+
+def double_click(window: MainWindow, x: int, y: int) -> None:
+    """Two clicks in a row are a double click to tkinter."""
+    for _ in range(2):
+        window.today.event_generate("<ButtonPress-1>", x=x, y=y)
+        window.today.event_generate("<ButtonRelease-1>", x=x, y=y)
+
+
 def test_fresh_window_asks_for_a_schedule(window: MainWindow) -> None:
     assert window.schedule_path.get() == ""
     assert window.loaded.get() == "Son Yüklenme Tarihi: —"
@@ -99,6 +124,7 @@ def test_fresh_window_asks_for_a_schedule(window: MainWindow) -> None:
     assert announcements(window) == [("", "", "Özel anons yok.")]
     assert window.last_announcement.get() == "Son anons: —"
     assert window.template.get() == DEFAULT_TEMPLATE
+    assert (window.speed_box.get(), window.delay_box.get()) == ("1.0× (Normal)", "Yok")
     assert warnings(window).startswith("• Sporcu listesi seçilmedi.")
 
 
@@ -195,6 +221,151 @@ def test_due_slot_is_shown_as_played(
     assert window.last_announcement.get() == (
         "Son anons: 18:00 · Ayşe Yılmaz, Mehmet Demir · Okundu"
     )
+
+
+def test_replay_needs_a_selected_row_whose_time_has_come(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The line that says that there are none is not an announcement.
+    select(window, "none")
+    assert window.replay_button.instate(["disabled"])
+    window.replay()
+
+    choose(window, schedule, monkeypatch)
+    assert window.replay_button.instate(["disabled"])
+    select(window, "0")
+    assert window.replay_button.instate(["disabled"])  # it is still to come
+    window.replay()
+    assert today(window)[0][3] == "Sıradaki"
+
+    clock.now = at(18, 1)
+    pump(window, lambda: today(window)[0][3] == "Saati geçti")
+
+    assert window.today.selection() == ("0",)
+    assert window.replay_button.instate(["!disabled"])
+
+
+def test_replay_button_announces_the_selected_row_again(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    output: FakeOutput,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    wait_for(app, lambda: not app.generating)
+    app.start()
+    clock.now = at(18)
+    pump(window, lambda: today(window)[0][3] == "Okundu")
+    played = list(output.played)
+    clock.now = at(18, 4)
+    select(window, "0")
+
+    window.replay_button.invoke()
+
+    assert today(window)[0][3] == "Okunuyor"
+    assert window.replay_button.instate(["disabled"])  # one at a time
+    pump(window, lambda: today(window)[0][3] == "Okundu")
+    assert output.played == played * 2
+    assert window.today.selection() == ("0",)
+    assert window.replay_button.instate(["!disabled"])
+
+
+def test_double_click_replays_a_row_but_not_from_the_headings(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    wait_for(app, lambda: not app.generating)
+    clock.now = at(18, 5)
+    if sys.platform != "darwin":
+        # Only macOS lays a window out while it is kept off the screen.
+        window.root.deiconify()
+    pump(window, lambda: bool(window.today.bbox("0")))
+    select(window, "0")
+    place = window.today.bbox("0")
+    assert isinstance(place, tuple)
+    left, top, _, height = place
+
+    double_click(window, left + 5, top // 2)  # the headings are above the row
+    assert today(window)[0][3] == "Saati geçti"
+
+    double_click(window, left + 5, top + height // 2)
+    assert today(window)[0][3] == "Okunuyor"
+
+
+def test_selected_row_stays_selected_when_the_table_changes(
+    window: MainWindow, app: App, schedule: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    choose(window, schedule, monkeypatch)
+    select(window, "0")
+
+    app.save_announcement(CustomAnnouncement("Günaydın.", datetime.time(9, 0)))
+    window.show()
+
+    assert today(window)[1][2] == "Ayşe Yılmaz, Mehmet Demir"
+    assert window.today.selection() == ("1",)
+
+
+def test_choosing_a_delay_moves_todays_announcements(
+    window: MainWindow, app: App, schedule: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    choose(window, schedule, monkeypatch)
+
+    pick(window.delay_box, "2 dk")
+
+    assert app.settings.delay == 2
+    assert today(window) == [
+        ("Pazartesi", "18:02", "Ayşe Yılmaz, Mehmet Demir", "Sıradaki")
+    ]
+    pick(window.delay_box, "Yok")
+    assert today(window)[0][1] == "18:00"
+
+
+def test_choosing_a_speed_generates_the_speech_at_it(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    provider: FakeProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    wait_for(app, lambda: not app.generating)
+
+    pick(window.speed_box, "0.9×")
+
+    assert app.settings.speed == 0.9
+    assert window.activity.get() == "Sesler oluşturuluyor…"
+    pump(window, lambda: window.activity.get() == "")
+    assert app.spoken_speed == 0.9
+    assert provider.speeds[-3:] == [0.9] * 3
+    assert window.speed_box.get() == "0.9×"
+
+
+def test_settings_show_what_is_stored_and_stay_when_they_cannot_be_saved(
+    window: MainWindow, app: App, settings_file: Path, alerts: list[str]
+) -> None:
+    app.set_speed(1.1)
+    app.set_delay(5)
+    window.show()
+    assert (window.speed_box.get(), window.delay_box.get()) == ("1.1×", "5 dk")
+    settings_file.unlink()
+    settings_file.mkdir()  # a folder where the file should be
+
+    pick(window.speed_box, "0.8×")
+    pick(window.delay_box, "10 dk")
+
+    assert alerts == ["Değişiklik kaydedilemedi. Ayrıntılar kayıt dosyasındadır."] * 2
+    assert (window.speed_box.get(), window.delay_box.get()) == ("1.1×", "5 dk")
+    assert (app.settings.speed, app.settings.delay) == (1.1, 5)
 
 
 def test_speech_that_cannot_be_generated_is_shown_as_a_warning(

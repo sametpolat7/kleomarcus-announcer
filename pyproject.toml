@@ -71,8 +71,9 @@ select = [
   "PTH", # flake8-use-pathlib
   "RUF", # ruff-specific rules
 ]
-# Turkish text is expected here; the dotless "ı" is not a typo for "i".
-allowed-confusables = ["ı"]
+# Turkish text is expected here; the dotless "ı" is not a typo for "i". Nor is
+# the "×" of a speed a typo for "x".
+allowed-confusables = ["ı", "×"]
 
 [tool.mypy]
 strict = true
