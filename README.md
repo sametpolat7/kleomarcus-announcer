@@ -34,6 +34,11 @@ and calls each athlete by name through the computer's speakers.
   weekdays, such as a closing reminder.
 - **Today's announcements.** A table of the day's announcements with the
   status of each: waiting, next, playing, played or skipped, and why.
+- **Read again.** An announcement whose time has come can be read once more
+  with one button.
+- **Speed and delay.** The speech can be made slower or faster, and every
+  announcement can be made a few minutes after its time, for athletes who
+  arrive late.
 - **No late announcements.** An announcement missed during a restart or a
   sleep is not played afterwards; it is shown as skipped.
 - **Turkish interface.** One window with a test button, warnings for problems
@@ -106,6 +111,18 @@ fictional names.
   `{ad_soyad}, antrenmanınız başlamıştır. İyi antrenmanlar dileriz.`, where
   `{ad_soyad}` stands for the name and may be moved anywhere in the sentence.
   A new template is used once all of its speech exists.
+- **Speed.** **Ses hızı** sets how fast everything is spoken, from 0.8 to 1.2
+  times the speed of the voice. The speech is generated again for a new
+  speed, which needs a connection, and the new speed is used once all of its
+  speech exists. **Test** speaks at the chosen speed at once.
+- **Delay.** **Gecikme süresi** moves every announcement, of athletes and
+  custom ones alike, by 1 to 10 minutes: with a delay of one minute, a
+  session listed for 19:00 is announced at 19:01. Today's table shows the
+  time at which an announcement is made.
+- **Read again.** **Tekrar Oku** reads the selected row of today's table once
+  more, with the chime and everyone in that row. It is there for a row whose
+  time has come, whether it was announced or skipped, and the row then tells
+  how that went.
 - **Timing.** A session is announced within the first 30 seconds of its
   minute, by an app that was already running when the minute began. The app
   does not keep the computer awake: an announcement that falls into a sleep
@@ -126,8 +143,8 @@ fictional names.
 | Generated speech | `%LOCALAPPDATA%\Kleomarcus Announcer\Cache\audio`        | `~/Library/Caches/Kleomarcus Announcer/audio`                    |
 
 The settings hold the chosen schedule file, the template, the custom
-announcements and the voice (`tr-TR-EmelNeural`; any voice of the service can
-be set in `config.json`). If the file is damaged the app starts with the
+announcements, the speed, the delay and the voice (`tr-TR-EmelNeural`; any
+voice of the service can be set in `config.json`). If the file is damaged the app starts with the
 defaults and keeps a copy as `config.json.backup`. The **Kayıtlar** button
 opens the log. Deleting the speech folder is safe: the speech is generated
 again, which also replaces a sentence that sounds cut off. Removing the app
