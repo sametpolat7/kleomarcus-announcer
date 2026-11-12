@@ -10,7 +10,7 @@ from announcer.loader import (
     ScheduleFileError,
     WrongFileTypeError,
 )
-from announcer.models import ALL_WEEKDAYS, WEEKDAY_NAMES
+from announcer.models import ALL_WEEKDAYS, NORMAL_SPEED, WEEKDAY_NAMES
 from announcer.template import PLACEHOLDER
 from announcer.timetable import Conflict, SlotHolder
 from announcer.today import Status
@@ -83,6 +83,14 @@ def days(weekdays: Iterable[int]) -> str:
     if chosen == sorted(ALL_WEEKDAYS):
         return "Her gün"
     return ", ".join(WEEKDAY_NAMES[day] for day in chosen)
+
+
+def speed(value: float) -> str:
+    return f"{value:.1f}×" + (" (Normal)" if value == NORMAL_SPEED else "")
+
+
+def delay(minutes: int) -> str:
+    return f"{minutes} dk" if minutes else "Yok"
 
 
 def today_title(now: datetime.datetime) -> str:
@@ -172,5 +180,10 @@ def warnings(app: App) -> list[str]:
             lines.append(
                 "Yeni şablonun sesleri hazır olana kadar sporcular önceki şablonla "
                 "anons ediliyor."
+            )
+        if app.spoken_speed != app.settings.speed:
+            lines.append(
+                "Yeni ses hızının sesleri hazır olana kadar anonslar önceki hızla "
+                "okunuyor."
             )
     return lines
