@@ -302,6 +302,45 @@ def test_double_click_replays_a_row_but_not_from_the_headings(
     assert today(window)[0][3] == "Okunuyor"
 
 
+def test_table_stays_where_it_is_while_a_row_is_read_again(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    output: FakeOutput,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    app.save_announcement(WATER)
+    wait_for(app, lambda: not app.generating)
+    clock.now = at(18, 5)
+    app.start()
+    pump(window, lambda: today(window)[0][3] == "Saati geçti")
+    brought_into_view: list[str] = []
+    monkeypatch.setattr(window.today, "see", brought_into_view.append)
+    select(window, "0")
+
+    window.replay_button.invoke()
+    pump(window, lambda: today(window)[0][3] == "Okundu")
+    assert brought_into_view == []
+
+    output.endless = True
+    clock.now = at(19)  # the day moves on to the next announcement
+    pump(window, lambda: today(window)[1][3] == "Okunuyor")
+    assert brought_into_view == ["1"]
+
+
+def test_scrolling_over_a_setting_does_not_change_it(window: MainWindow) -> None:
+    for box in (window.speed_box, window.delay_box):
+        scrolling = [
+            sequence
+            for sequence in box.bind_class("TCombobox")
+            if "Wheel" in sequence or "Scroll" in sequence
+        ]
+        assert "<MouseWheel>" in scrolling
+        assert all(box.bind(sequence) for sequence in scrolling)
+
+
 def test_selected_row_stays_selected_when_the_table_changes(
     window: MainWindow, app: App, schedule: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
