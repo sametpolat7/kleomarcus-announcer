@@ -1,5 +1,6 @@
 import datetime
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -7,7 +8,7 @@ from platformdirs import user_config_dir
 
 from announcer import APP_NAME
 from announcer.files import write_atomically
-from announcer.models import CustomAnnouncement
+from announcer.models import DELAYS, NORMAL_SPEED, SPEEDS, CustomAnnouncement
 from announcer.template import DEFAULT_TEMPLATE, PLACEHOLDER, is_valid_template
 
 DEFAULT_VOICE = "tr-TR-EmelNeural"
@@ -26,10 +27,16 @@ class Settings:
     schedule_path: Path | None = None
     template: str = DEFAULT_TEMPLATE
     custom_announcements: tuple[CustomAnnouncement, ...] = ()
+    speed: float = NORMAL_SPEED
+    delay: int = 0  # minutes that every announcement is made after its time
 
     def __post_init__(self) -> None:
         if not is_valid_template(self.template):
             raise ValueError(f"The template has no {PLACEHOLDER} placeholder")
+        if self.speed not in SPEEDS:
+            raise ValueError(f"The speed must be one of {SPEEDS}")
+        if self.delay not in DELAYS:
+            raise ValueError(f"The delay must be one of {DELAYS}")
 
 
 @dataclass(frozen=True)
@@ -81,6 +88,8 @@ def load_settings(path: Path) -> LoadedSettings:
             else DEFAULT_TEMPLATE
         ),
         custom_announcements=usable,
+        speed=_one_of(SPEEDS, data.get("speed"), NORMAL_SPEED),
+        delay=_one_of(DELAYS, data.get("delay_minutes"), 0),
     )
     return LoadedSettings(settings, dropped=len(found) - len(usable))
 
@@ -89,6 +98,8 @@ def save_settings(settings: Settings, path: Path) -> None:
     """Raises ``OSError`` if the file cannot be written."""
     data = {
         "voice": settings.voice,
+        "speed": settings.speed,
+        "delay_minutes": settings.delay,
         "schedule_path": (
             None if settings.schedule_path is None else str(settings.schedule_path)
         ),
@@ -108,6 +119,15 @@ def save_settings(settings: Settings, path: Path) -> None:
 
 def _text(value: object) -> str | None:
     return value.strip() or None if isinstance(value, str) else None
+
+
+def _one_of[Choice: (int, float)](
+    choices: Sequence[Choice], value: object, default: Choice
+) -> Choice:
+    # ``True`` equals 1, so a truth value is ruled out by its type.
+    if type(value) not in (int, float):
+        return default
+    return next((choice for choice in choices if choice == value), default)
 
 
 def _custom_announcement(value: object) -> CustomAnnouncement | None:

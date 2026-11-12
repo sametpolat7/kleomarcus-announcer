@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Protocol
 
 from announcer.chime import CHIME_PATH
+from announcer.models import NORMAL_SPEED
 
 # pygame prints a greeting when it is imported unless this is set first.
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -21,8 +22,9 @@ import pygame
 
 _log = logging.getLogger(__name__)
 
-# When a group of texts was queued, the texts, and when they were due.
-type _Queued = tuple[float, tuple[str, ...], datetime.datetime | None]
+# When a group of texts was queued, the texts, when they were due, and the
+# speed of the speech to play.
+type _Queued = tuple[float, tuple[str, ...], datetime.datetime | None, float]
 
 
 class PlaybackError(Exception):
@@ -85,9 +87,11 @@ class Player:
     """``on_played`` is called on the player's thread after each group, so it
     should only hand the result over, for example by putting it on a queue. A
     group may be queued with the moment it was due; the player only hands that
-    back with the outcome, so the caller can tell which group it was. ``clock``
-    gives the time of day in seconds and is how a sleep is noticed. A player
-    runs once: after ``stop`` it cannot be started again.
+    back with the outcome, so the caller can tell which group it was.
+    ``find_audio`` is asked for the speech of a text at the speed its group
+    was queued with. ``clock`` gives the time of day in seconds and is how a
+    sleep is noticed. A player runs once: after ``stop`` it cannot be started
+    again.
     """
 
     _GAP = 0.3  # seconds of silence between two files
@@ -98,7 +102,7 @@ class Player:
 
     def __init__(
         self,
-        find_audio: Callable[[str], Path | None],
+        find_audio: Callable[[str, float], Path | None],
         output: AudioOutput,
         on_played: Callable[[Playback], None],
         chime: Path = CHIME_PATH,
@@ -116,9 +120,12 @@ class Player:
         self._thread = threading.Thread(target=self._run, name="player", daemon=True)
 
     def enqueue(
-        self, texts: Sequence[str], due: datetime.datetime | None = None
+        self,
+        texts: Sequence[str],
+        due: datetime.datetime | None = None,
+        speed: float = NORMAL_SPEED,
     ) -> None:
-        self._queue.put((self._clock(), tuple(texts), due))
+        self._queue.put((self._clock(), tuple(texts), due, speed))
 
     def start(self) -> None:
         self._thread.start()
@@ -130,13 +137,22 @@ class Player:
         if self._thread.is_alive():
             self._thread.join()
 
-    def play(self, texts: Sequence[str], due: datetime.datetime | None = None) -> None:
+    def play(
+        self,
+        texts: Sequence[str],
+        due: datetime.datetime | None = None,
+        speed: float = NORMAL_SPEED,
+    ) -> None:
         """Returns when ``texts`` are announced and the outcome is reported."""
         self._looked_at = self._clock()
-        self._announce(tuple(texts), due, skip=False)
+        self._announce(tuple(texts), due, speed, skip=False)
 
     def _announce(
-        self, texts: tuple[str, ...], due: datetime.datetime | None, skip: bool
+        self,
+        texts: tuple[str, ...],
+        due: datetime.datetime | None,
+        speed: float,
+        skip: bool,
     ) -> None:
         """With ``skip`` nothing is played, because the texts are already late."""
         if self._stopped.is_set():
@@ -144,7 +160,7 @@ class Player:
         spoken: list[tuple[str, Path]] = []
         missing: list[str] = []
         for text in texts:
-            path = self._find_audio(text)
+            path = self._find_audio(text, speed)
             if path is None:
                 missing.append(text)
             else:
@@ -220,10 +236,11 @@ class Player:
                 self._looked_at = self._clock()
             if item is None or self._stopped.is_set():
                 break
-            queued_at, texts, due = item
+            queued_at, texts, due, speed = item
             try:
                 self._slept()  # a sleep between two announcements counts too
-                self._announce(texts, due, skip=queued_at < self._asleep_until)
+                skip = queued_at < self._asleep_until
+                self._announce(texts, due, speed, skip)
             except Exception:
                 # One failed announcement must not silence every later one.
                 _log.exception("Announcing failed")

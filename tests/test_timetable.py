@@ -6,6 +6,7 @@ from announcer.timetable import (
     Slot,
     SlotHolder,
     build_timetable,
+    delayed,
     find_conflicts,
 )
 
@@ -153,3 +154,43 @@ def test_slot_held_by_both_is_reported_as_held_by_athletes() -> None:
     assert find_conflicts(candidate, [AYSE], [other]) == (
         Conflict(candidate, MONDAY, SlotHolder.ATHLETES),
     )
+
+
+def test_delay_moves_every_slot_and_keeps_what_was_in_conflict() -> None:
+    reminder = custom("Su içmeyi unutmayın.", SIX_PM, MONDAY, TUESDAY)
+
+    timetable = build_timetable([AYSE, ZEYNEP], [reminder], TEMPLATE, delay=2)
+
+    late_six, late_seven = datetime.time(18, 2), datetime.time(19, 2)
+    assert timetable.slots == (
+        Slot(MONDAY, late_six, ("Ayşe Yılmaz, hoş geldiniz.",), ("Ayşe Yılmaz",)),
+        Slot(TUESDAY, late_six, ("Su içmeyi unutmayın.",)),
+        Slot(TUESDAY, late_seven, ("Zeynep Kaya, hoş geldiniz.",), ("Zeynep Kaya",)),
+    )
+    # A conflict names the time that the announcement was set for.
+    assert timetable.conflicts == (Conflict(reminder, MONDAY, SlotHolder.ATHLETES),)
+    assert timetable.delay == 2
+
+
+def test_delay_past_midnight_moves_a_slot_to_the_next_day() -> None:
+    late = AthleteEntry("Ayşe Yılmaz", SUNDAY, datetime.time(23, 55))
+    closing = custom("Salon kapandı.", datetime.time(23, 50), SUNDAY)
+
+    timetable = build_timetable([late], [closing], "{ad_soyad}", delay=10)
+
+    assert timetable.slots == (
+        Slot(MONDAY, datetime.time(0, 0), ("Salon kapandı.",)),
+        Slot(MONDAY, datetime.time(0, 5), ("Ayşe Yılmaz",), ("Ayşe Yılmaz",)),
+    )
+    assert delayed(SUNDAY, datetime.time(23, 59), 1) == (MONDAY, datetime.time(0, 0))
+    assert delayed(TUESDAY, SIX_PM, 0) == (TUESDAY, SIX_PM)
+
+
+def test_slots_carry_the_speed_they_are_spoken_at() -> None:
+    reminder = custom("Su içmeyi unutmayın.", SEVEN_PM, MONDAY)
+
+    slow = build_timetable([AYSE], [reminder], TEMPLATE, speed=0.8)
+
+    assert [slot.speed for slot in slow.slots] == [0.8, 0.8]
+    normal = build_timetable([AYSE], [reminder], TEMPLATE)
+    assert [slot.speed for slot in normal.slots] == [1.0, 1.0]

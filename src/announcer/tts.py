@@ -17,6 +17,7 @@ from platformdirs import user_cache_dir
 
 from announcer import APP_NAME
 from announcer.files import write_atomically
+from announcer.models import NORMAL_SPEED
 
 _log = logging.getLogger(__name__)
 
@@ -26,8 +27,9 @@ class TtsError(Exception):
 
 
 class TtsProvider(Protocol):
-    def synthesize(self, text: str, voice: str) -> bytes:
-        """Return ``text`` spoken by ``voice`` as MP3 data.
+    def synthesize(self, text: str, voice: str, speed: float) -> bytes:
+        """Return ``text`` spoken by ``voice`` as MP3 data, at ``speed`` times
+        the speed that the voice has by itself.
 
         Raises ``TtsError`` if the speech cannot be generated.
         """
@@ -35,9 +37,9 @@ class TtsProvider(Protocol):
 
 
 class EdgeTtsProvider:
-    def synthesize(self, text: str, voice: str) -> bytes:
+    def synthesize(self, text: str, voice: str, speed: float) -> bytes:
         try:
-            audio = asyncio.run(_collect(text, voice))
+            audio = asyncio.run(_collect(text, voice, speed))
         # The service can fail in many ways: no network, a timeout, an unknown
         # voice, a changed protocol. All of them mean "no speech for now".
         except Exception as error:
@@ -47,11 +49,16 @@ class EdgeTtsProvider:
         return audio
 
 
-async def _collect(text: str, voice: str) -> bytes:
-    stream = edge_tts.Communicate(text, voice).stream()
+async def _collect(text: str, voice: str, speed: float) -> bytes:
+    stream = edge_tts.Communicate(text, voice, rate=_rate(speed)).stream()
     return b"".join(
         [chunk["data"] async for chunk in stream if chunk["type"] == "audio"]
     )
+
+
+def _rate(speed: float) -> str:
+    """The service takes a speed as its distance from the normal one in percent."""
+    return f"{round((speed - NORMAL_SPEED) * 100):+d}%"
 
 
 def audio_cache_dir() -> Path:
@@ -59,9 +66,9 @@ def audio_cache_dir() -> Path:
 
 
 class AudioCache:
-    """A speech file is named after a hash of the voice and the text, so a changed
-    template or voice leads to new files and never to stale speech. Safe to
-    use from several threads.
+    """A speech file is named after a hash of the voice, the speed and the text,
+    so a changed template, voice or speed leads to new files and never to
+    stale speech. Safe to use from several threads.
     """
 
     _WORKERS = 4  # sentences generated at the same time
@@ -71,22 +78,24 @@ class AudioCache:
         self._provider = provider
         self._voice = voice
 
-    def find(self, text: str) -> Path | None:
-        path = self._path(text)
+    def find(self, text: str, speed: float = NORMAL_SPEED) -> Path | None:
+        path = self._path(text, speed)
         return path if path.is_file() else None
 
-    def ensure(self, text: str) -> Path:
+    def ensure(self, text: str, speed: float = NORMAL_SPEED) -> Path:
         """Raises ``TtsError`` if the speech cannot be generated or stored."""
-        path = self._path(text)
+        path = self._path(text, speed)
         if not path.is_file():
-            audio = self._provider.synthesize(text, self._voice)
+            audio = self._provider.synthesize(text, self._voice, speed)
             try:
                 write_atomically(path, audio)
             except OSError as error:
                 raise TtsError(f"Cannot store speech in {self._directory}") from error
         return path
 
-    def ensure_all(self, texts: Iterable[str]) -> tuple[str, ...]:
+    def ensure_all(
+        self, texts: Iterable[str], speed: float = NORMAL_SPEED
+    ) -> tuple[str, ...]:
         """Returns the texts that still have no speech, for example because there
         is no network connection. Several sentences are generated at a time,
         since each one takes a few seconds.
@@ -94,7 +103,7 @@ class AudioCache:
         wanted = tuple(dict.fromkeys(texts))
         todo: queue.SimpleQueue[str] = queue.SimpleQueue()
         for text in wanted:
-            if self.find(text) is None:
+            if self.find(text, speed) is None:
                 todo.put(text)
         failed: dict[str, TtsError] = {}
 
@@ -105,7 +114,7 @@ class AudioCache:
                 except queue.Empty:
                     return
                 try:
-                    self.ensure(text)
+                    self.ensure(text, speed)
                 except TtsError as error:
                     failed[text] = error
 
@@ -131,6 +140,11 @@ class AudioCache:
             )
         return unspoken
 
-    def _path(self, text: str) -> Path:
-        digest = hashlib.sha256(f"{self._voice}\n{text}".encode()).hexdigest()
+    def _path(self, text: str, speed: float) -> Path:
+        # At the normal speed the name is what it was before there were other
+        # speeds, so the speech that an older version stored stays in use.
+        parts = [self._voice, text]
+        if speed != NORMAL_SPEED:
+            parts.insert(1, _rate(speed))
+        digest = hashlib.sha256("\n".join(parts).encode()).hexdigest()
         return self._directory / f"{digest}.mp3"
