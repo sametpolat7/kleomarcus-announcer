@@ -3,15 +3,16 @@ running when the slot's minute began, at most half a minute late, and once per
 date. A slot whose minute began while the app was closed is not caught up on.
 Neither is one that the app could not announce in time although it ran,
 because the computer was asleep; that one is reported as missed, so the app
-can show it.
+can show it. A change of the delay neither repeats a slot nor drops one: what
+a shorter delay puts behind the clock is announced at once.
 """
 
 import datetime
 import logging
 import threading
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterator
 
-from announcer.timetable import Slot, Timetable
+from announcer.timetable import Slot, Timetable, set_for
 
 _log = logging.getLogger(__name__)
 
@@ -22,11 +23,11 @@ LATE = datetime.timedelta(seconds=30)
 
 
 def due_slot(
-    timetable: Timetable, now: datetime.datetime, fired: Collection[datetime.time]
+    timetable: Timetable, now: datetime.datetime, fired: Collection[datetime.datetime]
 ) -> Slot | None:
-    """``fired`` holds the times of the slots already dealt with on ``now``'s date."""
+    """``fired`` holds the moments that the slots already dealt with were set for."""
     minute = now.replace(second=0, microsecond=0)
-    if minute.time() in fired or now - minute > LATE:
+    if minute - _delay(timetable) in fired or now - minute > LATE:
         return None
     return timetable.slot_at(now.weekday(), minute.time())
 
@@ -41,14 +42,39 @@ def missed_slots(
     dealt with at that look, and too long before ``now`` to be still due.
     """
     first = before.replace(second=0, microsecond=0)
-    found: list[tuple[datetime.date, Slot]] = []
-    date = first.date()
-    while date <= now.date():
+    return [
+        (due.date(), slot)
+        for due, slot in _slots_from(timetable, first.date(), now.date())
+        if first < due < now - LATE
+    ]
+
+
+def brought_forward(
+    timetable: Timetable, before: datetime.datetime, by: datetime.timedelta
+) -> list[tuple[datetime.date, Slot]]:
+    """Return the slots that a delay made shorter ``by`` that much has moved
+    from after ``before`` to that moment or earlier. Each slot comes with its
+    date, the oldest first.
+    """
+    return [
+        (due.date(), slot)
+        for due, slot in _slots_from(timetable, (before - by).date(), before.date())
+        if before - by < due <= before
+    ]
+
+
+def _slots_from(
+    timetable: Timetable, first: datetime.date, last: datetime.date
+) -> Iterator[tuple[datetime.datetime, Slot]]:
+    date = first
+    while date <= last:
         for slot in timetable.slots_on(date.weekday()):
-            if first < datetime.datetime.combine(date, slot.time) < now - LATE:
-                found.append((date, slot))
+            yield datetime.datetime.combine(date, slot.time), slot
         date += _DAY
-    return found
+
+
+def _delay(timetable: Timetable) -> datetime.timedelta:
+    return datetime.timedelta(minutes=timetable.delay)
 
 
 class Scheduler:
@@ -75,8 +101,9 @@ class Scheduler:
         self._clock = clock
         self._interval = interval  # seconds between two looks at the clock
         self._checked_at: datetime.datetime | None = None
-        self._fired: set[datetime.time] = set()
-        self._fired_on: datetime.date | None = None
+        self._delay = datetime.timedelta()  # of the timetable at the last look
+        # The moments that the slots dealt with were set for.
+        self._fired: set[datetime.datetime] = set()
         self._stopped = threading.Event()
         self._thread = threading.Thread(target=self._run, name="scheduler", daemon=True)
 
@@ -105,23 +132,35 @@ class Scheduler:
         """The first look only notes the time, as the scheduler begins with it."""
         now = self._clock()
         before, self._checked_at = self._checked_at, now
+        timetable = self._timetable  # the same one for the whole look
+        delay = _delay(timetable)
+        shorter_by, self._delay = self._delay - delay, delay
         minute = now.replace(second=0, microsecond=0)
-        if now.date() != self._fired_on:
-            self._fired_on = now.date()
-            self._fired.clear()
+        # No slot that is still to come was set for a moment that long ago.
+        self._fired = {moment for moment in self._fired if now - moment < _DAY}
         if before is None:
-            self._fired.add(minute.time())
+            self._fired.add(minute - delay)
             return
+        for date, late in brought_forward(timetable, before, shorter_by):
+            if self._take(date, late):
+                self._on_due(date, late)
         if before < minute:  # the first look in a new minute
             start = max(before, now - self._REPORTED)
-            for date, missed in missed_slots(self._timetable, start, now):
-                if date == now.date():
-                    self._fired.add(missed.time)
-                self._on_missed(date, missed)
-        slot = due_slot(self._timetable, now, self._fired)
+            for date, missed in missed_slots(timetable, start, now):
+                if self._take(date, missed):
+                    self._on_missed(date, missed)
+        slot = due_slot(timetable, now, self._fired)
         if slot is not None:
-            self._fired.add(slot.time)
+            self._fired.add(minute - delay)
             self._on_due(now.date(), slot)
+
+    def _take(self, date: datetime.date, slot: Slot) -> bool:
+        """Return whether the slot is still to be dealt with; it is not after this."""
+        moment = set_for(date, slot)
+        if moment in self._fired:
+            return False
+        self._fired.add(moment)
+        return True
 
     def _run(self) -> None:
         while not self._stopped.wait(self._interval):

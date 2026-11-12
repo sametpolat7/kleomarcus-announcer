@@ -5,7 +5,7 @@ from enum import Enum
 
 from announcer.player import Playback
 from announcer.scheduler import LATE
-from announcer.timetable import Slot, Timetable, delayed
+from announcer.timetable import Slot, Timetable, delayed, set_for
 
 
 class Status(Enum):
@@ -61,17 +61,18 @@ def todays_rows(
     outcomes: Mapping[tuple[datetime.datetime, str], Status],
 ) -> tuple[Row, ...]:
     """``outcomes`` holds what is known about the slots that came due, keyed by
-    the moment they were due and their summary, so an outcome is not taken
-    for that of something else that was put at the same time later. The
-    custom announcements that lost today's slot to something else are listed
-    too, so that the preview hides nothing.
+    the moment they were set for and their summary, so an outcome is not taken
+    for that of something else that was put at the same time later, and stays
+    with its slot when the delay changes. The custom announcements that lost
+    today's slot to something else are listed too, so that the preview hides
+    nothing.
     """
     rows: list[Row] = []
     upcoming = Status.NEXT
     for slot in timetable.slots_on(now.weekday()):
         due = datetime.datetime.combine(now.date(), slot.time)
         text = summary(slot)
-        status = outcomes.get((due, text))
+        status = outcomes.get((set_for(now.date(), slot), text))
         if status is None and now - due > LATE:
             status = Status.PASSED  # too late for the scheduler to announce it
         elif status is None:

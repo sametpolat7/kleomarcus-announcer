@@ -8,6 +8,7 @@ from announcer.timetable import (
     build_timetable,
     delayed,
     find_conflicts,
+    set_for,
 )
 
 TEMPLATE = "{ad_soyad}, hoş geldiniz."
@@ -160,13 +161,14 @@ def test_delay_moves_every_slot_and_keeps_what_was_in_conflict() -> None:
     reminder = custom("Su içmeyi unutmayın.", SIX_PM, MONDAY, TUESDAY)
 
     timetable = build_timetable([AYSE, ZEYNEP], [reminder], TEMPLATE, delay=2)
+    slots = timetable.slots
 
     late_six, late_seven = datetime.time(18, 2), datetime.time(19, 2)
-    assert timetable.slots == (
-        Slot(MONDAY, late_six, ("Ayşe Yılmaz, hoş geldiniz.",), ("Ayşe Yılmaz",)),
-        Slot(TUESDAY, late_six, ("Su içmeyi unutmayın.",)),
-        Slot(TUESDAY, late_seven, ("Zeynep Kaya, hoş geldiniz.",), ("Zeynep Kaya",)),
-    )
+    assert [(slot.weekday, slot.time, slot.names, slot.delay) for slot in slots] == [
+        (MONDAY, late_six, ("Ayşe Yılmaz",), 2),
+        (TUESDAY, late_six, (), 2),
+        (TUESDAY, late_seven, ("Zeynep Kaya",), 2),
+    ]
     # A conflict names the time that the announcement was set for.
     assert timetable.conflicts == (Conflict(reminder, MONDAY, SlotHolder.ATHLETES),)
     assert timetable.delay == 2
@@ -178,12 +180,19 @@ def test_delay_past_midnight_moves_a_slot_to_the_next_day() -> None:
 
     timetable = build_timetable([late], [closing], "{ad_soyad}", delay=10)
 
-    assert timetable.slots == (
-        Slot(MONDAY, datetime.time(0, 0), ("Salon kapandı.",)),
-        Slot(MONDAY, datetime.time(0, 5), ("Ayşe Yılmaz",), ("Ayşe Yılmaz",)),
-    )
+    assert [(slot.weekday, slot.time, slot.texts) for slot in timetable.slots] == [
+        (MONDAY, datetime.time(0, 0), ("Salon kapandı.",)),
+        (MONDAY, datetime.time(0, 5), ("Ayşe Yılmaz",)),
+    ]
     assert delayed(SUNDAY, datetime.time(23, 59), 1) == (MONDAY, datetime.time(0, 0))
     assert delayed(TUESDAY, SIX_PM, 0) == (TUESDAY, SIX_PM)
+    # The Monday whose first minutes these slots are in: what they were set
+    # for is on the Sunday before.
+    monday = datetime.date(2026, 11, 9)
+    assert [set_for(monday, slot) for slot in timetable.slots] == [
+        datetime.datetime(2026, 11, 8, 23, 50),
+        datetime.datetime(2026, 11, 8, 23, 55),
+    ]
 
 
 def test_slots_carry_the_speed_they_are_spoken_at() -> None:

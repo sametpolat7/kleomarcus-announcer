@@ -22,6 +22,8 @@ from announcer.loader import (
 )
 from announcer.models import (
     ALL_WEEKDAYS,
+    NORMAL_SPEED,
+    SPEEDS,
     WEEKDAY_NAMES,
     AthleteEntry,
     CustomAnnouncement,
@@ -42,6 +44,7 @@ from announcer.timetable import (
     Timetable,
     build_timetable,
     find_conflicts,
+    set_for,
 )
 from announcer.today import Row, Status, outcome_status, summary, todays_rows
 from announcer.tts import AudioCache, TtsError, TtsProvider
@@ -53,6 +56,7 @@ _REREADS = 3  # how often a changed schedule file that cannot be read is retried
 # Before something that failed is tried again: missing speech, or a schedule
 # file that could not be read.
 _RETRY = datetime.timedelta(minutes=5)
+_DAY = datetime.timedelta(days=1)
 
 _log = logging.getLogger(__name__)
 
@@ -92,6 +96,9 @@ class _Generated:
 class _TestUnspoken:
     """The speech for the test announcement could not be generated."""
 
+
+# The moment that a slot was set for and its summary: what an outcome is of.
+type _Key = tuple[datetime.datetime, str]
 
 # When a file was changed and its size, or None if there is no such file.
 type _FileState = tuple[int, int] | None
@@ -156,8 +163,8 @@ class App:
 
         self.last_announcement: LastAnnouncement | None = None
         self.test_status: Status | None = None
-        self._outcomes: dict[tuple[datetime.datetime, str], Status] = {}
-        self._summaries: dict[datetime.datetime, str] = {}  # of the slots playing
+        self._outcomes: dict[_Key, Status] = {}
+        self._playing: dict[datetime.datetime, _Key] = {}  # by when they were due
 
         self._cache = AudioCache(cache_directory, provider, self.settings.voice)
         self._scheduler = Scheduler(
@@ -173,6 +180,7 @@ class App:
         self._scheduler.start()
         self._player.start()
         self.refresh()
+        self._keep_a_spoken_speed()
         # The scheduler leaves out the slot of the minute it starts in, which
         # a run that was closed a moment ago may have announced.
         slot = self.timetable.slot_at(
@@ -180,7 +188,7 @@ class App:
         )
         if slot is not None:
             due = datetime.datetime.combine(now.date(), slot.time)
-            self._outcomes[due, summary(slot)] = Status.PASSED
+            self._outcomes[_key(due, slot)] = Status.PASSED
             _log.warning(
                 "%s not announced, its minute had begun when the app started: %s",
                 f"{due:%H:%M}",
@@ -312,16 +320,18 @@ class App:
         """
         now = self._clock()
         slot = self.timetable.slot_at(now.weekday(), row.time)
+        due = datetime.datetime.combine(now.date(), row.time)
         if (
             slot is None
             or not row.replayable
             or row not in todays_rows(self.timetable, now, self._outcomes)
+            # What was at that time before the schedule changed is sounding.
+            or due in self._playing
         ):
             return False
-        due = datetime.datetime.combine(now.date(), slot.time)
         _log.info("%s asked for again: %s", f"{due:%H:%M}", _quoted(slot.texts))
-        self._outcomes[due, row.summary] = Status.PLAYING
-        self._summaries[due] = row.summary
+        self._outcomes[_key(due, slot)] = Status.PLAYING
+        self._playing[due] = _key(due, slot)
         self._player.enqueue(slot.texts, due, slot.speed)
         return True
 
@@ -344,19 +354,20 @@ class App:
                     self._outcomes = {
                         key: status
                         for key, status in self._outcomes.items()
-                        if key[0].date() == due.date()
+                        if due - key[0] < _DAY
                     }
-                    self._outcomes[due, summary(slot)] = Status.PLAYING
-                    self._summaries[due] = summary(slot)
+                    self._outcomes[_key(due, slot)] = Status.PLAYING
+                    self._playing[due] = _key(due, slot)
                 case _Missed(due, slot):
-                    self._outcomes[due, summary(slot)] = Status.ASLEEP
+                    self._outcomes[_key(due, slot)] = Status.ASLEEP
                 case Playback(due=None):
                     self.test_status = outcome_status(event)
                 case Playback(due=due) if due is not None:
                     status = outcome_status(event)
-                    announced = self._summaries.pop(due, "")
-                    self._outcomes[due, announced] = status
-                    self.last_announcement = LastAnnouncement(due, announced, status)
+                    key = self._playing.pop(due, None)
+                    if key is not None:
+                        self._outcomes[key] = status
+                        self.last_announcement = LastAnnouncement(due, key[1], status)
                 case _Generated(template, speed, unspoken):
                     self.generating = False
                     self.unspoken = unspoken
@@ -491,6 +502,33 @@ class App:
                 )
         self._scheduler.set_timetable(self.timetable)
 
+    def _keep_a_spoken_speed(self) -> None:
+        """A speed that was chosen shortly before the app was closed may have no
+        speech yet. The announcements then start with a speed that has, the
+        one nearest to the normal speed, as they would have gone on with the
+        one before.
+        """
+
+        def spoken(speed: float) -> bool:
+            return all(
+                self._cache.find(text, speed) is not None
+                for slot in self.timetable.slots
+                for text in slot.texts
+            )
+
+        if spoken(self.spoken_speed):
+            return
+        for speed in sorted(SPEEDS, key=lambda speed: abs(speed - NORMAL_SPEED)):
+            if spoken(speed):
+                _log.warning(
+                    "No speech yet at speed %s; announcing at %s until there is",
+                    self.spoken_speed,
+                    speed,
+                )
+                self.spoken_speed = speed
+                self._build()
+                return
+
     def _speak_with(self, template: str, speed: float) -> None:
         """Announce with ``template`` and at ``speed``, now that the speech for
         that is there.
@@ -599,6 +637,10 @@ class App:
                 "%s skipped, the computer was asleep: %s", name, _quoted(playback.late)
             )
         self._events.put(playback)
+
+
+def _key(due: datetime.datetime, slot: Slot) -> _Key:
+    return set_for(due.date(), slot), summary(slot)
 
 
 def _file_state(path: Path) -> _FileState:

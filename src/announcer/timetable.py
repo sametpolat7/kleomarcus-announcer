@@ -34,6 +34,7 @@ class Slot:
     # The athlete behind each text; empty for a custom announcement.
     names: tuple[str, ...] = ()
     speed: float = NORMAL_SPEED
+    delay: int = 0  # minutes that it is after the time it was set for
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,14 @@ class Timetable:
 def delayed(weekday: int, time: datetime.time, minutes: int) -> _Key:
     days, minute = divmod(time.hour * 60 + time.minute + minutes, 24 * 60)
     return (weekday + days) % 7, datetime.time(*divmod(minute, 60))
+
+
+def set_for(date: datetime.date, slot: Slot) -> datetime.datetime:
+    """Return the moment that the slot of ``date`` was set for. A change of the
+    delay leaves it as it is, so it tells what a slot was before the change.
+    """
+    due = datetime.datetime.combine(date, slot.time)
+    return due - datetime.timedelta(minutes=slot.delay)
 
 
 def find_conflicts(
@@ -110,7 +119,7 @@ def build_timetable(
 
     slots = sorted(
         (
-            Slot(*delayed(*key, delay), texts[key], names.get(key, ()), speed)
+            Slot(*delayed(*key, delay), texts[key], names.get(key, ()), speed, delay)
             for key in texts
         ),
         key=lambda slot: (slot.weekday, slot.time),

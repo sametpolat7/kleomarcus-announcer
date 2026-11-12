@@ -106,8 +106,13 @@ def test_rows_show_when_a_delayed_announcement_is_made() -> None:
         Row(three_past, "Ayşe Yılmaz", Status.NEXT),
         Row(three_past, "Salon kapanıyor.", Status.CONFLICT),
     )
-    outcomes = {(at(18, 3), "Ayşe Yılmaz"): Status.PLAYED}
+    # An outcome goes by the moment that its slot was set for.
+    outcomes = {(at(18), "Ayşe Yılmaz"): Status.PLAYED}
     assert todays_rows(timetable, at(18, 4), outcomes)[1].status is Status.PLAYED
+    at_another_delay = build_timetable([AYSE], [], "{ad_soyad}", delay=10)
+    assert todays_rows(at_another_delay, at(18, 4), outcomes) == (
+        Row(datetime.time(18, 10), "Ayşe Yılmaz", Status.PLAYED),
+    )
 
 
 def test_what_lost_its_slot_on_the_day_before_midnight_is_listed_after_it() -> None:
