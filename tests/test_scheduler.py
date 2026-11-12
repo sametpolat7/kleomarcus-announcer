@@ -1,8 +1,9 @@
 import datetime
 import threading
 
-from announcer.scheduler import Scheduler, due_slot, missed_slots
-from announcer.timetable import Slot, Timetable
+from announcer.models import AthleteEntry, CustomAnnouncement
+from announcer.scheduler import Scheduler, brought_forward, due_slot, missed_slots
+from announcer.timetable import Slot, Timetable, build_timetable
 from support import FakeClock
 
 MONDAY = datetime.date(2026, 11, 9)
@@ -56,8 +57,9 @@ def test_nothing_is_due_at_another_time_or_on_another_day() -> None:
 
 
 def test_slot_that_already_fired_is_not_due_again() -> None:
-    assert due_slot(TIMETABLE, at(18, 0, 20), {SIX_PM}) is None
-    assert due_slot(TIMETABLE, at(18, 1), {SIX_PM}) == MONDAY_SIX_OH_ONE
+    assert due_slot(TIMETABLE, at(18, 0, 20), {at(18, 0)}) is None
+    assert due_slot(TIMETABLE, at(18, 1), {at(18, 0)}) == MONDAY_SIX_OH_ONE
+    assert due_slot(TIMETABLE, at(18, 0, days_later=7), {at(18, 0)}) == MONDAY_SIX
 
 
 def test_slots_that_came_and_went_between_two_looks_are_missed() -> None:
@@ -317,3 +319,96 @@ def test_stopping_a_scheduler_that_never_started_is_harmless() -> None:
     scheduler.stop()
 
     assert due == []
+
+
+def delayed_by(minutes: int) -> Timetable:
+    return build_timetable(
+        [AthleteEntry("Ayşe Yılmaz", 0, SIX_PM)],
+        [CustomAnnouncement("Salon kapandı.", datetime.time(23, 55), frozenset({0}))],
+        "{ad_soyad}",
+        delay=minutes,
+    )
+
+
+def test_slots_that_a_shorter_delay_puts_behind_the_clock_are_brought_forward() -> None:
+    five = datetime.timedelta(minutes=5)
+    ayse, closed = delayed_by(0).slots
+
+    assert brought_forward(delayed_by(0), at(18, 2), five) == [(MONDAY, ayse)]
+    assert brought_forward(delayed_by(0), at(18, 0), five) == [(MONDAY, ayse)]
+    assert brought_forward(delayed_by(0), at(17, 59, 59), five) == []
+    assert brought_forward(delayed_by(0), at(18, 5), five) == []  # it was over
+    assert brought_forward(delayed_by(0), at(0, 1, days_later=1), 2 * five) == [
+        (MONDAY, closed)
+    ]
+    assert brought_forward(delayed_by(5), at(18, 2), -five) == []
+
+
+def test_longer_delay_does_not_repeat_what_was_announced() -> None:
+    clock = FakeClock(at(17, 59, 59))
+    scheduler, due, missed = make_scheduler(clock, delayed_by(0))
+    clock.now = at(18, 0, 1)
+    scheduler.check()
+
+    scheduler.set_timetable(delayed_by(10))
+    for moment in (at(18, 5), at(18, 10), at(18, 11), at(18, 30)):
+        clock.now = moment
+        scheduler.check()
+
+    assert ([slot.time for slot in due], missed) == ([SIX_PM], [])
+
+
+def test_longer_delay_moves_what_is_still_to_come() -> None:
+    clock = FakeClock(at(17, 58))
+    scheduler, due, missed = make_scheduler(clock, delayed_by(0))
+
+    scheduler.set_timetable(delayed_by(2))
+    for moment in (at(17, 59), at(18, 0), at(18, 1), at(18, 2), at(18, 3)):
+        clock.now = moment
+        scheduler.check()
+
+    assert ([slot.time for slot in due], missed) == ([datetime.time(18, 2)], [])
+
+
+def test_shorter_delay_announces_at_once_what_it_puts_behind_the_clock() -> None:
+    clock = FakeClock(at(17, 59))
+    scheduler, due, missed = make_scheduler(clock, delayed_by(5))
+    clock.now = at(18, 2, 40)
+    scheduler.check()
+    assert due == []
+
+    scheduler.set_timetable(delayed_by(0))
+    for moment in (at(18, 2, 41), at(18, 2, 42), at(18, 3), at(18, 5)):
+        clock.now = moment
+        scheduler.check()
+
+    assert (due, missed) == ([delayed_by(0).slots[0]], [])
+
+
+def test_shorter_delay_does_not_repeat_what_was_announced() -> None:
+    clock = FakeClock(at(17, 59))
+    scheduler, due, missed = make_scheduler(clock, delayed_by(5))
+    clock.now = at(18, 5)
+    scheduler.check()
+    clock.now = at(18, 6)
+    scheduler.check()
+
+    scheduler.set_timetable(delayed_by(3))
+    clock.now = at(18, 6, 1)
+    scheduler.check()
+
+    assert ([slot.time for slot in due], missed) == ([datetime.time(18, 5)], [])
+
+
+def test_delay_past_midnight_keeps_a_slot_from_being_announced_twice() -> None:
+    clock = FakeClock(at(23, 54))
+    scheduler, due, missed = make_scheduler(clock, delayed_by(0))
+    clock.now = at(23, 55)
+    scheduler.check()
+
+    scheduler.set_timetable(delayed_by(10))
+    for moment in (at(23, 59), at(0, 5, days_later=1), at(0, 6, days_later=1)):
+        clock.now = moment
+        scheduler.check()
+
+    assert ([slot.time for slot in due], missed) == ([datetime.time(23, 55)], [])

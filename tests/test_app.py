@@ -803,6 +803,55 @@ def test_delay_does_not_change_which_times_are_taken(app: App, schedule: Path) -
     assert app.timetable.conflicts == ()
 
 
+def test_change_of_the_delay_keeps_what_is_known_and_repeats_nothing(
+    app: App, schedule: Path, output: FakeOutput, clock: FakeClock
+) -> None:
+    app.choose_schedule(schedule)
+    app.save_announcement(CustomAnnouncement("Günaydın.", datetime.time(9, 0)))
+    wait_for_speech(app)
+    app.start()
+    clock.now = at(9)
+    wait_for(app, lambda: statuses(app)[0] is Status.PLAYED)
+    clock.now = at(18)
+    wait_for(app, lambda: statuses(app) == [Status.PLAYED, Status.PLAYED])
+    played = list(output.played)
+
+    clock.now = at(18, 5)
+    app.set_delay(10)
+
+    assert [(row.time, row.status) for row in app.rows()] == [
+        (datetime.time(9, 10), Status.PLAYED),
+        (datetime.time(18, 10), Status.PLAYED),
+    ]
+    clock.now = at(18, 10)
+    time.sleep(0.1)
+    app.poll()
+    assert output.played == played
+    app.set_delay(0)
+    assert statuses(app) == [Status.PLAYED, Status.PLAYED]
+
+
+def test_shorter_delay_announces_at_once_what_would_have_been_dropped(
+    app: App, schedule: Path, output: FakeOutput, clock: FakeClock
+) -> None:
+    app.choose_schedule(schedule)
+    app.set_delay(5)
+    wait_for_speech(app)
+    app.start()
+    clock.now = at(18, 2)
+    time.sleep(0.1)
+    app.poll()
+    assert (statuses(app), output.played) == ([Status.NEXT], [])
+
+    app.set_delay(0)
+
+    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
+    assert len(output.played) == 3
+    last = app.last_announcement
+    assert last is not None
+    assert last.due == at(18)
+
+
 def test_row_is_announced_again_on_request(
     app: App,
     schedule: Path,
@@ -848,6 +897,68 @@ def test_row_whose_time_went_by_can_be_announced_afterwards(
 
     assert len(output.played) == 3
     assert not normal.intersection(output.played)  # at the speed in use
+
+
+def test_row_is_not_read_again_while_what_was_at_its_time_is_sounding(
+    app: App, schedule: Path, output: FakeOutput, clock: FakeClock, tmp_path: Path
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    clock.now = at(18, 5)
+    app.start()
+    output.endless = True
+    assert app.replay(app.rows()[0])
+
+    late = ("Can Öztürk", "Pazartesi", "18:00")
+    app.choose_schedule(write_schedule(tmp_path / "more.xlsx", [*ROWS, late]))
+    wait_for_speech(app)
+    assert [(row.summary, row.status) for row in app.rows()] == [
+        ("Ayşe Yılmaz, Mehmet Demir, Can Öztürk", Status.PASSED)
+    ]
+
+    assert not app.replay(app.rows()[0])
+
+    output.endless = False
+    wait_for(app, lambda: app.last_announcement is not None)
+    last = app.last_announcement
+    assert last is not None
+    assert last.summary == "Ayşe Yılmaz, Mehmet Demir"
+    assert app.replay(app.rows()[0])
+
+
+def test_start_speaks_at_a_speed_that_has_speech(
+    make_app: Callable[[], App],
+    schedule: Path,
+    provider: FakeProvider,
+    output: FakeOutput,
+    clock: FakeClock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    first = make_app()
+    first.choose_schedule(schedule)
+    wait_for_speech(first)
+    provider.offline = True
+    first.set_speed(0.8)
+    wait_for_speech(first)
+    first.stop()
+
+    app = make_app()
+    with caplog.at_level(logging.WARNING, logger="announcer.app"):
+        app.start()
+    wait_for_speech(app)
+
+    assert (app.settings.speed, app.spoken_speed) == (0.8, 1.0)
+    assert "No speech yet at speed 0.8; announcing at 1.0 until there is" in (
+        caplog.text
+    )
+    clock.now = at(18)
+    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
+    assert len(output.played) == 3
+
+    provider.offline = False
+    app.refresh()
+    wait_for_speech(app)
+    assert app.spoken_speed == 0.8
 
 
 def test_row_that_cannot_be_replayed_is_left_alone(
