@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 
-from announcer.models import AthleteEntry, CustomAnnouncement
+from announcer.models import NORMAL_SPEED, AthleteEntry, CustomAnnouncement
 from announcer.template import render
 
 type _Key = tuple[int, datetime.time]  # weekday and time of a slot
@@ -33,12 +33,15 @@ class Slot:
     texts: tuple[str, ...]  # the sentences to speak, in order
     # The athlete behind each text; empty for a custom announcement.
     names: tuple[str, ...] = ()
+    speed: float = NORMAL_SPEED
 
 
 @dataclass(frozen=True)
 class Timetable:
     slots: tuple[Slot, ...] = ()  # ordered by weekday, then time
+    # Each with the weekday and the time that its announcement was set for.
     conflicts: tuple[Conflict, ...] = ()
+    delay: int = 0  # minutes that every slot is after the time it was set for
 
     def slot_at(self, weekday: int, time: datetime.time) -> Slot | None:
         for slot in self.slots:
@@ -48,6 +51,11 @@ class Timetable:
 
     def slots_on(self, weekday: int) -> tuple[Slot, ...]:
         return tuple(slot for slot in self.slots if slot.weekday == weekday)
+
+
+def delayed(weekday: int, time: datetime.time, minutes: int) -> _Key:
+    days, minute = divmod(time.hour * 60 + time.minute + minutes, 24 * 60)
+    return (weekday + days) % 7, datetime.time(*divmod(minute, 60))
 
 
 def find_conflicts(
@@ -69,10 +77,13 @@ def build_timetable(
     entries: Iterable[AthleteEntry],
     custom_announcements: Iterable[CustomAnnouncement],
     template: str,
+    speed: float = NORMAL_SPEED,
+    delay: int = 0,
 ) -> Timetable:
     """Athletes always keep their slot. A custom announcement is left out on the
     weekdays where its slot is taken, by athletes or by a custom announcement
-    earlier in the list, and each such case is reported as a conflict.
+    earlier in the list, and each such case is reported as a conflict. The
+    delay moves everything alike, so it changes nothing about that.
     """
     listed: dict[_Key, list[str]] = {}
     for entry in entries:
@@ -97,8 +108,14 @@ def build_timetable(
             texts[key] = (announcement.text,)
             holders[key] = SlotHolder.CUSTOM_ANNOUNCEMENT
 
-    slots = tuple(Slot(*key, texts[key], names.get(key, ())) for key in sorted(texts))
-    return Timetable(slots, tuple(conflicts))
+    slots = sorted(
+        (
+            Slot(*delayed(*key, delay), texts[key], names.get(key, ()), speed)
+            for key in texts
+        ),
+        key=lambda slot: (slot.weekday, slot.time),
+    )
+    return Timetable(tuple(slots), tuple(conflicts), delay)
 
 
 def _conflicts(

@@ -5,7 +5,7 @@ from enum import Enum
 
 from announcer.player import Playback
 from announcer.scheduler import LATE
-from announcer.timetable import Slot, Timetable
+from announcer.timetable import Slot, Timetable, delayed
 
 
 class Status(Enum):
@@ -23,11 +23,21 @@ class Status(Enum):
     CONFLICT = "conflict"  # skipped today: its slot belongs to something else
 
 
+# A conflict is among them because it has no slot whose speech could be played.
+_NOT_REPLAYABLE = frozenset(
+    {Status.WAITING, Status.NEXT, Status.PLAYING, Status.CONFLICT}
+)
+
+
 @dataclass(frozen=True)
 class Row:
-    time: datetime.time
+    time: datetime.time  # when it is announced, so with the delay
     summary: str  # the athletes' names, or the custom announcement's text
     status: Status
+
+    @property
+    def replayable(self) -> bool:
+        return self.status not in _NOT_REPLAYABLE
 
 
 def summary(slot: Slot) -> str:
@@ -67,10 +77,10 @@ def todays_rows(
         elif status is None:
             status, upcoming = upcoming, Status.WAITING
         rows.append(Row(slot.time, text, status))
-    rows.extend(
-        Row(conflict.announcement.time, conflict.announcement.text, Status.CONFLICT)
-        for conflict in timetable.conflicts
-        if conflict.weekday == now.weekday()
-    )
+    for conflict in timetable.conflicts:
+        announcement = conflict.announcement
+        weekday, time = delayed(conflict.weekday, announcement.time, timetable.delay)
+        if weekday == now.weekday():
+            rows.append(Row(time, announcement.text, Status.CONFLICT))
     # The sort is stable, so a skipped announcement follows the slot that won.
     return tuple(sorted(rows, key=lambda row: row.time))

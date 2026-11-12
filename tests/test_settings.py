@@ -35,6 +35,13 @@ def test_template_without_the_placeholder_is_rejected() -> None:
         Settings(template="Antrenmanınız başlamıştır.")
 
 
+def test_speed_and_delay_that_are_not_offered_are_rejected() -> None:
+    with pytest.raises(ValueError, match="speed"):
+        Settings(speed=1.5)
+    with pytest.raises(ValueError, match="delay"):
+        Settings(delay=4)
+
+
 def test_missing_file_gives_the_defaults(path: Path) -> None:
     assert load_settings(path) == LoadedSettings(Settings(), dropped=0)
 
@@ -45,6 +52,8 @@ def test_round_trip(path: Path) -> None:
         schedule_path=Path("program") / "haftalık.xlsx",
         template="Sayın {ad_soyad}, dersiniz başlıyor.",
         custom_announcements=(CLOSING, CLEANING),
+        speed=0.9,
+        delay=2,
     )
 
     save_settings(settings, path)
@@ -58,6 +67,8 @@ def test_saved_file_can_be_read_and_edited_by_hand(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     assert json.loads(text) == {
         "voice": DEFAULT_VOICE,
+        "speed": 1.0,
+        "delay_minutes": 0,
         "schedule_path": None,
         "template": DEFAULT_TEMPLATE,
         "custom_announcements": [
@@ -120,6 +131,13 @@ def test_folder_in_place_of_the_file_is_an_error(path: Path) -> None:
         ("template", "Hoş geldiniz."),
         ("template", ["{ad_soyad}"]),
         ("custom_announcements", {"text": "Duyuru"}),
+        ("speed", 0.85),
+        ("speed", "1.1"),
+        ("speed", True),
+        ("delay_minutes", 4),
+        ("delay_minutes", -1),
+        ("delay_minutes", "2"),
+        ("delay_minutes", True),
     ],
 )
 def test_unusable_value_falls_back_to_its_default(
@@ -128,6 +146,15 @@ def test_unusable_value_falls_back_to_its_default(
     write_json(path, {name: value})
 
     assert load_settings(path) == LoadedSettings(Settings(), dropped=0)
+
+
+def test_speed_and_delay_may_be_written_as_any_number(path: Path) -> None:
+    write_json(path, {"speed": 1, "delay_minutes": 5.0})
+
+    settings = load_settings(path).settings
+
+    assert (settings.speed, settings.delay) == (1.0, 5)
+    assert (type(settings.speed), type(settings.delay)) == (float, int)
 
 
 @pytest.mark.parametrize(

@@ -94,6 +94,56 @@ def test_custom_announcement_that_lost_todays_slot_is_listed_after_the_winner() 
     )
 
 
+def test_rows_show_when_a_delayed_announcement_is_made() -> None:
+    reminder = CustomAnnouncement("Salon kapanıyor.", SIX_PM, frozenset({0}))
+    late = CustomAnnouncement("Salon kapandı.", datetime.time(23, 58), frozenset({6}))
+    timetable = build_timetable([AYSE], [reminder, late], "{ad_soyad}", delay=3)
+    three_past = datetime.time(18, 3)
+
+    assert todays_rows(timetable, at(18, 2), {}) == (
+        # From Sunday night, and the scheduler was not there for it.
+        Row(datetime.time(0, 1), "Salon kapandı.", Status.PASSED),
+        Row(three_past, "Ayşe Yılmaz", Status.NEXT),
+        Row(three_past, "Salon kapanıyor.", Status.CONFLICT),
+    )
+    outcomes = {(at(18, 3), "Ayşe Yılmaz"): Status.PLAYED}
+    assert todays_rows(timetable, at(18, 4), outcomes)[1].status is Status.PLAYED
+
+
+def test_what_lost_its_slot_on_the_day_before_midnight_is_listed_after_it() -> None:
+    late = AthleteEntry("Ayşe Yılmaz", 6, datetime.time(23, 58))
+    reminder = CustomAnnouncement("Salon kapandı.", late.time, frozenset({6}))
+    timetable = build_timetable([late], [reminder], "{ad_soyad}", delay=5)
+
+    assert [row.status for row in todays_rows(timetable, at(0, 0), {})] == [
+        Status.NEXT,
+        Status.CONFLICT,
+    ]
+    sunday = at(8) + datetime.timedelta(days=6)
+    assert todays_rows(timetable, sunday, {}) == ()
+
+
+@pytest.mark.parametrize(
+    ("status", "replayable"),
+    [
+        (Status.WAITING, False),
+        (Status.NEXT, False),
+        (Status.PLAYING, False),
+        (Status.CONFLICT, False),
+        (Status.PASSED, True),
+        (Status.PLAYED, True),
+        (Status.PARTLY_PLAYED, True),
+        (Status.NO_SPEECH, True),
+        (Status.ASLEEP, True),
+        (Status.NO_OUTPUT, True),
+    ],
+)
+def test_only_an_announcement_whose_time_has_come_can_be_replayed(
+    status: Status, replayable: bool
+) -> None:
+    assert Row(SIX_PM, ATHLETES, status).replayable is replayable
+
+
 @pytest.mark.parametrize(
     ("playback", "status"),
     [

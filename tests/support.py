@@ -53,11 +53,13 @@ class FakeClock:
 class FakeProvider:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.speeds: list[float] = []  # of the calls, in the same order
         self.offline = False
         self.unspeakable: set[str] = set()
 
-    def synthesize(self, text: str, voice: str) -> bytes:
+    def synthesize(self, text: str, voice: str, speed: float) -> bytes:
         self.calls.append((text, voice))
+        self.speeds.append(speed)
         if self.offline or text in self.unspeakable:
             raise TtsError("no speech")
         return f"{voice}|{text}".encode()

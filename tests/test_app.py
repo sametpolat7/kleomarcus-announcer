@@ -15,7 +15,7 @@ from announcer.models import CustomAnnouncement
 from announcer.settings import Settings, load_settings, save_settings
 from announcer.template import DEFAULT_TEMPLATE
 from announcer.timetable import SlotHolder
-from announcer.today import Status
+from announcer.today import Row, Status
 from support import (
     ROWS,
     FakeClock,
@@ -36,6 +36,10 @@ def wait_for_speech(app: App) -> None:
 
 def statuses(app: App) -> list[Status]:
     return [row.status for row in app.rows()]
+
+
+def stored_speech(tmp_path: Path) -> set[Path]:
+    return set((tmp_path / "audio").iterdir())
 
 
 def test_choosing_a_schedule_loads_it_remembers_the_file_and_generates_its_speech(
@@ -400,9 +404,23 @@ def test_change_that_cannot_be_saved_changes_nothing(
         app.set_template("Hoş geldiniz, {ad_soyad}.")
     with pytest.raises(OSError):
         app.save_announcement(WATER)
+    with pytest.raises(OSError):
+        app.set_speed(0.9)
+    with pytest.raises(OSError):
+        app.set_delay(2)
 
     assert app.settings == Settings()
     assert app.timetable.slots == ()
+    assert not app.generating
+
+
+def test_speed_and_delay_that_are_not_offered_are_rejected(app: App) -> None:
+    with pytest.raises(ValueError, match="speed"):
+        app.set_speed(2.0)
+    with pytest.raises(ValueError, match="delay"):
+        app.set_delay(4)
+
+    assert app.settings == Settings()
 
 
 def test_due_slot_is_announced_and_shown_as_played(
@@ -639,6 +657,217 @@ def test_template_with_stored_speech_is_spoken_at_once(
     assert app.spoken_template == DEFAULT_TEMPLATE
 
 
+def test_new_speed_is_stored_and_spoken_once_its_speech_exists(
+    app: App,
+    schedule: Path,
+    settings_file: Path,
+    provider: FakeProvider,
+    output: FakeOutput,
+    clock: FakeClock,
+    tmp_path: Path,
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    normal = stored_speech(tmp_path)
+
+    app.set_speed(0.9)
+
+    assert load_settings(settings_file).settings.speed == 0.9
+    assert (app.generating, app.spoken_speed) == (True, 1.0)
+    wait_for_speech(app)
+    assert app.spoken_speed == 0.9
+    assert provider.speeds == [1.0] * 3 + [0.9] * 3
+    app.start()
+    clock.now = at(18)
+    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
+    assert len(output.played) == 3
+    assert not normal.intersection(output.played)
+
+
+def test_announcements_keep_the_old_speed_until_the_new_one_has_speech(
+    app: App,
+    schedule: Path,
+    provider: FakeProvider,
+    output: FakeOutput,
+    clock: FakeClock,
+    tmp_path: Path,
+) -> None:
+    app.choose_schedule(schedule)
+    app.save_announcement(WATER)
+    wait_for_speech(app)
+    normal = stored_speech(tmp_path)
+
+    provider.offline = True
+    app.set_speed(1.2)
+    wait_for_speech(app)
+
+    assert (app.settings.speed, app.spoken_speed) == (1.2, 1.0)
+    assert len(app.unspoken) == 4
+    app.start()
+    clock.now = at(18)
+    wait_for(app, lambda: statuses(app)[0] is Status.PLAYED)
+    assert normal.issuperset(output.played[1:])
+
+    provider.offline = False
+    app.refresh()
+    wait_for_speech(app)
+
+    assert app.spoken_speed == 1.2
+    assert not app.unspoken
+    clock.now = at(19)
+    wait_for(app, lambda: statuses(app)[1] is Status.PLAYED)
+    assert output.played[-1] not in normal  # a custom announcement has it too
+
+
+def test_speed_with_stored_speech_is_spoken_at_once(
+    app: App, schedule: Path, provider: FakeProvider
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    app.set_speed(0.8)
+    wait_for_speech(app)
+    provider.offline = True
+
+    app.set_speed(1.0)
+
+    assert not app.generating
+    assert app.spoken_speed == 1.0
+
+
+def test_test_announcement_is_spoken_at_the_speed_in_the_settings(
+    app: App, schedule: Path, provider: FakeProvider, output: FakeOutput
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    provider.unspeakable = {DEFAULT_TEMPLATE.replace("{ad_soyad}", "Zeynep Kaya")}
+    app.set_speed(0.8)
+    wait_for_speech(app)
+    assert app.spoken_speed == 1.0  # one athlete has no speech at the new speed
+    app.start()
+
+    app.preview("Deneme anonsu.")
+    wait_for(app, lambda: app.test_status is Status.PLAYED)
+
+    assert provider.speeds[-1] == 0.8
+    assert len(output.played) == 2
+
+
+def test_delay_is_stored_and_moves_every_announcement(
+    app: App,
+    schedule: Path,
+    settings_file: Path,
+    output: FakeOutput,
+    clock: FakeClock,
+) -> None:
+    app.choose_schedule(schedule)
+    app.save_announcement(WATER)
+    wait_for_speech(app)
+
+    app.set_delay(2)
+
+    assert load_settings(settings_file).settings.delay == 2
+    assert not app.generating  # the speech is the same
+    assert [row.time for row in app.rows()] == [
+        datetime.time(18, 2),
+        datetime.time(19, 2),
+    ]
+    app.start()
+    clock.now = at(18)
+    time.sleep(0.1)
+    app.poll()
+    assert (statuses(app), output.played) == ([Status.NEXT, Status.WAITING], [])
+
+    clock.now = at(18, 2)
+    wait_for(app, lambda: statuses(app)[0] is Status.PLAYED)
+    clock.now = at(19, 2)
+    wait_for(app, lambda: statuses(app)[1] is Status.PLAYED)
+
+    last = app.last_announcement
+    assert last is not None
+    assert (last.due, last.summary) == (at(19, 2), "Su içmeyi unutmayın.")
+    assert len(output.played) == 5
+
+
+def test_delay_does_not_change_which_times_are_taken(app: App, schedule: Path) -> None:
+    app.choose_schedule(schedule)
+    app.set_delay(2)
+
+    with pytest.raises(SlotTakenError):
+        app.save_announcement(CustomAnnouncement("Hoş geldiniz.", SIX_PM))
+    app.save_announcement(CustomAnnouncement("Hoş geldiniz.", datetime.time(18, 2)))
+
+    assert [row.time for row in app.rows()] == [
+        datetime.time(18, 2),
+        datetime.time(18, 4),
+    ]
+    assert app.timetable.conflicts == ()
+
+
+def test_row_is_announced_again_on_request(
+    app: App,
+    schedule: Path,
+    output: FakeOutput,
+    clock: FakeClock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="announcer.app")
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    app.start()
+    clock.now = at(18)
+    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
+    played = list(output.played)
+    clock.now = at(18, 7)
+
+    assert app.replay(app.rows()[0])
+
+    assert statuses(app) == [Status.PLAYING]
+    assert not app.replay(app.rows()[0])  # not while it is sounding
+    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
+    assert output.played == played * 2
+    last = app.last_announcement
+    assert last is not None
+    assert (last.due, last.status) == (at(18), Status.PLAYED)
+    assert '18:00 asked for again: "Ayşe Yılmaz, antrenmanınız' in caplog.text
+
+
+def test_row_whose_time_went_by_can_be_announced_afterwards(
+    app: App, schedule: Path, output: FakeOutput, clock: FakeClock, tmp_path: Path
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    normal = stored_speech(tmp_path)
+    app.set_speed(1.1)
+    wait_for_speech(app)
+    clock.now = at(18, 5)
+    app.start()
+    assert statuses(app) == [Status.PASSED]
+
+    assert app.replay(app.rows()[0])
+    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
+
+    assert len(output.played) == 3
+    assert not normal.intersection(output.played)  # at the speed in use
+
+
+def test_row_that_cannot_be_replayed_is_left_alone(
+    app: App, schedule: Path, clock: FakeClock
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    waiting = app.rows()[0]
+    clock.now = at(18, 5)
+    passed = app.rows()[0]
+    assert (waiting.status, passed.status) == (Status.NEXT, Status.PASSED)
+
+    assert not app.replay(waiting)  # no longer what the row is
+    assert not app.replay(Row(SIX_PM, "Zeynep Kaya", Status.PASSED))
+    app.set_delay(10)
+    assert not app.replay(passed)  # it has moved to a time that is still to come
+
+    assert statuses(app) == [Status.NEXT]
+
+
 def test_outcome_does_not_pass_to_what_is_put_at_that_time_later(
     app: App, clock: FakeClock
 ) -> None:
@@ -683,3 +912,7 @@ def test_actions_and_outcomes_are_logged_with_their_cause(
     assert '18:00 announced: "Ayşe Yılmaz, antrenmanınız başlamıştır.' in log
     assert '18:00 skipped, no stored speech: "Mehmet Demir, antrenmanınız' in log
     assert "2026-11-09 19:00 skipped, the computer was asleep" in log
+    app.set_speed(0.9)
+    app.set_delay(3)
+    assert "Speed changed to 0.9" in caplog.text
+    assert "Delay changed to 3 minute(s)" in caplog.text

@@ -14,6 +14,13 @@ from support import FakeOutput
 CHIME = Path("chime.wav")
 AYSE, MEHMET, ZEYNEP = Path("ayse.mp3"), Path("mehmet.mp3"), Path("zeynep.mp3")
 AUDIO = {"Ayşe": AYSE, "Mehmet": MEHMET, "Zeynep": ZEYNEP}
+AYSE_SLOW = Path("ayse-slow.mp3")
+
+
+def find(text: str, speed: float) -> Path | None:
+    if speed == 1.0:
+        return AUDIO.get(text)
+    return AYSE_SLOW if (text, speed) == ("Ayşe", 0.8) else None
 
 
 class FakeClock:
@@ -44,7 +51,7 @@ def player(
     output: FakeOutput, outcomes: list[Playback], clock: FakeClock, no_waiting: None
 ) -> Player:
     """A player over the fake audio above that reports into ``outcomes``."""
-    return Player(AUDIO.get, output, outcomes.append, chime=CHIME, clock=clock)
+    return Player(find, output, outcomes.append, chime=CHIME, clock=clock)
 
 
 def sleep_while_playing(
@@ -65,6 +72,16 @@ def test_chime_sounds_once_before_the_texts_in_order(
     assert output.played == [CHIME, MEHMET, AYSE]
     assert outcomes == [Playback(("Mehmet", "Ayşe"), missing=(), late=(), failed=False)]
     assert (output.opened, output.closed) == (1, 1)
+
+
+def test_group_is_spoken_with_the_speech_of_its_speed(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    player.play(["Ayşe"], speed=0.8)
+    player.play(["Ayşe", "Mehmet"], speed=0.8)
+
+    assert output.played == [CHIME, AYSE_SLOW, CHIME, AYSE_SLOW]
+    assert outcomes[1].missing == ("Mehmet",)
 
 
 def test_text_without_speech_is_skipped_and_reported(
@@ -252,6 +269,17 @@ def test_background_thread_plays_the_queue_in_order(
     assert [playback.due for playback in outcomes] == [six_pm, None]
 
 
+def test_queued_group_keeps_its_speed(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    player.enqueue(["Ayşe"], speed=0.8)
+    player.enqueue(["Ayşe"])
+
+    run_queue(player, outcomes, expected=2)
+
+    assert output.played == [CHIME, AYSE_SLOW, CHIME, AYSE]
+
+
 def test_texts_queued_before_a_sleep_are_skipped_as_late(
     player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
 ) -> None:
@@ -361,7 +389,7 @@ def test_background_thread_survives_a_failing_callback(
         if playback.texts == ("Ayşe",):
             raise RuntimeError("the first hand-over fails")
 
-    player = Player(AUDIO.get, output, on_played, chime=CHIME, clock=clock)
+    player = Player(find, output, on_played, chime=CHIME, clock=clock)
     player.enqueue(["Ayşe"])
     player.enqueue(["Mehmet"])
 
@@ -434,7 +462,7 @@ def test_pygame_plays_files_to_the_end(
     monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
     write_silence(tmp_path / "speech.wav", 0.2)
     player = Player(
-        lambda text: tmp_path / text,
+        lambda text, speed: tmp_path / text,
         PygameOutput(),
         outcomes.append,
         chime=write_silence(tmp_path / "chime.wav", 0.2),

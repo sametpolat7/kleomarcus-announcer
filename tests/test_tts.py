@@ -1,3 +1,4 @@
+import hashlib
 import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -54,6 +55,26 @@ def test_each_text_and_each_voice_has_its_own_file(
     assert other.ensure(HELLO).read_bytes() == f"tr-TR-AhmetNeural|{HELLO}".encode()
 
 
+def test_each_speed_has_its_own_file(cache: AudioCache, provider: FakeProvider) -> None:
+    normal = cache.ensure(HELLO)
+    assert cache.find(HELLO, 0.9) is None
+
+    slow = cache.ensure(HELLO, 0.9)
+
+    assert slow != normal
+    assert (cache.find(HELLO), cache.find(HELLO, 0.9)) == (normal, slow)
+    assert cache.find(HELLO, 1.1) is None
+    assert provider.speeds == [1.0, 0.9]
+
+
+def test_speech_at_the_normal_speed_is_named_as_before_there_were_speeds(
+    cache: AudioCache,
+) -> None:
+    digest = hashlib.sha256(f"{VOICE}\n{HELLO}".encode()).hexdigest()
+
+    assert cache.ensure(HELLO).name == f"{digest}.mp3"
+
+
 def test_failed_generation_stores_nothing_and_is_made_up_for_later(
     tmp_path: Path, cache: AudioCache, provider: FakeProvider
 ) -> None:
@@ -89,6 +110,19 @@ def test_ensure_all_generates_only_what_is_missing(
     assert cache.find(BYE) is not None
 
 
+def test_ensure_all_generates_what_is_missing_at_the_speed(
+    cache: AudioCache, provider: FakeProvider
+) -> None:
+    cache.ensure(HELLO)
+    cache.ensure(BYE, 1.2)
+
+    assert cache.ensure_all([HELLO, BYE], 1.2) == ()
+
+    assert provider.speeds == [1.0, 1.2, 1.2]
+    assert cache.find(HELLO, 1.2) is not None
+    assert cache.find(BYE) is None
+
+
 def test_ensure_all_returns_the_texts_without_speech_in_the_order_given(
     cache: AudioCache, provider: FakeProvider
 ) -> None:
@@ -102,7 +136,7 @@ def test_ensure_all_generates_several_sentences_at_a_time(tmp_path: Path) -> Non
     together = threading.Barrier(3, timeout=5)
 
     class WaitingProvider:
-        def synthesize(self, text: str, voice: str) -> bytes:
+        def synthesize(self, text: str, voice: str, speed: float) -> bytes:
             together.wait()
             return text.encode()
 
@@ -114,14 +148,14 @@ def test_ensure_all_generates_several_sentences_at_a_time(tmp_path: Path) -> Non
 
 
 class FakeCommunicate:
-    """Stands in for ``edge_tts.Communicate``; set ``chunks`` or ``error``."""
+    """Set ``chunks`` or ``error``."""
 
     chunks: tuple[dict[str, object], ...] = ()
     error: Exception | None = None
-    requests: list[tuple[str, str]]
+    requests: list[tuple[str, str, str]]
 
-    def __init__(self, text: str, voice: str) -> None:
-        self.requests.append((text, voice))
+    def __init__(self, text: str, voice: str, rate: str) -> None:
+        self.requests.append((text, voice, rate))
 
     async def stream(self) -> AsyncIterator[dict[str, object]]:
         for chunk in self.chunks:
@@ -133,7 +167,7 @@ class FakeCommunicate:
 @pytest.fixture
 def communicate(monkeypatch: pytest.MonkeyPatch) -> type[FakeCommunicate]:
     class Communicate(FakeCommunicate):
-        requests: list[tuple[str, str]] = []  # noqa: RUF012
+        requests: list[tuple[str, str, str]] = []  # noqa: RUF012
 
     monkeypatch.setattr("announcer.tts.edge_tts.Communicate", Communicate)
     return Communicate
@@ -148,8 +182,22 @@ def test_edge_provider_joins_the_audio_it_receives(
         {"type": "audio", "data": b"speech"},
     )
 
-    assert EdgeTtsProvider().synthesize(HELLO, VOICE) == b"ID3speech"
-    assert communicate.requests == [(HELLO, VOICE)]
+    assert EdgeTtsProvider().synthesize(HELLO, VOICE, 1.0) == b"ID3speech"
+    assert communicate.requests == [(HELLO, VOICE, "+0%")]
+
+
+@pytest.mark.parametrize(
+    ("speed", "rate"),
+    [(0.8, "-20%"), (0.9, "-10%"), (1.0, "+0%"), (1.1, "+10%"), (1.2, "+20%")],
+)
+def test_edge_provider_asks_for_the_speed_in_percent(
+    communicate: type[FakeCommunicate], speed: float, rate: str
+) -> None:
+    communicate.chunks = ({"type": "audio", "data": b"speech"},)
+
+    EdgeTtsProvider().synthesize(HELLO, VOICE, speed)
+
+    assert communicate.requests == [(HELLO, VOICE, rate)]
 
 
 def test_edge_provider_without_audio_is_an_error(
@@ -158,7 +206,7 @@ def test_edge_provider_without_audio_is_an_error(
     communicate.chunks = ({"type": "SentenceBoundary", "text": HELLO},)
 
     with pytest.raises(TtsError):
-        EdgeTtsProvider().synthesize(HELLO, VOICE)
+        EdgeTtsProvider().synthesize(HELLO, VOICE, 1.0)
 
 
 @pytest.mark.parametrize("error", [OSError("no network"), RuntimeError("protocol")])
@@ -169,6 +217,6 @@ def test_edge_provider_failure_is_a_tts_error(
     communicate.error = error
 
     with pytest.raises(TtsError) as raised:
-        EdgeTtsProvider().synthesize(HELLO, VOICE)
+        EdgeTtsProvider().synthesize(HELLO, VOICE, 1.0)
 
     assert raised.value.__cause__ is error

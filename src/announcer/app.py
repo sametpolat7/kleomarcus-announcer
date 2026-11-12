@@ -85,6 +85,7 @@ class _Missed:
 @dataclass(frozen=True)
 class _Generated:
     template: str
+    speed: float
     unspoken: tuple[str, ...]
 
 
@@ -129,9 +130,11 @@ class App:
         loaded = self._load_settings()
         self.settings: Settings = loaded.settings
         self.dropped_announcements: int = loaded.dropped
-        # The template that athletes are announced with. It follows the one in
-        # the settings as soon as there is speech for every athlete with it.
+        # The template that athletes are announced with and the speed that
+        # everything is spoken at. They follow the ones in the settings as
+        # soon as there is speech for every announcement with them.
         self.spoken_template: str = self.settings.template
+        self.spoken_speed: float = self.settings.speed
 
         self._entries: tuple[AthleteEntry, ...] = ()
         self.skipped_rows: tuple[SkippedRow, ...] = ()
@@ -225,6 +228,22 @@ class App:
         _log.info('Template changed to "%s"', template)
         self._rebuild()
 
+    def set_speed(self, speed: float) -> None:
+        """Raises ``ValueError`` if the speed is not one of ``SPEEDS`` and
+        ``OSError`` if it cannot be saved; nothing changes then.
+        """
+        self._save(dataclasses.replace(self.settings, speed=speed))
+        _log.info("Speed changed to %s", speed)
+        self._generate()
+
+    def set_delay(self, minutes: int) -> None:
+        """Raises ``ValueError`` if the delay is not one of ``DELAYS`` and
+        ``OSError`` if it cannot be saved; nothing changes then.
+        """
+        self._save(dataclasses.replace(self.settings, delay=minutes))
+        _log.info("Delay changed to %d minute(s)", minutes)
+        self._build()
+
     def save_announcement(
         self, announcement: CustomAnnouncement, replacing: int | None = None
     ) -> None:
@@ -270,15 +289,41 @@ class App:
         self.preview(render(template, TEST_NAME))
 
     def preview(self, text: str) -> None:
-        """``test_status`` tells how the test went."""
+        """``test_status`` tells how the test went. The text is spoken at the
+        speed in the settings, also while the announcements still have the
+        one before.
+        """
         _log.info('Test announcement requested: "%s"', text)
         self.test_status = Status.PLAYING
         threading.Thread(
-            target=self._test, args=(text,), name="test", daemon=True
+            target=self._test,
+            args=(text, self.settings.speed),
+            name="test",
+            daemon=True,
         ).start()
 
     def rows(self) -> tuple[Row, ...]:
         return todays_rows(self.timetable, self._clock(), self._outcomes)
+
+    def replay(self, row: Row) -> bool:
+        """Returns whether the row was announced again: not if it is not among
+        today's any more, or is not ``replayable``. The row then tells how
+        that went.
+        """
+        now = self._clock()
+        slot = self.timetable.slot_at(now.weekday(), row.time)
+        if (
+            slot is None
+            or not row.replayable
+            or row not in todays_rows(self.timetable, now, self._outcomes)
+        ):
+            return False
+        due = datetime.datetime.combine(now.date(), slot.time)
+        _log.info("%s asked for again: %s", f"{due:%H:%M}", _quoted(slot.texts))
+        self._outcomes[due, row.summary] = Status.PLAYING
+        self._summaries[due] = row.summary
+        self._player.enqueue(slot.texts, due, slot.speed)
+        return True
 
     def poll(self) -> bool:
         """Returns whether anything changed."""
@@ -312,12 +357,12 @@ class App:
                     announced = self._summaries.pop(due, "")
                     self._outcomes[due, announced] = status
                     self.last_announcement = LastAnnouncement(due, announced, status)
-                case _Generated(template, unspoken):
+                case _Generated(template, speed, unspoken):
                     self.generating = False
                     self.unspoken = unspoken
                     self._generated_at = self._clock()
                     if not unspoken:
-                        self._speak_with(template)
+                        self._speak_with(template, speed)
                     if self._regenerate:
                         self._generate()
                 case _TestUnspoken():
@@ -428,7 +473,11 @@ class App:
     def _build(self) -> None:
         known = self.timetable.conflicts
         self.timetable = build_timetable(
-            self._entries, self.settings.custom_announcements, self.spoken_template
+            self._entries,
+            self.settings.custom_announcements,
+            self.spoken_template,
+            self.spoken_speed,
+            self.settings.delay,
         )
         for conflict in self.timetable.conflicts:
             if conflict not in known:
@@ -442,13 +491,20 @@ class App:
                 )
         self._scheduler.set_timetable(self.timetable)
 
-    def _speak_with(self, template: str) -> None:
-        """Announce athletes with ``template``, now that its speech is there."""
-        if template not in (self.spoken_template, self.settings.template):
-            return  # the speech is for a template that was replaced meanwhile
-        if template != self.spoken_template:
-            _log.info('Athletes are announced with "%s" from now on', template)
-            self.spoken_template = template
+    def _speak_with(self, template: str, speed: float) -> None:
+        """Announce with ``template`` and at ``speed``, now that the speech for
+        that is there.
+        """
+        if (template, speed) != (self.settings.template, self.settings.speed):
+            return  # the speech is for settings that were replaced meanwhile
+        if (template, speed) != (self.spoken_template, self.spoken_speed):
+            _log.info(
+                'Athletes are announced with "%s" and everything at speed %s '
+                "from now on",
+                template,
+                speed,
+            )
+            self.spoken_template, self.spoken_speed = template, speed
             self._build()
 
     def _generate(self) -> None:
@@ -457,46 +513,50 @@ class App:
             return
         self._regenerate = False
         self._generated_at = self._clock()
-        template = self.settings.template
+        template, speed = self.settings.template, self.settings.speed
         wanted = build_timetable(
             self._entries, self.settings.custom_announcements, template
         )
         texts = tuple(text for slot in wanted.slots for text in slot.texts)
-        todo = sum(self._cache.find(text) is None for text in dict.fromkeys(texts))
+        todo = sum(
+            self._cache.find(text, speed) is None for text in dict.fromkeys(texts)
+        )
         if not todo:
             self.unspoken = ()
-            self._speak_with(template)
+            self._speak_with(template, speed)
             return
         _log.info("Generating speech for %d sentence(s)", todo)
         self.generating = True
         threading.Thread(
             target=self._generate_all,
-            args=(template, texts),
+            args=(template, speed, texts),
             name="speech",
             daemon=True,
         ).start()
 
-    def _generate_all(self, template: str, texts: tuple[str, ...]) -> None:
+    def _generate_all(
+        self, template: str, speed: float, texts: tuple[str, ...]
+    ) -> None:
         """Runs on a thread."""
         unspoken = texts
         try:
-            unspoken = self._cache.ensure_all(texts)
+            unspoken = self._cache.ensure_all(texts, speed)
             _log.info("Speech generated; %d sentence(s) without speech", len(unspoken))
         except Exception:
             _log.exception("Generating speech failed")
         finally:
-            self._events.put(_Generated(template, unspoken))
+            self._events.put(_Generated(template, speed, unspoken))
 
-    def _test(self, text: str) -> None:
+    def _test(self, text: str, speed: float) -> None:
         """Runs on a thread."""
         try:
-            self._cache.ensure(text)
+            self._cache.ensure(text, speed)
         except TtsError as error:
             _log.warning("No speech for the test: %s (%r)", error, error.__cause__)
         except Exception:
             _log.exception("Generating the speech for the test failed")
         else:
-            self._player.enqueue((text,))
+            self._player.enqueue((text,), speed=speed)
             return
         self._events.put(_TestUnspoken())
 
@@ -505,7 +565,7 @@ class App:
         due = datetime.datetime.combine(date, slot.time)
         _log.info("%s due: %s", f"{due:%H:%M}", _quoted(slot.texts))
         self._events.put(_Due(due, slot))
-        self._player.enqueue(slot.texts, due)
+        self._player.enqueue(slot.texts, due, slot.speed)
 
     def _on_missed(self, date: datetime.date, slot: Slot) -> None:
         """Called on the scheduler's thread."""

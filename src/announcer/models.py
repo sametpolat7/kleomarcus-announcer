@@ -13,6 +13,12 @@ WEEKDAY_NAMES: tuple[str, ...] = (
 )
 ALL_WEEKDAYS: frozenset[int] = frozenset(range(len(WEEKDAY_NAMES)))
 
+# Multiples of the voice's own speed.
+NORMAL_SPEED = 1.0
+SPEEDS: tuple[float, ...] = (0.8, 0.9, NORMAL_SPEED, 1.1, 1.2)
+# How many minutes after its time an announcement can be made.
+DELAYS: tuple[int, ...] = (0, 1, 2, 3, 5, 10)
+
 
 @dataclass(frozen=True)
 class AthleteEntry:
