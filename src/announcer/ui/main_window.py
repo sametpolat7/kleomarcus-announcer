@@ -110,6 +110,7 @@ class MainWindow:
         self._shown_announcements: list[tuple[str, tuple[str, str, str]]] | None = None
         self._shown_warnings: list[str] | None = None
         self._current_row: str | None = None  # of today's table: sounding, or next
+        self._upcoming: tuple[datetime.time, str] | None = None  # the next one
         self._update_failed = False  # the last look at the app raised an error
         self.closed = False
 
@@ -330,7 +331,7 @@ class MainWindow:
         # Close together, so that the box is no higher than the one beside it.
         gap = 2 if row else 0
         ttk.Label(box, text=name).grid(row=row, column=0, sticky="w", pady=(gap, 0))
-        choice = ttk.Combobox(box, values=tuple(values), state="readonly", width=12)
+        choice = ttk.Combobox(box, values=tuple(values), state="readonly", width=15)
         choice.grid(row=row, column=1, sticky="e", padx=(12, 0), pady=(gap, 0))
 
         def chosen(event: object) -> None:
@@ -339,8 +340,10 @@ class MainWindow:
 
         choice.bind("<<ComboboxSelected>>", chosen)
         # The wheel is for scrolling the tables: over a choice it would change
-        # a setting by accident.
-        choice.bind("<MouseWheel>", lambda event: "break")
+        # a setting by accident. A trackpad has an event of its own.
+        for sequence in choice.bind_class("TCombobox"):
+            if "Wheel" in sequence or "Scroll" in sequence:
+                choice.bind(sequence, lambda event: "break")
         return choice
 
     def _build_template(self, parent: ttk.Frame) -> ttk.Frame:
@@ -477,6 +480,7 @@ class MainWindow:
             return  # left alone, so that it keeps its place while scrolled
         self._shown_rows = shown
         selected = self._selected_row()
+        scrolled_to = self.today.yview()[0]
         self._rows = rows
         self.today.delete(*self.today.get_children())
         for index, (row, values) in enumerate(zip(rows, shown, strict=True)):
@@ -502,7 +506,17 @@ class MainWindow:
             if row.status in (Status.PLAYING, Status.NEXT)
         ]
         self._current_row = current[0] if current else None
-        self._see_current()
+        upcoming = next(
+            ((row.time, row.summary) for row in rows if row.status is Status.NEXT),
+            None,
+        )
+        if upcoming != self._upcoming:
+            self._upcoming = upcoming
+            self._see_current()
+        else:
+            # The day has not moved on, so the table stays where the operator
+            # is, for example at a row that was read again.
+            self.today.yview_moveto(scrolled_to)
 
     def _on_table_laid_out(self, event: tk.Event[ttk.Treeview]) -> None:
         """Only once the table has its size: a later resize must not undo what
