@@ -2,19 +2,21 @@ import datetime
 import threading
 import time
 import wave
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from pathlib import Path
 
 import pytest
 
 from announcer.chime import CHIME_PATH
-from announcer.player import Playback, PlaybackError, Player, PygameOutput
+from announcer.player import Heard, Playback, PlaybackError, Player, PygameOutput
 from support import FakeOutput
 
 CHIME = Path("chime.wav")
 AYSE, MEHMET, ZEYNEP = Path("ayse.mp3"), Path("mehmet.mp3"), Path("zeynep.mp3")
 AUDIO = {"Ayşe": AYSE, "Mehmet": MEHMET, "Zeynep": ZEYNEP}
 AYSE_SLOW = Path("ayse-slow.mp3")
+YES, NO_SPEECH, UNPLAYABLE = Heard.YES, Heard.NO_SPEECH, Heard.UNPLAYABLE
+LATE, CUT = Heard.LATE, Heard.CUT
 
 
 def find(text: str, speed: float) -> Path | None:
@@ -47,11 +49,36 @@ def outcomes() -> list[Playback]:
 
 
 @pytest.fixture
+def started() -> list[Hashable | None]:
+    return []
+
+
+@pytest.fixture
+def speaking() -> list[tuple[Hashable | None, int]]:
+    return []
+
+
+@pytest.fixture
 def player(
-    output: FakeOutput, outcomes: list[Playback], clock: FakeClock, no_waiting: None
+    output: FakeOutput,
+    outcomes: list[Playback],
+    started: list[Hashable | None],
+    speaking: list[tuple[Hashable | None, int]],
+    clock: FakeClock,
+    no_waiting: None,
 ) -> Player:
-    """A player over the fake audio above that reports into ``outcomes``."""
-    return Player(find, output, outcomes.append, chime=CHIME, clock=clock)
+    """A player over the fake audio above that reports into ``outcomes``, the
+    tags of the groups that begin to sound into ``started``, and the tag and
+    place of each text that begins to sound into ``speaking``."""
+    return Player(
+        find,
+        output,
+        outcomes.append,
+        chime=CHIME,
+        clock=clock,
+        on_started=started.append,
+        on_speaking=lambda tag, index: speaking.append((tag, index)),
+    )
 
 
 def sleep_while_playing(
@@ -70,7 +97,11 @@ def test_chime_sounds_once_before_the_texts_in_order(
     player.play(["Mehmet", "Ayşe"])
 
     assert output.played == [CHIME, MEHMET, AYSE]
-    assert outcomes == [Playback(("Mehmet", "Ayşe"), missing=(), late=(), failed=False)]
+    assert outcomes == [
+        Playback(
+            ("Mehmet", "Ayşe"), missing=(), late=(), failed=False, heard=(YES, YES)
+        )
+    ]
     assert (output.opened, output.closed) == (1, 1)
 
 
@@ -92,7 +123,11 @@ def test_text_without_speech_is_skipped_and_reported(
     assert output.played == [CHIME, AYSE]
     assert outcomes == [
         Playback(
-            ("Can", "Ayşe", "Elif"), missing=("Can", "Elif"), late=(), failed=False
+            ("Can", "Ayşe", "Elif"),
+            missing=("Can", "Elif"),
+            late=(),
+            failed=False,
+            heard=(NO_SPEECH, YES, NO_SPEECH),
         )
     ]
 
@@ -104,7 +139,9 @@ def test_nothing_sounds_when_no_text_has_speech(
 
     assert output.played == []
     assert output.opened == 0
-    assert outcomes == [Playback(("Can",), missing=("Can",), late=(), failed=False)]
+    assert outcomes == [
+        Playback(("Can",), missing=("Can",), late=(), failed=False, heard=(NO_SPEECH,))
+    ]
 
 
 def test_missing_device_is_reported(
@@ -114,7 +151,9 @@ def test_missing_device_is_reported(
 
     player.play(["Ayşe"])
 
-    assert outcomes == [Playback(("Ayşe",), missing=(), late=(), failed=True)]
+    assert outcomes == [
+        Playback(("Ayşe",), missing=(), late=(), failed=True, heard=(UNPLAYABLE,))
+    ]
 
 
 def test_files_after_an_unplayable_one_are_still_played(
@@ -126,9 +165,66 @@ def test_files_after_an_unplayable_one_are_still_played(
 
     assert output.played == [CHIME, AYSE, ZEYNEP]
     assert outcomes == [
-        Playback(("Ayşe", "Mehmet", "Zeynep"), missing=(), late=(), failed=True)
+        Playback(
+            ("Ayşe", "Mehmet", "Zeynep"),
+            missing=(),
+            late=(),
+            failed=True,
+            heard=(YES, UNPLAYABLE, YES),
+        )
     ]
     assert output.closed == 1
+
+
+def test_unplayable_file_marks_only_its_own_text_by_its_place_among_the_texts(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    output.unplayable = {MEHMET}
+
+    player.play(["Can", "Mehmet", "Ayşe", "Zeynep"])
+
+    assert output.played == [CHIME, AYSE, ZEYNEP]
+    assert outcomes == [
+        Playback(
+            ("Can", "Mehmet", "Ayşe", "Zeynep"),
+            missing=("Can",),
+            late=(),
+            failed=True,
+            heard=(NO_SPEECH, UNPLAYABLE, YES, YES),
+        )
+    ]
+
+
+def test_device_that_cannot_be_opened_marks_every_spoken_text_unplayable(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    output.no_device = True
+
+    player.play(["Ayşe", "Can", "Mehmet"])
+
+    assert output.played == []
+    assert outcomes == [
+        Playback(
+            ("Ayşe", "Can", "Mehmet"),
+            missing=("Can",),
+            late=(),
+            failed=True,
+            heard=(UNPLAYABLE, NO_SPEECH, UNPLAYABLE),
+        )
+    ]
+
+
+def test_unplayable_chime_fails_the_group_but_marks_no_text(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    output.unplayable = {CHIME}
+
+    player.play(["Ayşe", "Mehmet"])
+
+    assert output.played == [AYSE, MEHMET]
+    assert outcomes == [
+        Playback(("Ayşe", "Mehmet"), missing=(), late=(), failed=True, heard=(YES, YES))
+    ]
 
 
 def test_texts_after_a_sleep_are_skipped_as_late(
@@ -146,6 +242,7 @@ def test_texts_after_a_sleep_are_skipped_as_late(
             missing=(),
             late=("Mehmet", "Zeynep"),
             failed=False,
+            heard=(YES, LATE, LATE),
         )
     ]
     assert output.closed == 1
@@ -165,6 +262,7 @@ def test_sleep_during_the_chime_makes_every_text_late(
             missing=("Can",),
             late=("Ayşe", "Mehmet"),
             failed=False,
+            heard=(NO_SPEECH, LATE, LATE),
         )
     ]
 
@@ -192,6 +290,29 @@ def test_sleep_in_the_pause_between_two_files_makes_the_rest_late(
     assert outcomes[0].late == ("Mehmet",)
 
 
+def test_sleep_during_the_second_of_two_identical_texts_makes_only_that_one_late(
+    player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
+) -> None:
+    def asleep_during_the_second(path: Path) -> None:
+        if output.played.count(AYSE) == 2:
+            clock.now += 3 * 3600
+
+    output.while_playing = asleep_during_the_second
+
+    player.play(["Ayşe", "Ayşe"])
+
+    assert output.played == [CHIME, AYSE, AYSE]
+    assert outcomes == [
+        Playback(
+            ("Ayşe", "Ayşe"),
+            missing=(),
+            late=("Ayşe",),
+            failed=False,
+            heard=(YES, LATE),
+        )
+    ]
+
+
 def test_unplayable_file_is_still_reported_after_a_sleep(
     player: Player, output: FakeOutput, outcomes: list[Playback], clock: FakeClock
 ) -> None:
@@ -202,7 +323,11 @@ def test_unplayable_file_is_still_reported_after_a_sleep(
 
     assert outcomes == [
         Playback(
-            ("Ayşe", "Mehmet", "Zeynep"), missing=(), late=("Zeynep",), failed=True
+            ("Ayşe", "Mehmet", "Zeynep"),
+            missing=(),
+            late=("Zeynep",),
+            failed=True,
+            heard=(UNPLAYABLE, YES, LATE),
         )
     ]
 
@@ -266,7 +391,7 @@ def test_background_thread_plays_the_queue_in_order(
 
     assert output.played == [CHIME, AYSE, CHIME, MEHMET]
     assert [playback.texts for playback in outcomes] == [("Ayşe",), ("Mehmet",)]
-    assert [playback.due for playback in outcomes] == [six_pm, None]
+    assert [playback.tag for playback in outcomes] == [six_pm, None]
 
 
 def test_queued_group_keeps_its_speed(
@@ -293,9 +418,17 @@ def test_texts_queued_before_a_sleep_are_skipped_as_late(
 
     assert output.played == [CHIME, AYSE]
     assert outcomes == [
-        Playback(("Ayşe",), missing=(), late=("Ayşe",), failed=False),
-        Playback(("Mehmet", "Can"), missing=("Can",), late=("Mehmet",), failed=False),
-        Playback(("Zeynep",), missing=(), late=("Zeynep",), failed=False),
+        Playback(("Ayşe",), missing=(), late=("Ayşe",), failed=False, heard=(LATE,)),
+        Playback(
+            ("Mehmet", "Can"),
+            missing=("Can",),
+            late=("Mehmet",),
+            failed=False,
+            heard=(LATE, NO_SPEECH),
+        ),
+        Playback(
+            ("Zeynep",), missing=(), late=("Zeynep",), failed=False, heard=(LATE,)
+        ),
     ]
 
 
@@ -314,8 +447,10 @@ def test_sleep_between_two_announcements_makes_the_next_one_late(
 
     assert output.played == [CHIME, AYSE]
     assert outcomes == [
-        Playback(("Ayşe",), missing=(), late=(), failed=False),
-        Playback(("Mehmet",), missing=(), late=("Mehmet",), failed=False),
+        Playback(("Ayşe",), missing=(), late=(), failed=False, heard=(YES,)),
+        Playback(
+            ("Mehmet",), missing=(), late=("Mehmet",), failed=False, heard=(LATE,)
+        ),
     ]
 
 
@@ -335,7 +470,9 @@ def test_clock_set_back_after_a_sleep_does_not_skip_new_texts(
         player.stop()
 
     assert output.played == [CHIME, AYSE, CHIME, MEHMET]
-    assert outcomes[1] == Playback(("Mehmet",), missing=(), late=(), failed=False)
+    assert outcomes[1] == Playback(
+        ("Mehmet",), missing=(), late=(), failed=False, heard=(YES,)
+    )
 
 
 def test_texts_queued_after_the_wake_are_played(
@@ -356,9 +493,11 @@ def test_texts_queued_after_the_wake_are_played(
 
     assert output.played == [CHIME, AYSE, CHIME, ZEYNEP]
     assert outcomes == [
-        Playback(("Ayşe",), missing=(), late=("Ayşe",), failed=False),
-        Playback(("Mehmet",), missing=(), late=("Mehmet",), failed=False),
-        Playback(("Zeynep",), missing=(), late=(), failed=False),
+        Playback(("Ayşe",), missing=(), late=("Ayşe",), failed=False, heard=(LATE,)),
+        Playback(
+            ("Mehmet",), missing=(), late=("Mehmet",), failed=False, heard=(LATE,)
+        ),
+        Playback(("Zeynep",), missing=(), late=(), failed=False, heard=(YES,)),
     ]
 
 
@@ -421,6 +560,311 @@ def test_announcement_cut_off_by_stop_is_not_reported(
     assert all(thread.name != "player" for thread in threading.enumerate())
 
 
+@pytest.mark.usefixtures("no_waiting")
+def test_start_of_a_group_is_told_with_its_tag_before_it_sounds(
+    output: FakeOutput, clock: FakeClock
+) -> None:
+    events: list[tuple[str, object]] = []
+    output.while_playing = lambda path: events.append(("sounds", path))
+    player = Player(
+        find,
+        output,
+        lambda playback: events.append(("played", playback.tag)),
+        chime=CHIME,
+        clock=clock,
+        on_started=lambda tag: events.append(("started", tag)),
+    )
+
+    player.play(["Ayşe"], "first")
+    player.play(["Can"], "without speech")
+    player.play(["Mehmet"])
+
+    assert events == [
+        ("started", "first"),
+        ("sounds", CHIME),
+        ("sounds", AYSE),
+        ("played", "first"),
+        ("played", "without speech"),
+        ("started", None),
+        ("sounds", CHIME),
+        ("sounds", MEHMET),
+        ("played", None),
+    ]
+
+
+def test_start_is_not_told_for_a_group_skipped_as_late(
+    player: Player,
+    output: FakeOutput,
+    outcomes: list[Playback],
+    started: list[Hashable | None],
+    clock: FakeClock,
+) -> None:
+    def while_playing(path: Path) -> None:
+        if path == AYSE:
+            clock.now += 3 * 3600
+            player.enqueue(["Zeynep"], "after the wake")
+
+    output.while_playing = while_playing
+    player.enqueue(["Ayşe"], "cut by the sleep")
+    player.enqueue(["Mehmet"], "before the sleep")
+
+    run_queue(player, outcomes, expected=3)
+
+    assert started == ["cut by the sleep", "after the wake"]
+    assert [playback.late for playback in outcomes] == [("Ayşe",), ("Mehmet",), ()]
+
+
+@pytest.mark.usefixtures("no_waiting")
+def test_each_text_is_told_with_its_place_once_its_file_has_started(
+    output: FakeOutput, clock: FakeClock
+) -> None:
+    events: list[tuple[object, ...]] = []
+    output.while_playing = lambda path: events.append(("sounds", path))
+    player = Player(
+        find,
+        output,
+        lambda playback: events.append(("played", playback.tag)),
+        chime=CHIME,
+        clock=clock,
+        on_started=lambda tag: events.append(("started", tag)),
+        on_speaking=lambda tag, index: events.append(
+            ("speaking", tag, index, output.played[-1])
+        ),
+    )
+
+    player.play(["Ayşe", "Mehmet"], "first")
+
+    # Nothing is told for the chime.
+    assert events == [
+        ("started", "first"),
+        ("sounds", CHIME),
+        ("speaking", "first", 0, AYSE),
+        ("sounds", AYSE),
+        ("speaking", "first", 1, MEHMET),
+        ("sounds", MEHMET),
+        ("played", "first"),
+    ]
+
+
+def test_place_of_a_text_counts_the_texts_without_speech_which_are_never_told(
+    player: Player,
+    output: FakeOutput,
+    speaking: list[tuple[Hashable | None, int]],
+) -> None:
+    player.play(["Can", "Ayşe", "Elif", "Mehmet"], "first")
+    player.play(["Can"], "without speech")
+
+    assert output.played == [CHIME, AYSE, MEHMET]
+    assert speaking == [("first", 1), ("first", 3)]
+
+
+def test_unplayable_file_is_not_told_and_does_not_shift_the_places(
+    player: Player,
+    output: FakeOutput,
+    outcomes: list[Playback],
+    speaking: list[tuple[Hashable | None, int]],
+) -> None:
+    output.unplayable = {CHIME, MEHMET}
+
+    player.play(["Ayşe", "Mehmet", "Zeynep"], "first")
+
+    assert output.played == [AYSE, ZEYNEP]
+    assert speaking == [("first", 0), ("first", 2)]
+    assert outcomes[0].failed
+
+
+def test_texts_after_a_cut_are_never_told(
+    player: Player,
+    output: FakeOutput,
+    speaking: list[tuple[Hashable | None, int]],
+) -> None:
+    def cut_during_mehmet(path: Path) -> None:
+        if path == MEHMET:
+            player.cut("first")
+
+    output.while_playing = cut_during_mehmet
+
+    player.play(["Ayşe", "Mehmet", "Zeynep"], "first")
+    player.play(["Zeynep"], "second")
+
+    assert speaking == [("first", 0), ("first", 1), ("second", 0)]
+
+
+def test_texts_after_a_sleep_and_groups_skipped_as_late_are_never_told(
+    player: Player,
+    output: FakeOutput,
+    outcomes: list[Playback],
+    speaking: list[tuple[Hashable | None, int]],
+    clock: FakeClock,
+) -> None:
+    def while_playing(path: Path) -> None:
+        if path == AYSE:
+            clock.now += 3 * 3600
+            player.enqueue(["Zeynep"], "after the wake")
+
+    output.while_playing = while_playing
+    player.enqueue(["Ayşe", "Mehmet"], "cut by the sleep")
+    player.enqueue(["Mehmet"], "before the sleep")
+
+    run_queue(player, outcomes, expected=3)
+
+    assert speaking == [("cut by the sleep", 0), ("after the wake", 0)]
+    assert [playback.late for playback in outcomes] == [
+        ("Ayşe", "Mehmet"),
+        ("Mehmet",),
+        (),
+    ]
+
+
+def test_cut_ends_the_group_that_sounds_and_the_next_one_still_plays(
+    player: Player,
+    output: FakeOutput,
+    outcomes: list[Playback],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Player, "_POLL", 0.01)
+
+    def cut_during_mehmet(path: Path) -> None:
+        if path == MEHMET:
+            player.cut("first")
+
+    output.while_playing = cut_during_mehmet
+    player.enqueue(["Ayşe", "Mehmet", "Zeynep"], "first")
+    player.enqueue(["Zeynep"], "second")
+
+    run_queue(player, outcomes, expected=2)
+
+    assert output.played == [CHIME, AYSE, MEHMET, CHIME, ZEYNEP]
+    assert outcomes == [
+        Playback(
+            ("Ayşe", "Mehmet", "Zeynep"),
+            missing=(),
+            late=(),
+            failed=False,
+            tag="first",
+            cut=("Mehmet", "Zeynep"),
+            heard=(YES, CUT, CUT),
+        ),
+        Playback(
+            ("Zeynep",),
+            missing=(),
+            late=(),
+            failed=False,
+            tag="second",
+            heard=(YES,),
+        ),
+    ]
+    assert output.closed == 2
+
+
+def test_cut_during_the_chime_cuts_every_text(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    output.while_playing = lambda path: player.cut("first")
+
+    player.play(["Can", "Ayşe", "Mehmet"], "first")
+
+    assert output.played == [CHIME]
+    assert outcomes == [
+        Playback(
+            ("Can", "Ayşe", "Mehmet"),
+            missing=("Can",),
+            late=(),
+            failed=False,
+            tag="first",
+            cut=("Ayşe", "Mehmet"),
+            heard=(NO_SPEECH, CUT, CUT),
+        )
+    ]
+
+
+def test_cut_during_the_second_of_two_identical_texts_cuts_only_that_one(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    def cut_during_the_second(path: Path) -> None:
+        if output.played.count(AYSE) == 2:
+            player.cut("first")
+
+    output.while_playing = cut_during_the_second
+
+    player.play(["Ayşe", "Ayşe"], "first")
+
+    assert output.played == [CHIME, AYSE, AYSE]
+    assert outcomes == [
+        Playback(
+            ("Ayşe", "Ayşe"),
+            missing=(),
+            late=(),
+            failed=False,
+            tag="first",
+            cut=("Ayşe",),
+            heard=(YES, CUT),
+        )
+    ]
+
+
+def test_cut_of_a_group_that_does_not_sound_cuts_nothing(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    def press(path: Path) -> None:
+        if path == AYSE:
+            player.cut("second")  # still waiting for its turn
+            player.cut(None)
+        elif path == MEHMET:
+            player.cut("first")  # a stale press: that group is over
+
+    output.while_playing = press
+
+    player.play(["Ayşe", "Zeynep"], "first")
+    player.play(["Mehmet", "Zeynep"], "second")
+
+    assert output.played == [CHIME, AYSE, ZEYNEP, CHIME, MEHMET, ZEYNEP]
+    assert [(playback.cut, playback.late) for playback in outcomes] == [
+        ((), ()),
+        ((), ()),
+    ]
+
+
+def test_cut_after_the_last_file_ended_reports_nothing_as_cut(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    output.while_closing = lambda: player.cut("first")
+
+    player.play(["Ayşe", "Mehmet"], "first")
+    player.play(["Zeynep"], "second")
+
+    assert output.played == [CHIME, AYSE, MEHMET, CHIME, ZEYNEP]
+    assert outcomes == [
+        Playback(
+            ("Ayşe", "Mehmet"),
+            missing=(),
+            late=(),
+            failed=False,
+            tag="first",
+            heard=(YES, YES),
+        ),
+        Playback(
+            ("Zeynep",),
+            missing=(),
+            late=(),
+            failed=False,
+            tag="second",
+            heard=(YES,),
+        ),
+    ]
+
+
+def test_cut_while_nothing_sounds_spares_the_next_group(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    player.cut(None)
+
+    player.play(["Ayşe"])
+
+    assert output.played == [CHIME, AYSE]
+    assert outcomes[0].cut == ()
+
+
 def test_stop_drops_what_is_still_queued(
     player: Player, output: FakeOutput, outcomes: list[Playback]
 ) -> None:
@@ -474,7 +918,9 @@ def test_pygame_plays_files_to_the_end(
 
     # Two files of 0.2 seconds and a pause of 0.3 seconds between them.
     assert 0.6 < elapsed < 6
-    assert outcomes == [Playback(("speech.wav",), missing=(), late=(), failed=False)]
+    assert outcomes == [
+        Playback(("speech.wav",), missing=(), late=(), failed=False, heard=(YES,))
+    ]
 
 
 def test_pygame_output_plays_the_bundled_chime_and_reports_what_it_cannot_play(

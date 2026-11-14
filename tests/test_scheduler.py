@@ -1,19 +1,42 @@
+import dataclasses
 import datetime
 import threading
+from collections.abc import Iterable, Iterator, Sequence
 
-from announcer.models import AthleteEntry, CustomAnnouncement
-from announcer.scheduler import Scheduler, brought_forward, due_slot, missed_slots
-from announcer.timetable import Slot, Timetable, build_timetable
+import pytest
+
+from announcer.models import AthleteEntry, Change, CustomAnnouncement, Kind
+from announcer.scheduler import (
+    Scheduler,
+    brought_forward,
+    due_slot,
+    missed_slots,
+    untaken,
+)
+from announcer.timetable import Part, Slot, Timetable, build_timetable
 from support import FakeClock
 
 MONDAY = datetime.date(2026, 11, 9)
+SUNDAY = MONDAY - datetime.timedelta(days=1)
 TUESDAY = MONDAY + datetime.timedelta(days=1)
 SIX_PM = datetime.time(18, 0)
+SEVEN_PM = datetime.time(19, 0)
 
-MONDAY_SIX = Slot(0, SIX_PM, ("Ayşe Yılmaz, hoş geldiniz.",))
-MONDAY_SIX_OH_ONE = Slot(0, datetime.time(18, 1), ("Su içmeyi unutmayın.",))
-TUESDAY_SIX = Slot(1, SIX_PM, ("Zeynep Kaya, hoş geldiniz.",))
+DRINK = "Su içmeyi unutmayın."
+AYSE_STARTS = Part(Kind.START, "Ayşe Yılmaz, hoş geldiniz.", "Ayşe Yılmaz")
+ZEYNEP_STARTS = Part(Kind.START, "Zeynep Kaya, hoş geldiniz.", "Zeynep Kaya")
+ZEYNEP_ENDS = Part(Kind.END, "Zeynep Kaya, görüşmek üzere.", "Zeynep Kaya")
+REMINDER = Part(Kind.CUSTOM, DRINK)
+
+MONDAY_SIX = Slot(0, SIX_PM, (AYSE_STARTS,))
+MONDAY_SIX_OH_ONE = Slot(0, datetime.time(18, 1), (REMINDER,))
+TUESDAY_SIX = Slot(1, SIX_PM, (ZEYNEP_STARTS,))
 TIMETABLE = Timetable((MONDAY_SIX, MONDAY_SIX_OH_ONE, TUESDAY_SIX))
+
+# What ``planned`` and ``two_at_seven`` say.
+AYSE_GOES = "Ayşe Yılmaz, görüşmek üzere."
+ZEYNEP_COMES = "Zeynep Kaya, hoş geldiniz."
+MEHMET_COMES = "Mehmet Demir, hoş geldiniz."
 
 
 def at(
@@ -23,8 +46,26 @@ def at(
     return datetime.datetime.combine(day, datetime.time(hour, minute, second))
 
 
+def every_second(
+    first: datetime.datetime, last: datetime.datetime
+) -> Iterator[datetime.datetime]:
+    moment = first
+    while moment <= last:
+        yield moment
+        moment += datetime.timedelta(seconds=1)
+
+
 def ignore(date: datetime.date, slot: Slot) -> None:
     """Take a reported slot and do nothing with it."""
+
+
+def skipped(part: Part) -> Part:
+    return dataclasses.replace(part, skipped=True)
+
+
+def said(slots: Iterable[Slot]) -> list[tuple[datetime.time, tuple[str, ...]]]:
+    """When each slot handed over is, and what it says."""
+    return [(slot.time, slot.texts) for slot in slots]
 
 
 def make_scheduler(
@@ -42,6 +83,23 @@ def make_scheduler(
     return scheduler, due, missed
 
 
+def planned(*changes: Change, delay: int = 0, ends: bool = True) -> Timetable:
+    """Monday evening: Ayşe's session ends at seven, as Zeynep's begins, and a
+    minute later the athletes are reminded to drink water.
+    """
+    return build_timetable(
+        [
+            AthleteEntry("Ayşe Yılmaz", 0, SIX_PM),
+            AthleteEntry("Zeynep Kaya", 0, SEVEN_PM),
+        ],
+        [CustomAnnouncement(DRINK, datetime.time(19, 1), frozenset({0}))],
+        "{ad_soyad}, hoş geldiniz.",
+        delay=delay,
+        end_template="{ad_soyad}, görüşmek üzere." if ends else None,
+        changes=changes,
+    )
+
+
 def test_slot_is_due_for_the_first_half_of_its_minute() -> None:
     assert due_slot(TIMETABLE, at(18, 0, 0), ()) == MONDAY_SIX
     assert due_slot(TIMETABLE, at(18, 0, 30), ()) == MONDAY_SIX
@@ -57,9 +115,36 @@ def test_nothing_is_due_at_another_time_or_on_another_day() -> None:
 
 
 def test_slot_that_already_fired_is_not_due_again() -> None:
-    assert due_slot(TIMETABLE, at(18, 0, 20), {at(18, 0)}) is None
-    assert due_slot(TIMETABLE, at(18, 1), {at(18, 0)}) == MONDAY_SIX_OH_ONE
-    assert due_slot(TIMETABLE, at(18, 0, days_later=7), {at(18, 0)}) == MONDAY_SIX
+    fired = {(at(18, 0), Kind.START, "Ayşe Yılmaz")}
+    ended = {(at(18, 0), Kind.END, "Ayşe Yılmaz")}
+    someone_else = {(at(18, 0), Kind.START, "Zeynep Kaya")}
+
+    assert due_slot(TIMETABLE, at(18, 0, 20), fired) is None
+    assert due_slot(TIMETABLE, at(18, 1), fired) == MONDAY_SIX_OH_ONE
+    assert due_slot(TIMETABLE, at(18, 0, days_later=7), fired) == MONDAY_SIX
+    assert due_slot(TIMETABLE, at(18, 0, 20), ended) == MONDAY_SIX
+    assert due_slot(TIMETABLE, at(18, 0, 20), someone_else) == MONDAY_SIX
+
+
+def test_slot_whose_parts_partly_fired_is_due_with_only_the_rest() -> None:
+    both = Slot(0, SIX_PM, (ZEYNEP_ENDS, AYSE_STARTS))
+    end_fired = {(at(18, 0), Kind.END, "Zeynep Kaya")}
+    all_fired = {*end_fired, (at(18, 0), Kind.START, "Ayşe Yılmaz")}
+
+    assert untaken(MONDAY, both, ()) == both
+    assert untaken(MONDAY, both, end_fired) == Slot(0, SIX_PM, (AYSE_STARTS,))
+    assert untaken(MONDAY, both, all_fired) is None
+    assert due_slot(Timetable((both,)), at(18, 0, 10), end_fired) == Slot(
+        0, SIX_PM, (AYSE_STARTS,)
+    )
+
+
+def test_skipped_part_is_not_due_while_the_rest_of_its_slot_is() -> None:
+    partly = Timetable((Slot(0, SIX_PM, (skipped(ZEYNEP_ENDS), AYSE_STARTS)),))
+    wholly = Timetable((Slot(0, SIX_PM, (skipped(ZEYNEP_ENDS), skipped(AYSE_STARTS))),))
+
+    assert due_slot(partly, at(18, 0), ()) == Slot(0, SIX_PM, (AYSE_STARTS,))
+    assert due_slot(wholly, at(18, 0), ()) is None
 
 
 def test_slots_that_came_and_went_between_two_looks_are_missed() -> None:
@@ -209,8 +294,8 @@ def test_replacing_the_timetable_does_not_repeat_the_current_slot() -> None:
     clock.now = at(18, 0, 5)
     scheduler.check()
 
-    changed = Slot(0, SIX_PM, ("Ayşe Yılmaz, dersiniz başlıyor.",))
-    scheduler.set_timetable(Timetable((changed,)))
+    reworded = dataclasses.replace(AYSE_STARTS, text="Ayşe Yılmaz, dersiniz başlıyor.")
+    scheduler.set_timetable(Timetable((Slot(0, SIX_PM, (reworded,)),)))
     clock.now = at(18, 0, 20)
     scheduler.check()
 
@@ -223,7 +308,7 @@ def test_slot_added_early_in_the_running_minute_is_reported() -> None:
     clock.now = at(12, 30, 5)
     scheduler.check()
 
-    added = Slot(0, datetime.time(12, 30), ("Yeni duyuru",))
+    added = Slot(0, datetime.time(12, 30), (Part(Kind.CUSTOM, "Yeni duyuru"),))
     scheduler.set_timetable(Timetable((added, *TIMETABLE.slots)))
     clock.now = at(12, 30, 6)
     scheduler.check()
@@ -237,12 +322,320 @@ def test_slot_added_late_in_the_running_minute_is_not_reported() -> None:
     clock.now = at(12, 30, 40)
     scheduler.check()
 
-    added = Slot(0, datetime.time(12, 30), ("Yeni duyuru",))
+    added = Slot(0, datetime.time(12, 30), (Part(Kind.CUSTOM, "Yeni duyuru"),))
     scheduler.set_timetable(Timetable((added, *TIMETABLE.slots)))
     clock.now = at(12, 30, 41)
     scheduler.check()
 
     assert (due, missed) == ([], [])
+
+
+def test_part_added_to_a_minute_that_already_fired_is_handed_over_alone() -> None:
+    clock = FakeClock(at(18, 59, 59))
+    scheduler, due, missed = make_scheduler(clock, planned(ends=False))
+    clock.now = at(19, 0)
+    scheduler.check()
+
+    scheduler.set_timetable(planned())  # the ends of sessions are announced now
+    for moment in every_second(at(19, 0, 10), at(19, 0, 59)):
+        clock.now = moment
+        scheduler.check()
+
+    assert said(due) == [(SEVEN_PM, (ZEYNEP_COMES,)), (SEVEN_PM, (AYSE_GOES,))]
+    assert missed == []
+
+
+def test_skipped_part_is_not_announced_while_the_rest_of_its_slot_is() -> None:
+    timetable = planned(
+        Change(MONDAY, at(19, 0), Kind.END, "Ayşe Yılmaz", skipped=True),
+        Change(MONDAY, at(19, 1), Kind.CUSTOM, skipped=True),
+    )
+    clock = FakeClock(at(18, 59, 59))
+    scheduler, due, missed = make_scheduler(clock, timetable)
+
+    for moment in every_second(at(19, 0), at(19, 2)):
+        clock.now = moment
+        scheduler.check()
+
+    assert (said(due), missed) == ([(SEVEN_PM, (ZEYNEP_COMES,))], [])
+
+
+def test_skipped_part_is_not_reported_missed_while_the_rest_of_its_slot_is() -> None:
+    timetable = planned(
+        Change(MONDAY, at(19, 0), Kind.END, "Ayşe Yılmaz", skipped=True),
+        Change(MONDAY, at(19, 1), Kind.CUSTOM, skipped=True),
+    )
+    clock = FakeClock(at(18, 59, 30))
+    scheduler, due, missed = make_scheduler(clock, timetable)
+
+    clock.now = at(19, 30)
+    scheduler.check()
+
+    assert due == []
+    assert said(slot for _, slot in missed) == [(SEVEN_PM, (ZEYNEP_COMES,))]
+    assert [date for date, _ in missed] == [MONDAY]
+
+
+def test_part_unskipped_early_in_its_minute_is_still_announced() -> None:
+    clock = FakeClock(at(18, 59, 59))
+    scheduler, due, missed = make_scheduler(
+        clock,
+        planned(Change(MONDAY, at(19, 0), Kind.START, "Zeynep Kaya", skipped=True)),
+    )
+    clock.now = at(19, 0)
+    scheduler.check()
+    assert said(due) == [(SEVEN_PM, (AYSE_GOES,))]
+
+    scheduler.set_timetable(planned())
+    for moment in (at(19, 0, 29), at(19, 0, 30)):
+        clock.now = moment
+        scheduler.check()
+
+    assert said(due) == [(SEVEN_PM, (AYSE_GOES,)), (SEVEN_PM, (ZEYNEP_COMES,))]
+    assert missed == []
+
+
+@pytest.mark.parametrize("delay", [0, 1])
+def test_part_moved_by_a_day_change_is_announced_at_its_new_minute_only(
+    delay: int,
+) -> None:
+    moved = Change(
+        MONDAY, at(19, 0), Kind.START, "Zeynep Kaya", time=datetime.time(19, 10)
+    )
+    clock = FakeClock(at(18, 59, 59))
+    scheduler, due, missed = make_scheduler(clock, planned(moved, delay=delay))
+
+    for minute in range(15):
+        for second in (0, 1, 30):
+            clock.now = at(19, minute, second)
+            scheduler.check()
+
+    later = datetime.timedelta(minutes=delay)
+    assert said(due) == [
+        ((at(19, 0) + later).time(), (AYSE_GOES,)),
+        ((at(19, 1) + later).time(), (DRINK,)),
+        (datetime.time(19, 10), (ZEYNEP_COMES,)),  # the delay is not added to it
+    ]
+    assert missed == []
+
+
+def test_first_look_leaves_out_exactly_the_parts_of_its_minute() -> None:
+    # Restarted at 19:01:05 with a delay of a minute: the sessions of 19:00 may
+    # have been announced already, what is set for 19:01 is still to come.
+    clock = FakeClock(at(19, 1, 5))
+    scheduler, due, missed = make_scheduler(clock, planned(delay=1))
+
+    for moment in every_second(at(19, 1, 6), at(19, 2, 59)):
+        clock.now = moment
+        scheduler.check()
+
+    assert (said(due), missed) == ([(datetime.time(19, 2), (DRINK,))], [])
+
+
+def test_first_look_does_not_leave_out_a_part_moved_away_from_its_minute() -> None:
+    moved = Change(
+        MONDAY, at(19, 0), Kind.START, "Zeynep Kaya", time=datetime.time(19, 10)
+    )
+    clock = FakeClock(at(19, 1, 5))
+    scheduler, due, missed = make_scheduler(clock, planned(moved, delay=1))
+
+    for minute in range(2, 15):
+        clock.now = at(19, minute)
+        scheduler.check()
+
+    assert said(due) == [
+        (datetime.time(19, 2), (DRINK,)),
+        (datetime.time(19, 10), (ZEYNEP_COMES,)),
+    ]
+    assert missed == []
+
+
+@pytest.mark.parametrize(
+    ("delay", "reminded_at"),
+    [(0, datetime.time(19, 1)), (2, datetime.time(19, 3)), (10, datetime.time(19, 11))],
+)
+def test_delay_changed_after_the_first_look_does_not_repeat_what_it_left_out(
+    delay: int, reminded_at: datetime.time
+) -> None:
+    clock = FakeClock(at(19, 1, 5))
+    scheduler, due, missed = make_scheduler(clock, planned(delay=1))
+
+    scheduler.set_timetable(planned(delay=delay))
+    clock.now = at(19, 1, 10)
+    scheduler.check()
+    for minute in range(2, 15):
+        for second in (0, 1, 30):
+            clock.now = at(19, minute, second)
+            scheduler.check()
+
+    assert (said(due), missed) == ([(reminded_at, (DRINK,))], [])
+
+
+def test_part_moved_a_day_past_its_moment_is_announced_once() -> None:
+    sunday_close = datetime.datetime.combine(SUNDAY, datetime.time(23, 55))
+    # With the delay, Sunday's 23:55 is read at 00:05 on Monday; the operator
+    # moves it to the end of Monday.
+    timetable = build_timetable(
+        [],
+        [CustomAnnouncement("Salon kapandı.", sunday_close.time(), frozenset({6}))],
+        "{ad_soyad}",
+        delay=10,
+        changes=[Change(MONDAY, sunday_close, Kind.CUSTOM, time=datetime.time(23, 59))],
+    )
+    clock = FakeClock(at(23, 58, 59))
+    scheduler, due, _ = make_scheduler(clock, timetable)
+
+    for moment in every_second(at(23, 59), at(23, 59, 30)):
+        clock.now = moment
+        scheduler.check()
+
+    assert said(due) == [(datetime.time(23, 59), ("Salon kapandı.",))]
+
+
+def two_at_seven(
+    *changes: Change, names: Sequence[str] = ("Zeynep Kaya", "Mehmet Demir")
+) -> Timetable:
+    """Monday evening: Zeynep's and Mehmet's sessions start at seven, in that
+    order in the schedule.
+    """
+    return build_timetable(
+        [AthleteEntry(name, 0, SEVEN_PM) for name in names],
+        [],
+        "{ad_soyad}, hoş geldiniz.",
+        changes=changes,
+    )
+
+
+def test_athletes_of_a_minute_are_handed_over_together_in_schedule_order() -> None:
+    clock = FakeClock(at(18, 59, 59))
+    scheduler, due, missed = make_scheduler(clock, two_at_seven())
+
+    for moment in every_second(at(19, 0), at(19, 1)):
+        clock.now = moment
+        scheduler.check()
+
+    assert (said(due), missed) == ([(SEVEN_PM, (ZEYNEP_COMES, MEHMET_COMES))], [])
+    assert [part.name for part in due[0].parts] == ["Zeynep Kaya", "Mehmet Demir"]
+
+
+def test_athlete_whose_part_fired_leaves_the_other_of_the_minute_due() -> None:
+    timetable = two_at_seven()
+    slot = timetable.slot_at(MONDAY, SEVEN_PM)
+    assert slot is not None
+    _, mehmet = slot.parts
+    zeynep_fired = {(at(19, 0), Kind.START, "Zeynep Kaya")}
+    mehmet_alone = Slot(0, SEVEN_PM, (mehmet,))
+
+    assert untaken(MONDAY, slot, zeynep_fired) == mehmet_alone
+    assert due_slot(timetable, at(19, 0, 5), zeynep_fired) == mehmet_alone
+
+
+def test_athlete_added_to_a_minute_that_already_fired_is_handed_over_alone() -> None:
+    clock = FakeClock(at(18, 59, 59))
+    scheduler, due, missed = make_scheduler(clock, two_at_seven(names=["Zeynep Kaya"]))
+    clock.now = at(19, 0)
+    scheduler.check()
+
+    scheduler.set_timetable(two_at_seven())  # Mehmet was added to the schedule
+    for moment in every_second(at(19, 0, 10), at(19, 0, 59)):
+        clock.now = moment
+        scheduler.check()
+
+    assert said(due) == [(SEVEN_PM, (ZEYNEP_COMES,)), (SEVEN_PM, (MEHMET_COMES,))]
+    assert missed == []
+
+
+def test_skipping_one_athlete_leaves_the_other_of_the_minute_announced() -> None:
+    timetable = two_at_seven(
+        Change(MONDAY, at(19, 0), Kind.START, "Zeynep Kaya", skipped=True)
+    )
+    clock = FakeClock(at(18, 59, 59))
+    scheduler, due, missed = make_scheduler(clock, timetable)
+
+    for moment in every_second(at(19, 0), at(19, 1)):
+        clock.now = moment
+        scheduler.check()
+
+    assert (said(due), missed) == ([(SEVEN_PM, (MEHMET_COMES,))], [])
+
+
+def test_skipped_athlete_is_not_reported_missed_while_the_other_one_is() -> None:
+    timetable = two_at_seven(
+        Change(MONDAY, at(19, 0), Kind.START, "Zeynep Kaya", skipped=True)
+    )
+    clock = FakeClock(at(18, 59, 30))
+    scheduler, due, missed = make_scheduler(clock, timetable)
+
+    clock.now = at(19, 30)
+    scheduler.check()
+
+    assert due == []
+    assert said(slot for _, slot in missed) == [(SEVEN_PM, (MEHMET_COMES,))]
+
+
+def test_athlete_unskipped_early_in_the_minute_is_announced_alone() -> None:
+    clock = FakeClock(at(18, 59, 59))
+    scheduler, due, missed = make_scheduler(
+        clock,
+        two_at_seven(
+            Change(MONDAY, at(19, 0), Kind.START, "Zeynep Kaya", skipped=True)
+        ),
+    )
+    clock.now = at(19, 0)
+    scheduler.check()
+
+    scheduler.set_timetable(two_at_seven())
+    for moment in every_second(at(19, 0, 10), at(19, 0, 59)):
+        clock.now = moment
+        scheduler.check()
+
+    assert said(due) == [(SEVEN_PM, (MEHMET_COMES,)), (SEVEN_PM, (ZEYNEP_COMES,))]
+    assert missed == []
+
+
+def test_editing_one_athlete_leaves_the_other_of_the_minute_in_place() -> None:
+    edited = Change(
+        MONDAY,
+        at(19, 0),
+        Kind.START,
+        "Zeynep Kaya",
+        time=datetime.time(19, 10),
+        text="{ad_soyad}, dersiniz on dakika gecikmeli başlıyor.",
+    )
+    clock = FakeClock(at(18, 59, 59))
+    scheduler, due, missed = make_scheduler(clock, two_at_seven(edited))
+
+    for minute in range(15):
+        for second in (0, 1, 30):
+            clock.now = at(19, minute, second)
+            scheduler.check()
+
+    assert said(due) == [
+        (SEVEN_PM, (MEHMET_COMES,)),
+        (
+            datetime.time(19, 10),
+            ("Zeynep Kaya, dersiniz on dakika gecikmeli başlıyor.",),
+        ),
+    ]
+    assert missed == []
+
+
+def test_new_sentence_for_an_athlete_already_announced_does_not_repeat_it() -> None:
+    clock = FakeClock(at(18, 59, 59))
+    scheduler, due, missed = make_scheduler(clock, two_at_seven())
+    clock.now = at(19, 0, 1)
+    scheduler.check()
+
+    scheduler.set_timetable(
+        two_at_seven(
+            Change(MONDAY, at(19, 0), Kind.START, "Zeynep Kaya", text="Yeni cümle.")
+        )
+    )
+    for moment in every_second(at(19, 0, 2), at(19, 1)):
+        clock.now = moment
+        scheduler.check()
+
+    assert (said(due), missed) == ([(SEVEN_PM, (ZEYNEP_COMES, MEHMET_COMES))], [])
 
 
 def test_background_thread_reports_a_due_slot_with_its_date_and_stops() -> None:
@@ -276,8 +669,8 @@ def test_scheduler_begins_when_it_is_started() -> None:
 
     clock = FakeClock(at(18, 0, 2))
     scheduler = Scheduler(TIMETABLE, on_due, ignore, clock, interval=0.01)
-    scheduler.start()
     try:
+        assert scheduler.start() == at(18, 0, 2)
         assert not done.wait(timeout=0.1)
         clock.now = at(18, 1)
         assert done.wait(timeout=5)
@@ -412,3 +805,70 @@ def test_delay_past_midnight_keeps_a_slot_from_being_announced_twice() -> None:
         scheduler.check()
 
     assert ([slot.time for slot in due], missed) == ([datetime.time(23, 55)], [])
+
+
+def moved_to(time: datetime.time, delay: int) -> Timetable:
+    """Monday evening: Ayşe's session starts at six and Zeynep's at 18:26; the
+    operator moved the start of Ayşe's to ``time`` for the day.
+    """
+    return build_timetable(
+        [
+            AthleteEntry("Ayşe Yılmaz", 0, SIX_PM),
+            AthleteEntry("Zeynep Kaya", 0, datetime.time(18, 26)),
+        ],
+        [],
+        "{ad_soyad}, hoş geldiniz.",
+        delay=delay,
+        changes=[Change(MONDAY, at(18, 0), Kind.START, "Ayşe Yılmaz", time=time)],
+    )
+
+
+def test_brought_forward_holds_only_the_parts_that_the_delay_moves() -> None:
+    three = datetime.timedelta(minutes=3)
+    zeynep = dataclasses.replace(ZEYNEP_STARTS, delay=2)
+    shared = moved_to(datetime.time(18, 28), delay=2)  # where Zeynep's start is
+    apart = moved_to(datetime.time(18, 27), delay=2)
+
+    delays = [part.delay for slot in shared.slots_on(MONDAY) for part in slot.parts]
+    assert delays == [28, 2]  # Ayşe's, moved there, and Zeynep's
+    assert brought_forward(shared, at(18, 29, 10), three) == [
+        (MONDAY, Slot(0, datetime.time(18, 28), (zeynep,)))
+    ]
+    assert brought_forward(apart, at(18, 29, 10), three) == [
+        (MONDAY, Slot(0, datetime.time(18, 28), (zeynep,)))
+    ]
+    assert brought_forward(apart, at(18, 27, 30), three) == []
+
+
+def test_shorter_delay_leaves_a_part_moved_to_a_time_of_its_own_there() -> None:
+    # Restarted at 18:29:10 with a delay of five minutes, after Ayşe's start,
+    # which the operator moved to 18:28; Zeynep's is still to come at 18:31.
+    half_past = datetime.time(18, 28)
+    clock = FakeClock(at(18, 29, 10))
+    scheduler, due, missed = make_scheduler(clock, moved_to(half_past, delay=5))
+    for moment in every_second(at(18, 29, 11), at(18, 30, 4)):
+        clock.now = moment
+        scheduler.check()
+    assert due == []
+
+    scheduler.set_timetable(moved_to(half_past, delay=0))
+    for moment in every_second(at(18, 30, 5), at(18, 35)):
+        clock.now = moment
+        scheduler.check()
+
+    assert said(due) == [(datetime.time(18, 26), (ZEYNEP_COMES,))]
+    assert missed == []
+
+
+def test_part_moved_to_where_the_new_delay_puts_it_is_not_brought_forward() -> None:
+    # With a delay of five minutes, the operator moved Ayşe's start back to six;
+    # the app was closed then and restarted at 18:01:10.
+    clock = FakeClock(at(18, 1, 10))
+    scheduler, due, missed = make_scheduler(clock, moved_to(SIX_PM, delay=5))
+
+    scheduler.set_timetable(moved_to(SIX_PM, delay=0))
+    for moment in every_second(at(18, 2, 5), at(18, 5)):
+        clock.now = moment
+        scheduler.check()
+
+    assert (said(due), missed) == ([], [])

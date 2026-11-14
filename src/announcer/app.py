@@ -5,15 +5,18 @@ on a queue, and ``poll`` takes it in on the main thread.
 
 import dataclasses
 import datetime
+import itertools
 import logging
 import queue
 import shutil
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 from announcer import VERSION
+from announcer.changes import ChangesFileError, load_changes, save_changes
 from announcer.loader import (
     LoadedSchedule,
     ScheduleFileError,
@@ -23,13 +26,16 @@ from announcer.loader import (
 from announcer.models import (
     ALL_WEEKDAYS,
     NORMAL_SPEED,
+    SESSION,
     SPEEDS,
     WEEKDAY_NAMES,
     AthleteEntry,
+    Change,
     CustomAnnouncement,
+    Kind,
 )
 from announcer.player import AudioOutput, Playback, Player
-from announcer.scheduler import Scheduler
+from announcer.scheduler import LATE, Scheduler, untaken
 from announcer.settings import (
     LoadedSettings,
     Settings,
@@ -40,14 +46,28 @@ from announcer.settings import (
 from announcer.template import PLACEHOLDER, is_valid_template, render
 from announcer.timetable import (
     Conflict,
+    Part,
+    PartId,
     Slot,
     Timetable,
     build_timetable,
     find_conflicts,
+    part_id,
+    said,
     set_for,
 )
-from announcer.today import Row, Status, outcome_status, summary, todays_rows
-from announcer.tts import AudioCache, TtsError, TtsProvider
+from announcer.today import (
+    CHANGE_MARGIN,
+    Instant,
+    OutcomeKey,
+    Row,
+    Status,
+    outcome_status,
+    part_status,
+    todays_rows,
+    who,
+)
+from announcer.tts import AudioCache, TtsProvider
 
 TEST_NAME = "Ayşe Yılmaz"  # a made-up athlete
 
@@ -67,38 +87,118 @@ class SlotTakenError(Exception):
         self.conflicts = conflicts
 
 
+class ChangeProblem(Enum):
+    GONE = "gone"  # the row's time has come, or is about to
+    PAST = "past"  # the time chosen for it has already come
+    NO_TEXT = "no text"
+    NO_SPEECH = "no speech"  # for the new text: see ``make_speech``
+
+
+class ChangeError(Exception):
+    def __init__(self, problem: ChangeProblem) -> None:
+        super().__init__(f"The change cannot be made: {problem.value}")
+        self.problem = problem
+
+
+@dataclass(frozen=True)
+class Editing:
+    """What a row of today's table says, with and without today's change."""
+
+    kind: Kind
+    planned: datetime.time  # when it is announced without the change
+    time: datetime.time  # when it is announced with it
+    # What it says without the change: the template for athletes, or the
+    # custom announcement's text; and what it says with it.
+    planned_text: str
+    text: str
+    name: str  # the athlete's; empty for a custom announcement
+    # For the start of a session: when its end is announced today, if that is
+    # still to come.
+    end: datetime.time | None = None
+
+
+@dataclass
+class SpeechRequest:
+    """Speech asked for ahead of time with ``make_speech``; ``poll`` fills in
+    how that went."""
+
+    texts: tuple[str, ...]
+    done: bool = False
+    spoken: bool = False
+
+
 @dataclass(frozen=True)
 class LastAnnouncement:
     due: datetime.datetime
-    summary: str  # the athletes' names, or the custom announcement's text
+    parts: tuple[tuple[Kind, str], ...]  # each kind with whom it was for
     status: Status
 
 
 @dataclass(frozen=True)
-class _Due:
+class _Group:
+    """What is queued in the player in one go, after one chime."""
+
+    number: int  # one of its own, as the same part can be queued again
     due: datetime.datetime
-    slot: Slot
+    parts: tuple[tuple[OutcomeKey, str], ...]  # with what is said
+
+
+@dataclass(frozen=True)
+class _Test:
+    """A test announcement, queued in the player by itself."""
+
+    number: int
+
+
+@dataclass(frozen=True)
+class _Due:
+    group: _Group
+
+
+@dataclass(frozen=True)
+class _Started:
+    """The player began to play what it was given with this tag."""
+
+    tag: object
+
+
+@dataclass(frozen=True)
+class _Speaking:
+    """The player began to say the text at ``index`` of what it was given with
+    this tag."""
+
+    tag: object
+    index: int
 
 
 @dataclass(frozen=True)
 class _Missed:
-    due: datetime.datetime
+    date: datetime.date
     slot: Slot
 
 
 @dataclass(frozen=True)
 class _Generated:
-    template: str
+    templates: tuple[str, str]  # for the start and the end of a session
     speed: float
     unspoken: tuple[str, ...]
 
 
-class _TestUnspoken:
-    """The speech for the test announcement could not be generated."""
+# What speech is made for at once, one after the other, and read when it is
+# there: an instant announcement or a test, with its text and speed. Or what
+# is only made ahead of time, at each of its speeds.
+type _Wanted = (
+    tuple[Instant | _Test, str, float] | tuple[SpeechRequest, tuple[float, ...]]
+)
 
 
-# The moment that a slot was set for and its summary: what an outcome is of.
-type _Key = tuple[datetime.datetime, str]
+@dataclass(frozen=True)
+class _Spoken:
+    """The speech asked for is there, or could not be made."""
+
+    wanted: _Wanted
+    spoken: bool
+
 
 # When a file was changed and its size, or None if there is no such file.
 type _FileState = tuple[int, int] | None
@@ -111,7 +211,9 @@ class _FileSeen:
     state: _FileState
 
 
-type _Event = _Due | _Missed | Playback | _Generated | _TestUnspoken | _FileSeen
+type _Event = (
+    _Due | _Missed | _Started | _Speaking | Playback | _Generated | _Spoken | _FileSeen
+)
 
 
 class App:
@@ -137,11 +239,18 @@ class App:
         loaded = self._load_settings()
         self.settings: Settings = loaded.settings
         self.dropped_announcements: int = loaded.dropped
-        # The template that athletes are announced with and the speed that
-        # everything is spoken at. They follow the ones in the settings as
-        # soon as there is speech for every announcement with them.
+        # The templates that athletes are announced with, at the start and at
+        # the end of their session, and the speed that everything is spoken
+        # at. They follow the ones in the settings as soon as there is speech
+        # for every announcement with them.
         self.spoken_template: str = self.settings.template
+        self.spoken_end_template: str = self.settings.end_template
         self.spoken_speed: float = self.settings.speed
+        # What the operator changed for today, kept in a file of its own.
+        self.changes_file = settings_file.with_name("changes.json")
+        self.changes_unreadable = False
+        self.changes_backed_up = False
+        self.changes: tuple[Change, ...] = self._load_changes(clock().date())
 
         self._entries: tuple[AthleteEntry, ...] = ()
         self.skipped_rows: tuple[SkippedRow, ...] = ()
@@ -163,36 +272,50 @@ class App:
 
         self.last_announcement: LastAnnouncement | None = None
         self.test_status: Status | None = None
-        self._outcomes: dict[_Key, Status] = {}
-        self._playing: dict[datetime.datetime, _Key] = {}  # by when they were due
+        self.instants: tuple[Instant, ...] = ()  # today's, oldest first
+        self._outcomes: dict[OutcomeKey, Status] = {}
+        self._playing: dict[int, _Group] = {}  # queued or sounding, by number
+        self._sounding: _Group | _Test | None = None  # what ``cut`` would cut
+        # Instant announcements and tests whose speech is being made.
+        self._preparing: set[Instant | _Test] = set()
+        self._wanted: queue.SimpleQueue[_Wanted] = queue.SimpleQueue()
+        self._speaking = False  # the thread that makes that speech runs
+        self._numbers = itertools.count(1)
+        self._numbers_lock = threading.Lock()  # the scheduler's thread takes some
 
         self._cache = AudioCache(cache_directory, provider, self.settings.voice)
         self._scheduler = Scheduler(
             self.timetable, self._on_due, self._on_missed, clock, interval
         )
-        self._player = Player(self._cache.find, output, self._on_played)
+        self._player = Player(
+            self._cache.find,
+            output,
+            self._on_played,
+            on_started=lambda tag: self._events.put(_Started(tag)),
+            on_speaking=lambda tag, index: self._events.put(_Speaking(tag, index)),
+        )
 
     def start(self) -> None:
         _log.info(
             "Version %s started; the settings are in %s", VERSION, self.settings_file
         )
-        now = self._clock()
-        self._scheduler.start()
-        self._player.start()
+        # The timetable comes first, so the scheduler's first look knows what
+        # is in the minute that it starts in.
         self.refresh()
         self._keep_a_spoken_speed()
+        now = self._scheduler.start()
+        self._player.start()
         # The scheduler leaves out the slot of the minute it starts in, which
         # a run that was closed a moment ago may have announced.
-        slot = self.timetable.slot_at(
-            now.weekday(), datetime.time(now.hour, now.minute)
-        )
-        if slot is not None:
-            due = datetime.datetime.combine(now.date(), slot.time)
-            self._outcomes[_key(due, slot)] = Status.PASSED
+        slot = self.timetable.slot_at(now.date(), datetime.time(now.hour, now.minute))
+        left = None if slot is None else untaken(now.date(), slot, ())
+        if left is not None:
+            for part in left.parts:
+                self._outcomes[_key(now.date(), left, part)] = Status.PASSED
             _log.warning(
                 "%s not announced, its minute had begun when the app started: %s",
-                f"{due:%H:%M}",
-                _quoted(slot.texts),
+                f"{left.time:%H:%M}",
+                _quoted(left.texts),
             )
         threading.Thread(target=self._watch, name="watch", daemon=True).start()
 
@@ -228,12 +351,23 @@ class App:
         self._use(path, loaded)
         self._rebuild()
 
-    def set_template(self, template: str) -> None:
-        """Raises ``ValueError`` if the template has no place for the name and
-        ``OSError`` if it cannot be saved; nothing changes then.
+    def set_templates(self, template: str, end_template: str) -> None:
+        """Set the templates for the start and the end of a session. Raises
+        ``ValueError`` if one has no place for the name and ``OSError`` if they
+        cannot be saved; nothing changes then.
         """
-        self._save(dataclasses.replace(self.settings, template=template))
-        _log.info('Template changed to "%s"', template)
+        self._save(
+            dataclasses.replace(
+                self.settings, template=template, end_template=end_template
+            )
+        )
+        _log.info('Templates changed to "%s" and "%s"', template, end_template)
+        self._rebuild()
+
+    def set_end_announcements(self, on: bool) -> None:
+        """Raises ``OSError`` if it cannot be saved; nothing changes then."""
+        self._save(dataclasses.replace(self.settings, end_announcements=on))
+        _log.info("The end of a session is %sannounced", "" if on else "not ")
         self._rebuild()
 
     def set_speed(self, speed: float) -> None:
@@ -255,9 +389,9 @@ class App:
     def save_announcement(
         self, announcement: CustomAnnouncement, replacing: int | None = None
     ) -> None:
-        """Raises ``SlotTakenError`` if the announcement would share a slot with
-        athletes or with another custom announcement, and ``OSError`` if it
-        cannot be saved; nothing changes then.
+        """Raises ``SlotTakenError`` if the announcement would share its minute
+        with the start of a session or with another custom announcement, and
+        ``OSError`` if it cannot be saved; nothing changes then.
         """
         announcements = list(self.settings.custom_announcements)
         others = [
@@ -270,11 +404,17 @@ class App:
                 _described(announcement),
             )
             raise SlotTakenError(conflicts)
+        replaced = None if replacing is None else announcements[replacing]
         if replacing is None:
             announcements.append(announcement)
         else:
             announcements[replacing] = announcement
         self._save_announcements(announcements)
+        if replaced is not None and (replaced.time, replaced.text) != (
+            announcement.time,
+            announcement.text,
+        ):
+            self._forget_changes(replaced)
         _log.info(
             "Custom announcement %s: %s",
             "added" if replacing is None else "changed",
@@ -287,6 +427,7 @@ class App:
         announcements = list(self.settings.custom_announcements)
         deleted = announcements.pop(index)
         self._save_announcements(announcements)
+        self._forget_changes(deleted)
         _log.info("Custom announcement deleted: %s", _described(deleted))
         self._rebuild()
 
@@ -302,38 +443,208 @@ class App:
         one before.
         """
         _log.info('Test announcement requested: "%s"', text)
-        self.test_status = Status.PLAYING
-        threading.Thread(
-            target=self._test,
-            args=(text, self.settings.speed),
-            name="test",
-            daemon=True,
-        ).start()
+        test = _Test(self._number())
+        self.test_status = Status.PREPARING
+        self._ask_for((test, text, self.settings.speed))
+
+    def make_speech(self, texts: Iterable[str]) -> SpeechRequest:
+        """Make the speech for ``texts`` ahead of time, at the speed that is in
+        use and at the one in the settings. ``poll`` fills in the request."""
+        speeds = tuple(dict.fromkeys((self.spoken_speed, self.settings.speed)))
+        request = SpeechRequest(tuple(dict.fromkeys(texts)))
+        self._ask_for((request, speeds))
+        return request
 
     def rows(self) -> tuple[Row, ...]:
-        return todays_rows(self.timetable, self._clock(), self._outcomes)
+        playing = {key for group in self._playing.values() for key, _ in group.parts}
+        return todays_rows(
+            self.timetable, self._clock(), self._outcomes, self.instants, playing
+        )
+
+    @property
+    def sounding(self) -> bool:
+        """Whether ``cut`` has something to cut off: what is being read, or speech
+        that is being made to be read at once."""
+        return self._sounding is not None or bool(self._preparing)
 
     def replay(self, row: Row) -> bool:
         """Returns whether the row was announced again: not if it is not among
         today's any more, or is not ``replayable``. The row then tells how
         that went.
         """
-        now = self._clock()
-        slot = self.timetable.slot_at(now.weekday(), row.time)
-        due = datetime.datetime.combine(now.date(), row.time)
-        if (
-            slot is None
-            or not row.replayable
-            or row not in todays_rows(self.timetable, now, self._outcomes)
-            # What was at that time before the schedule changed is sounding.
-            or due in self._playing
+        if not row.replayable or row not in self.rows():
+            return False
+        if isinstance(row.key, Instant):
+            _log.info('Instant announcement asked for again: "%s"', row.key.text)
+            self._prepare(row.key)
+            return True
+        found = None if row.key is None else self._part(row.key)
+        if found is None:
+            return False
+        slot, part = found
+        today = self._clock().date()
+        key = _key(today, slot, part)
+        # What was there before the schedule changed may still be sounding.
+        if any(
+            queued == key
+            for group in self._playing.values()
+            for queued, _ in group.parts
         ):
             return False
-        _log.info("%s asked for again: %s", f"{due:%H:%M}", _quoted(slot.texts))
-        self._outcomes[_key(due, slot)] = Status.PLAYING
-        self._playing[due] = _key(due, slot)
-        self._player.enqueue(slot.texts, due, slot.speed)
+        due = datetime.datetime.combine(today, slot.time)
+        _log.info("%s asked for again: %s", f"{due:%H:%M}", _quoted([part.text]))
+        self._queue(self._group(due, ((key, part.text),)), slot.speed)
         return True
+
+    def announce(self, text: str) -> None:
+        """Read ``text`` at once, after whatever is being read. Raises
+        ``ValueError`` if there is nothing to read."""
+        text = text.strip()
+        if not text:
+            raise ValueError("The announcement has no text")
+        asked_at = self._clock()
+        if self.instants and self.instants[-1].asked_at >= asked_at:
+            # Each one its own moment, so that its outcome is its own.
+            asked_at = self.instants[-1].asked_at + datetime.timedelta(microseconds=1)
+        instant = Instant(asked_at, text)
+        today = asked_at.date()
+        self.instants = (
+            *(item for item in self.instants if item.asked_at.date() == today),
+            instant,
+        )
+        _log.info('Instant announcement requested: "%s"', text)
+        self._prepare(instant)
+
+    def cut(self) -> None:
+        """Cut off what is being read, and drop the instant announcements and
+        tests whose speech is still being made. What is queued after them is
+        read as usual.
+        """
+        if not self.sounding:
+            return
+        _log.info("Cut off by the operator")
+        for item in self._preparing:
+            if isinstance(item, Instant):
+                self._outcomes[item.key] = Status.STOPPED
+            else:
+                self.test_status = Status.STOPPED
+        self._preparing.clear()
+        if self._sounding is not None:
+            self._player.cut(self._sounding)
+            # A second press must not cut off what comes next.
+            self._sounding = None
+
+    def editing(self, row: Row) -> Editing | None:
+        """Return what the row says with and without today's change, or None if
+        it cannot be changed any more."""
+        key = row.key
+        current = {other.key: other for other in self.rows()}.get(key)
+        planned = self._planned(key) if isinstance(key, tuple) else None
+        if current is None or not current.editable or planned is None:
+            return None
+        slot, part = planned
+        assert isinstance(key, tuple)
+        change = self._change_or_new(key)
+        if part.kind is Kind.CUSTOM:
+            planned_text = part.text
+        elif part.kind is Kind.END:
+            planned_text = render(self.settings.end_template, part.name)
+        else:
+            planned_text = render(self.settings.template, part.name)
+        end = self._end_of(row)
+        shown_end = (
+            end is not None
+            and self.settings.end_announcements
+            and self._clock() < end[1] - CHANGE_MARGIN
+        )
+        return Editing(
+            part.kind,
+            slot.time,
+            slot.time if change.time is None else change.time,
+            planned_text,
+            planned_text if change.text is None else said(change.text, part.name),
+            part.name,
+            end[1].time() if end is not None and shown_end else None,
+        )
+
+    def skip(self, row: Row, skipped: bool = True) -> None:
+        """Skip the row today, or no longer. The end of a session follows its
+        start, if its time has not come. Raises ``ChangeError`` if the row's
+        time has come and ``OSError`` if it cannot be saved; nothing changes
+        then.
+        """
+        key = self._changeable(row, skipping=True)
+        keys = [key]
+        end = self._end_of(row)
+        if end is not None:
+            end_key, due = end
+            now = self._clock()
+            if (
+                now < due - CHANGE_MARGIN
+                if skipped
+                else now - due <= LATE - CHANGE_MARGIN
+            ):
+                keys.append(end_key)
+        self._save_changes(
+            dataclasses.replace(self._change_or_new(each), skipped=skipped)
+            for each in keys
+        )
+        for moment, kind, name in keys:
+            _log.info(
+                "%s of %s%s %s for today",
+                kind.value.capitalize(),
+                f"{moment:%H:%M}",
+                f" for {name}" if name else "",
+                "skipped" if skipped else "no longer skipped",
+            )
+        self._build()
+
+    def edit(self, row: Row, time: datetime.time, text: str) -> None:
+        """Change when the row is announced today and what it says. What equals
+        the plan is not a change, and a new text needs its speech first: see
+        ``make_speech``. Raises ``ChangeError`` if the change cannot be made and
+        ``OSError`` if it cannot be saved; nothing changes then.
+        """
+        editing = self.editing(row)
+        key = row.key
+        if editing is None or not isinstance(key, tuple):
+            raise ChangeError(ChangeProblem.GONE)
+        text = text.strip()
+        if not text:
+            raise ChangeError(ChangeProblem.NO_TEXT)
+        now = self._clock()
+        # Wherever it goes, back to the plan too, has to be still to come.
+        if time != editing.time and datetime.datetime.combine(now.date(), time) <= now:
+            raise ChangeError(ChangeProblem.PAST)
+        # What is said, as typed in a placeholder may still stand for the name.
+        text = self.texts_of(editing, text)[0]
+        reworded = text != editing.planned_text
+        if reworded and not all(
+            self._cache.find(said, self.spoken_speed) is not None
+            for said in self.texts_of(editing, text)
+        ):
+            raise ChangeError(ChangeProblem.NO_SPEECH)
+        self._save_changes(
+            [
+                dataclasses.replace(
+                    self._change_or_new(key),
+                    time=None if time == editing.planned else time,
+                    text=text if reworded else None,
+                )
+            ]
+        )
+        _log.info(
+            '%s changed for today: at %s, "%s"',
+            f"{editing.planned:%H:%M}",
+            f"{time:%H:%M}",
+            text,
+        )
+        self._rebuild()
+
+    @staticmethod
+    def texts_of(editing: Editing, text: str) -> tuple[str, ...]:
+        """Return what is said with ``text`` for the row being edited."""
+        return (said(text, editing.name),)
 
     def poll(self) -> bool:
         """Returns whether anything changed."""
@@ -349,35 +660,252 @@ class App:
                 continue
             changed = True
             match event:
-                case _Due(due, slot):
+                case _Due(group):
                     # Outcomes of earlier days are of no use to today's preview.
                     self._outcomes = {
                         key: status
                         for key, status in self._outcomes.items()
-                        if due - key[0] < _DAY
+                        if group.due - key[0] < _DAY
                     }
-                    self._outcomes[_key(due, slot)] = Status.PLAYING
-                    self._playing[due] = _key(due, slot)
-                case _Missed(due, slot):
-                    self._outcomes[_key(due, slot)] = Status.ASLEEP
-                case Playback(due=None):
+                    for key, _ in group.parts:
+                        self._outcomes[key] = Status.QUEUED
+                    self._playing[group.number] = group
+                case _Missed(date, slot):
+                    for part in slot.parts:
+                        self._outcomes[_key(date, slot, part)] = Status.ASLEEP
+                case _Started(tag=_Group() as group):
+                    self._sounding = group
+                case _Speaking(tag=_Group() as group, index=index):
+                    # The part before it was heard, as far as anyone can tell
+                    # until the group's outcome comes.
+                    for key, _ in group.parts[:index]:
+                        if self._outcomes.get(key) is Status.PLAYING:
+                            self._outcomes[key] = Status.PLAYED
+                    self._outcomes[group.parts[index][0]] = Status.PLAYING
+                case _Speaking():
+                    pass
+                case _Started(tag=_Test() as test):
+                    self._sounding = test
+                    self.test_status = Status.PLAYING
+                case _Started():
+                    pass
+                case Playback(tag=_Group() as group):
+                    self._played(group, event)
+                case Playback(tag=tag):
+                    if self._sounding == tag:
+                        self._sounding = None
                     self.test_status = outcome_status(event)
-                case Playback(due=due) if due is not None:
-                    status = outcome_status(event)
-                    key = self._playing.pop(due, None)
-                    if key is not None:
-                        self._outcomes[key] = status
-                        self.last_announcement = LastAnnouncement(due, key[1], status)
-                case _Generated(template, speed, unspoken):
+                case _Generated(templates, speed, unspoken):
                     self.generating = False
                     self.unspoken = unspoken
                     self._generated_at = self._clock()
                     if not unspoken:
-                        self._speak_with(template, speed)
+                        self._speak_with(templates, speed)
                     if self._regenerate:
                         self._generate()
-                case _TestUnspoken():
-                    self.test_status = Status.NO_SPEECH
+                case _Spoken(wanted, spoken):
+                    self._spoken(wanted, spoken)
+
+    def _played(self, group: _Group, playback: Playback) -> None:
+        if self._sounding == group:
+            self._sounding = None
+        self._playing.pop(group.number, None)
+        for index, (key, _) in enumerate(group.parts):
+            self._outcomes[key] = part_status(playback, index)
+        self.last_announcement = LastAnnouncement(
+            group.due,
+            tuple((key[1], key[2]) for key, _ in group.parts),
+            outcome_status(playback),
+        )
+
+    def _spoken(self, wanted: _Wanted, spoken: bool) -> None:
+        """Take in speech that was made to be read at once, or ahead of time."""
+        match wanted:
+            case (SpeechRequest() as request, _):
+                request.done, request.spoken = True, spoken
+            case (Instant() | _Test() as item, text, speed):
+                if item not in self._preparing:
+                    return  # cut off meanwhile
+                self._preparing.discard(item)
+                if isinstance(item, _Test):
+                    self.test_status = Status.QUEUED if spoken else Status.NO_SPEECH
+                    if spoken:
+                        self._player.enqueue((text,), item, speed)
+                elif spoken:
+                    group = self._group(item.asked_at, ((item.key, text),))
+                    self._queue(group, speed)
+                else:
+                    self._outcomes[item.key] = Status.NO_SPEECH
+
+    def _number(self) -> int:
+        """Safe to call from any thread."""
+        with self._numbers_lock:
+            return next(self._numbers)
+
+    def _group(
+        self,
+        due: datetime.datetime,
+        parts: Iterable[tuple[OutcomeKey, str]],
+    ) -> _Group:
+        """Safe to call from any thread."""
+        return _Group(self._number(), due, tuple(parts))
+
+    def _queue(self, group: _Group, speed: float) -> None:
+        for key, _ in group.parts:
+            self._outcomes[key] = Status.QUEUED
+        self._playing[group.number] = group
+        self._player.enqueue(tuple(text for _, text in group.parts), group, speed)
+
+    def _prepare(self, instant: Instant) -> None:
+        """Make the speech of an instant announcement; ``poll`` then queues it."""
+        self._outcomes[instant.key] = Status.PREPARING
+        self._ask_for((instant, instant.text, self.settings.speed))
+
+    def _ask_for(self, wanted: _Wanted) -> None:
+        """Have speech made on a thread, as that can take a few seconds. It is
+        made in the order asked for, so what is read at once is read in that
+        order."""
+        if not isinstance(wanted[0], SpeechRequest):
+            self._preparing.add(wanted[0])
+        self._wanted.put(wanted)
+        if not self._speaking:
+            self._speaking = True
+            threading.Thread(target=self._speak, name="speech now", daemon=True).start()
+
+    def _speak(self) -> None:
+        """Runs on a thread, for as long as the app does."""
+        while True:
+            wanted = self._wanted.get()
+            if isinstance(wanted[0], SpeechRequest):
+                request, speeds = wanted
+                texts = request.texts
+            else:
+                _, text, speed = wanted
+                texts, speeds = (text,), (speed,)
+            spoken = False
+            try:
+                spoken = not any(self._cache.ensure_all(texts, at) for at in speeds)
+            except Exception:
+                _log.exception("Generating speech to be read at once failed")
+            self._events.put(_Spoken(wanted, spoken))
+
+    def _part(self, key: PartId) -> tuple[Slot, Part] | None:
+        """Return today's part with the key of a row, and its slot."""
+        today = self._clock().date()
+        for slot in self.timetable.slots_on(today):
+            for part in slot.parts:
+                if part_id(today, slot, part) == key:
+                    return slot, part
+        return None
+
+    def _planned(self, key: PartId) -> tuple[Slot, Part] | None:
+        """Return the part with the key as the week has it, without today's
+        change, and its slot."""
+        today = self._clock().date()
+        for slot in self.timetable.slots:
+            if slot.weekday != today.weekday():
+                continue
+            for part in slot.parts:
+                if part_id(today, slot, part) == key:
+                    return slot, part
+        return None
+
+    def _end_of(self, row: Row) -> tuple[PartId, datetime.datetime] | None:
+        """Return the key of the end of the session that ``row`` starts, and when
+        that end is announced today; None if ``row`` is no start, or its end is
+        announced on another day. The end need not be in the timetable, as
+        the end of a session may be switched off.
+        """
+        if row.kind is not Kind.START or not isinstance(row.key, tuple):
+            return None
+        key = (row.key[0] + SESSION, Kind.END, row.key[2])
+        today = self._clock().date()
+        change = self._change(key)
+        if change is not None and change.time is not None:
+            due = datetime.datetime.combine(today, change.time)
+        else:
+            due = key[0] + datetime.timedelta(minutes=self.settings.delay)
+        return (key, due) if due.date() == today else None
+
+    def _change(self, key: PartId) -> Change | None:
+        today = self._clock().date()
+        for change in self.changes:
+            if (change.day, change.set_for, change.kind, change.name) == (today, *key):
+                return change
+        return None
+
+    def _change_or_new(self, key: PartId) -> Change:
+        return self._change(key) or Change(self._clock().date(), *key)
+
+    def _changeable(self, row: Row, skipping: bool) -> PartId:
+        """Return the key of the row, if it can still be skipped, or edited;
+        raises ``ChangeError`` if not."""
+        key = row.key
+        current = {other.key: other for other in self.rows()}.get(key)
+        if (
+            not isinstance(key, tuple)
+            or current is None
+            or not (current.skippable if skipping else current.editable)
+            or self._planned(key) is None
+        ):
+            raise ChangeError(ChangeProblem.GONE)
+        return key
+
+    def _forget_changes(self, announcement: CustomAnnouncement) -> None:
+        """Let go of what was changed today about a custom announcement that is
+        replaced or deleted, so that it is not taken for one put in its place.
+        """
+        kept = [
+            change
+            for change in self.changes
+            if not (
+                change.kind is Kind.CUSTOM
+                and change.set_for.time() == announcement.time
+            )
+        ]
+        if len(kept) == len(self.changes):
+            return
+        try:
+            save_changes(kept, self.changes_file)
+        except OSError:
+            # The announcement itself was saved; the change is left as it is.
+            _log.exception("Cannot let go of the changes of a custom announcement")
+            return
+        self.changes = tuple(kept)
+
+    def _save_changes(self, changes: Iterable[Change]) -> None:
+        """Raises ``OSError`` if the changes cannot be saved; nothing changes then."""
+        today = self._clock().date()
+        changes = tuple(changes)
+        replaced = {_change_key(change) for change in changes}
+        kept = tuple(
+            other
+            for other in self.changes
+            if other.day >= today and _change_key(other) not in replaced
+        )
+        kept += tuple(change for change in changes if change.skipped or change.edited)
+        save_changes(kept, self.changes_file)
+        self.changes = kept
+        # What is in the file is in use now, not the plan as such.
+        self.changes_unreadable = False
+
+    def _load_changes(self, today: datetime.date) -> tuple[Change, ...]:
+        """A file that cannot be read is copied first: the next change written
+        replaces it."""
+        try:
+            changes = load_changes(self.changes_file, today)
+        except ChangesFileError:
+            _log.exception("Cannot read today's changes; announcing as planned")
+            self.changes_unreadable = True
+            try:
+                shutil.copyfile(self.changes_file, backup_copy(self.changes_file))
+                self.changes_backed_up = True
+            except OSError:
+                _log.exception("Cannot keep a copy of the changes file")
+            return ()
+        if changes:
+            _log.info("%d change(s) of today kept from before", len(changes))
+        return changes
 
     def _follow(self, path: Path, state: _FileState) -> bool:
         """Return whether the schedule file was read again."""
@@ -483,12 +1011,8 @@ class App:
 
     def _build(self) -> None:
         known = self.timetable.conflicts
-        self.timetable = build_timetable(
-            self._entries,
-            self.settings.custom_announcements,
-            self.spoken_template,
-            self.spoken_speed,
-            self.settings.delay,
+        self.timetable = self._timetable(
+            self.spoken_template, self.spoken_end_template, self.spoken_speed
         )
         for conflict in self.timetable.conflicts:
             if conflict not in known:
@@ -502,6 +1026,17 @@ class App:
                 )
         self._scheduler.set_timetable(self.timetable)
 
+    def _timetable(self, template: str, end_template: str, speed: float) -> Timetable:
+        return build_timetable(
+            self._entries,
+            self.settings.custom_announcements,
+            template,
+            speed,
+            self.settings.delay,
+            end_template if self.settings.end_announcements else None,
+            self.changes,
+        )
+
     def _keep_a_spoken_speed(self) -> None:
         """A speed that was chosen shortly before the app was closed may have no
         speech yet. The announcements then start with a speed that has, the
@@ -512,7 +1047,7 @@ class App:
         def spoken(speed: float) -> bool:
             return all(
                 self._cache.find(text, speed) is not None
-                for slot in self.timetable.slots
+                for slot in self.timetable.all_slots()
                 for text in slot.texts
             )
 
@@ -529,20 +1064,23 @@ class App:
                 self._build()
                 return
 
-    def _speak_with(self, template: str, speed: float) -> None:
-        """Announce with ``template`` and at ``speed``, now that the speech for
+    def _speak_with(self, templates: tuple[str, str], speed: float) -> None:
+        """Announce with ``templates`` and at ``speed``, now that the speech for
         that is there.
         """
-        if (template, speed) != (self.settings.template, self.settings.speed):
+        wanted = (self.settings.template, self.settings.end_template)
+        if (templates, speed) != (wanted, self.settings.speed):
             return  # the speech is for settings that were replaced meanwhile
-        if (template, speed) != (self.spoken_template, self.spoken_speed):
+        spoken = (self.spoken_template, self.spoken_end_template)
+        if (templates, speed) != (spoken, self.spoken_speed):
             _log.info(
-                'Athletes are announced with "%s" and everything at speed %s '
-                "from now on",
-                template,
+                'Athletes are announced with "%s" and "%s" and everything at '
+                "speed %s from now on",
+                *templates,
                 speed,
             )
-            self.spoken_template, self.spoken_speed = template, speed
+            (self.spoken_template, self.spoken_end_template) = templates
+            self.spoken_speed = speed
             self._build()
 
     def _generate(self) -> None:
@@ -551,29 +1089,28 @@ class App:
             return
         self._regenerate = False
         self._generated_at = self._clock()
-        template, speed = self.settings.template, self.settings.speed
-        wanted = build_timetable(
-            self._entries, self.settings.custom_announcements, template
-        )
-        texts = tuple(text for slot in wanted.slots for text in slot.texts)
+        templates = (self.settings.template, self.settings.end_template)
+        speed = self.settings.speed
+        wanted = self._timetable(*templates, speed)
+        texts = tuple(text for slot in wanted.all_slots() for text in slot.texts)
         todo = sum(
             self._cache.find(text, speed) is None for text in dict.fromkeys(texts)
         )
         if not todo:
             self.unspoken = ()
-            self._speak_with(template, speed)
+            self._speak_with(templates, speed)
             return
         _log.info("Generating speech for %d sentence(s)", todo)
         self.generating = True
         threading.Thread(
             target=self._generate_all,
-            args=(template, speed, texts),
+            args=(templates, speed, texts),
             name="speech",
             daemon=True,
         ).start()
 
     def _generate_all(
-        self, template: str, speed: float, texts: tuple[str, ...]
+        self, templates: tuple[str, str], speed: float, texts: tuple[str, ...]
     ) -> None:
         """Runs on a thread."""
         unspoken = texts
@@ -583,27 +1120,18 @@ class App:
         except Exception:
             _log.exception("Generating speech failed")
         finally:
-            self._events.put(_Generated(template, speed, unspoken))
-
-    def _test(self, text: str, speed: float) -> None:
-        """Runs on a thread."""
-        try:
-            self._cache.ensure(text, speed)
-        except TtsError as error:
-            _log.warning("No speech for the test: %s (%r)", error, error.__cause__)
-        except Exception:
-            _log.exception("Generating the speech for the test failed")
-        else:
-            self._player.enqueue((text,), speed=speed)
-            return
-        self._events.put(_TestUnspoken())
+            self._events.put(_Generated(templates, speed, unspoken))
 
     def _on_due(self, date: datetime.date, slot: Slot) -> None:
-        """Called on the scheduler's thread."""
+        """Called on the scheduler's thread, with the parts of the slot that are
+        to be announced."""
         due = datetime.datetime.combine(date, slot.time)
         _log.info("%s due: %s", f"{due:%H:%M}", _quoted(slot.texts))
-        self._events.put(_Due(due, slot))
-        self._player.enqueue(slot.texts, due, slot.speed)
+        group = self._group(
+            due, ((_key(date, slot, part), part.text) for part in slot.parts)
+        )
+        self._events.put(_Due(group))
+        self._player.enqueue(slot.texts, group, slot.speed)
 
     def _on_missed(self, date: datetime.date, slot: Slot) -> None:
         """Called on the scheduler's thread."""
@@ -613,12 +1141,13 @@ class App:
             f"{due:%Y-%m-%d %H:%M}",
             _quoted(slot.texts),
         )
-        self._events.put(_Missed(due, slot))
+        self._events.put(_Missed(date, slot))
 
     def _on_played(self, playback: Playback) -> None:
         """Called on the player's thread."""
-        name = "Test" if playback.due is None else f"{playback.due:%H:%M}"
-        skipped = {*playback.missing, *playback.late}
+        group = playback.tag
+        name = f"{group.due:%H:%M}" if isinstance(group, _Group) else "Test"
+        skipped = {*playback.missing, *playback.late, *playback.cut}
         played = tuple(text for text in playback.texts if text not in skipped)
         if playback.failed:
             _log.error(
@@ -636,11 +1165,17 @@ class App:
             _log.warning(
                 "%s skipped, the computer was asleep: %s", name, _quoted(playback.late)
             )
+        if playback.cut:
+            _log.info("%s cut off before: %s", name, _quoted(playback.cut))
         self._events.put(playback)
 
 
-def _key(due: datetime.datetime, slot: Slot) -> _Key:
-    return set_for(due.date(), slot), summary(slot)
+def _key(date: datetime.date, slot: Slot, part: Part) -> OutcomeKey:
+    return set_for(date, slot, part), part.kind, who(part)
+
+
+def _change_key(change: Change) -> tuple[datetime.date, datetime.datetime, Kind, str]:
+    return change.day, change.set_for, change.kind, change.name
 
 
 def _file_state(path: Path) -> _FileState:

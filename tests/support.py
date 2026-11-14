@@ -7,6 +7,7 @@ from openpyxl import Workbook
 
 from announcer.app import App
 from announcer.player import PlaybackError
+from announcer.today import Status
 from announcer.tts import TtsError
 
 MONDAY = datetime.date(2026, 11, 9)
@@ -42,6 +43,14 @@ def wait_for(app: App, condition: Callable[[], bool]) -> None:
         time.sleep(0.005)
 
 
+def wait_for_speech(app: App) -> None:
+    wait_for(app, lambda: not app.generating)
+
+
+def statuses(app: App) -> list[Status]:
+    return [row.status for row in app.rows()]
+
+
 class FakeClock:
     def __init__(self, now: datetime.datetime) -> None:
         self.now = now
@@ -66,9 +75,10 @@ class FakeProvider:
 
 
 class FakeOutput:
-    """Each file is busy for one look, or for ever if ``endless`` is set.
-    ``while_playing`` is called during a look with the file, which is where a
-    test lets time pass.
+    """Each file is busy for one look, or for ever if ``endless`` is set; then
+    each look takes a moment, so that the player does not spin while the
+    tests take away its pauses. ``while_playing`` is called during a look with
+    the file, which is where a test lets time pass.
     """
 
     def __init__(self) -> None:
@@ -97,6 +107,8 @@ class FakeOutput:
         if self._busy:
             self._busy = self.endless
             self.while_playing(self.played[-1])
+            if self.endless:
+                time.sleep(0.001)
             return True
         return False
 

@@ -9,7 +9,12 @@ from platformdirs import user_config_dir
 from announcer import APP_NAME
 from announcer.files import write_atomically
 from announcer.models import DELAYS, NORMAL_SPEED, SPEEDS, CustomAnnouncement
-from announcer.template import DEFAULT_TEMPLATE, PLACEHOLDER, is_valid_template
+from announcer.template import (
+    DEFAULT_END_TEMPLATE,
+    DEFAULT_TEMPLATE,
+    PLACEHOLDER,
+    is_valid_template,
+)
 
 DEFAULT_VOICE = "tr-TR-EmelNeural"
 
@@ -25,14 +30,18 @@ class SettingsFileError(Exception):
 class Settings:
     voice: str = DEFAULT_VOICE
     schedule_path: Path | None = None
-    template: str = DEFAULT_TEMPLATE
+    template: str = DEFAULT_TEMPLATE  # for the start of a session
+    end_template: str = DEFAULT_END_TEMPLATE  # for its end
+    end_announcements: bool = True  # whether the end of a session is announced
     custom_announcements: tuple[CustomAnnouncement, ...] = ()
     speed: float = NORMAL_SPEED
     delay: int = 0  # minutes that every announcement is made after its time
 
     def __post_init__(self) -> None:
-        if not is_valid_template(self.template):
-            raise ValueError(f"The template has no {PLACEHOLDER} placeholder")
+        if not (
+            is_valid_template(self.template) and is_valid_template(self.end_template)
+        ):
+            raise ValueError(f"A template has no {PLACEHOLDER} placeholder")
         if self.speed not in SPEEDS:
             raise ValueError(f"The speed must be one of {SPEEDS}")
         if self.delay not in DELAYS:
@@ -72,6 +81,8 @@ def load_settings(path: Path) -> LoadedSettings:
     if isinstance(template, str) and PLACEHOLDER not in template:
         # A template that was stored under the old name keeps working.
         template = template.replace(_OLD_PLACEHOLDER, PLACEHOLDER)
+    end_template = data.get("end_template")
+    end_announcements = data.get("end_announcements")
     stored = data.get("custom_announcements")
     found = (
         [_custom_announcement(item) for item in stored]
@@ -86,6 +97,14 @@ def load_settings(path: Path) -> LoadedSettings:
             template
             if isinstance(template, str) and is_valid_template(template)
             else DEFAULT_TEMPLATE
+        ),
+        end_template=(
+            end_template
+            if isinstance(end_template, str) and is_valid_template(end_template)
+            else DEFAULT_END_TEMPLATE
+        ),
+        end_announcements=(
+            end_announcements if isinstance(end_announcements, bool) else True
         ),
         custom_announcements=usable,
         speed=_one_of(SPEEDS, data.get("speed"), NORMAL_SPEED),
@@ -104,6 +123,8 @@ def save_settings(settings: Settings, path: Path) -> None:
             None if settings.schedule_path is None else str(settings.schedule_path)
         ),
         "template": settings.template,
+        "end_template": settings.end_template,
+        "end_announcements": settings.end_announcements,
         "custom_announcements": [
             {
                 "text": announcement.text,

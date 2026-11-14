@@ -2,6 +2,7 @@ PLACEHOLDER = "{ad_soyad}"
 DEFAULT_TEMPLATE = (
     f"{PLACEHOLDER}, antrenmanınız başlamıştır. İyi antrenmanlar dileriz."
 )
+DEFAULT_END_TEMPLATE = f"{PLACEHOLDER}, antrenmanınız sona ermiştir. Görüşmek üzere."
 
 
 def is_valid_template(template: str) -> bool:

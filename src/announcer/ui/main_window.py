@@ -1,5 +1,6 @@
 import datetime
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -10,19 +11,24 @@ from tkinter import filedialog, font, messagebox, ttk
 from types import TracebackType
 
 from announcer import APP_NAME
-from announcer.app import App
+from announcer.app import App, ChangeError, ChangeProblem
 from announcer.loader import ScheduleFileError
 from announcer.logo import ICON_SIZES, icon_path
 from announcer.models import DELAYS, SPEEDS, WEEKDAY_NAMES
 from announcer.scheduler import LATE
-from announcer.today import Row, Status
+from announcer.template import is_valid_template
+from announcer.today import BUSY, CHANGE_MARGIN, Row, Status
 from announcer.ui import texts
 from announcer.ui.announcement_dialog import AnnouncementDialog
+from announcer.ui.change_dialog import ChangeDialog
+from announcer.ui.instant_dialog import InstantDialog
 
 _log = logging.getLogger(__name__)
 
 _POLL = 250  # milliseconds between two looks at what the app has to report
+_MINUTE = datetime.timedelta(minutes=1)
 _PAD = 12
+_GAP = 20  # pixels between the two columns and around the window
 
 _PROBLEMS = frozenset(
     {
@@ -33,7 +39,10 @@ _PROBLEMS = frozenset(
         Status.CONFLICT,
     }
 )
-_DONE = frozenset({Status.PLAYED, Status.PASSED})  # over, and nothing to act on
+# Over, and nothing to act on.
+_DONE = frozenset({Status.PLAYED, Status.PASSED, Status.STOPPED})
+_STRUCK = frozenset({Status.SKIPPING, Status.SKIPPED})  # not read on purpose
+_EDITED_OFTEN = (Status.WAITING, Status.NEXT, Status.PLAYING, Status.PLAYED)
 
 # Colours that read well on a light and on a dark window alike.
 _GREY = "#808080"
@@ -43,19 +52,36 @@ _BLUE = "#2e86de"
 _WARNING_BACKGROUND = "#fff3cd"
 _WARNING_TEXT = "#4d3b00"
 _WARNING_LINES = 3  # how many are shown before the rest has to be scrolled to
-_TEMPLATE_TITLE = "Varsayılan Anons Şablonu"
+_TEMPLATE_TITLE = "Anons Şablonları"
 _OPTIONS_TITLE = "Anons Ayarları"
-_BUTTON_WIDTH = 10  # in characters; one width, so that the two tables line up
-_MIN_TEXT_WIDTH = 200  # pixels, of the column that takes up the slack
+_TODAY_TITLE = "Bugünün Anonsları"
+_BUTTON_WIDTH = 10  # in characters, of the custom announcements' buttons
+_COLUMN_PADDING = 20  # pixels around the widest value of a table's column
+# Pixels of the column that takes up the slack: below the first, a table
+# leaves out the column it can do without; below the second, the column is
+# cut short rather than the one beside it.
+_WANTED_TEXT_WIDTH = 160
+_MIN_TEXT_WIDTH = 60
+# Today's table shows the sentences that are read; the day, which the heading
+# shows, gives way to them sooner.
+_WANTED_SENTENCE_WIDTH = 320
+_FULL_SCREEN_KEYS = ("<F11>",)
+_MAC_FULL_SCREEN_KEYS = ("<F11>", "<Control-Command-f>", "<Control-Command-F>")
 _NO_ROW = "none"  # the id of the line that says that a table is empty
 _MAC_QUIT = "::tk::mac::Quit"  # what macOS calls for Quit in the menu and the Dock
 
 
-def _moment(now: datetime.datetime) -> tuple[datetime.datetime, bool]:
-    """Return what changes whenever the clock alone can change a status: at
-    the start of a minute, and when it is too late for that minute's slot."""
+def _moment(now: datetime.datetime) -> tuple[datetime.datetime, bool, bool, bool]:
+    """Return what changes whenever the clock alone can change a row: at the
+    start of a minute, when it is too late for that minute's slot, and when
+    an announcement can no longer be skipped, edited or brought back."""
     minute = now.replace(second=0, microsecond=0)
-    return minute, now - minute > LATE
+    return (
+        minute,
+        now - minute > LATE,
+        now - minute > LATE - CHANGE_MARGIN,
+        now >= minute + _MINUTE - CHANGE_MARGIN,
+    )
 
 
 def _resized(base: font.Font, by: int) -> font.Font:
@@ -104,30 +130,32 @@ class MainWindow:
         self._app = app
         self._log_file = log_file
         self._clock = clock
-        self._shown_at: tuple[datetime.datetime, bool] | None = None
-        self._shown_rows: list[tuple[str, str, str, str]] | None = None
+        self._shown_at: tuple[datetime.datetime, bool, bool, bool] | None = None
+        self._shown_rows: list[tuple[tuple[str, ...], tuple[str, ...]]] | None = None
         self._rows: tuple[Row, ...] = ()  # of today's table, as they are shown
         self._shown_announcements: list[tuple[str, tuple[str, str, str]]] | None = None
         self._shown_warnings: list[str] | None = None
-        self._current_row: str | None = None  # of today's table: sounding, or next
-        self._upcoming: tuple[datetime.time, str] | None = None  # the next one
+        # Of today's table: the rows of the minute being read, or next.
+        self._current_rows: list[str] = []
+        self._reading: object = None  # the key of the row being read
+        # The time and the key of the next row; the template does not change it.
+        self._upcoming: tuple[datetime.time, object] | None = None
         self._update_failed = False  # the last look at the app raised an error
+        self._laid_out = False  # today's table has had its size
         self.closed = False
 
         self.root = tk.Tk()
         self.root.title(APP_NAME)
         _set_icon(self.root)
-        # Small enough for a laptop screen; the tables take up the difference.
+        # The window is maximized by ``run``. What it returns to when it is not
+        # leaves room around it, and its bottom is never behind the taskbar.
+        screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        height = min(800, screen_height - 120)
-        # Left to itself, Windows may put the window so low that its bottom is
-        # behind the taskbar.
-        left = max((self.root.winfo_screenwidth() - 860) // 2, 0)
-        top = max((screen_height - height) // 2 - 40, 0)
-        self.root.geometry(f"860x{height}+{left}+{top}")
-        # At 760 high everything still fits, with three lines of warnings. On
-        # a lower screen the window stays in view and today's table gives way.
-        self.root.minsize(720, min(760, height))
+        width, height = min(1280, screen_width - 80), min(800, screen_height - 120)
+        x = max((screen_width - width) // 2, 0)
+        y = max((screen_height - height) // 2 - 40, 0)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+        self.root.minsize(min(1000, width), min(680, height))
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         self.root.protocol("WM_DELETE_WINDOW", self.ask_to_close)
@@ -135,6 +163,9 @@ class MainWindow:
         if self._on_mac:
             # Quit in the menu and the Dock does not go through the above.
             self.root.createcommand(_MAC_QUIT, self.ask_to_close)
+        for sequence in _MAC_FULL_SCREEN_KEYS if self._on_mac else _FULL_SCREEN_KEYS:
+            self.root.bind(sequence, lambda event: self.toggle_full_screen())
+        self.root.bind("<Escape>", lambda event: self.leave_full_screen())
         # Tk prints an error in a button's command to a console that a
         # windowed app does not have.
         self.root.report_callback_exception = self._report_error
@@ -145,39 +176,89 @@ class MainWindow:
         self.time = tk.StringVar()
         self.last_announcement = tk.StringVar()
         self.template = tk.StringVar(value=app.settings.template)
+        self.end_template = tk.StringVar(value=app.settings.end_template)
         self.activity = tk.StringVar()
 
         # Kept on the window, as tkinter drops a font that nothing refers to.
         self._bold = font.nametofont("TkDefaultFont").copy()
         self._bold.configure(weight="bold")
-        self._large = _resized(self._bold, 4)  # the date and the time
-        self._title = _resized(self._bold, 1)  # the name of a section
+        self._large = _resized(self._bold, 8)  # the date and the time
+        self._title = _resized(self._bold, 2)  # the name of a section
         self._small = _resized(font.nametofont("TkDefaultFont"), -2)  # a note
+        self._struck = font.nametofont("TkDefaultFont").copy()
+        self._struck.configure(overstrike=True)
+        # One width for the buttons beside today's table, from the longest of
+        # their labels in the font they have, so none is cut short on any
+        # system. Negative, so it is the least width in characters.
+        normal = font.nametofont("TkDefaultFont")
+        labels = (
+            "Tekrar Oku",
+            "Düzenle…",
+            texts.SKIP,
+            texts.UNSKIP,
+            "Anlık Anons…",
+            "Durdur",
+            "Dosya Seç…",
+        )
+        self._action_width = -math.ceil(
+            max(normal.measure(label) for label in labels) / normal.measure("0")
+        )
 
-        # Top to bottom: what the operator looks at, then what is rarely
-        # changed. Today's table takes whatever height is left over.
-        frame = ttk.Frame(self.root, padding=_PAD)
+        # Today's announcements on the left, where the operator looks, with
+        # whatever varies in height; what is rarely changed on the right. The
+        # height left over goes to today's table and to the custom
+        # announcements, which give way first when there is too little.
+        frame = ttk.Frame(self.root, padding=_GAP)
         frame.grid(sticky="nsew")
-        frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(2, weight=1, minsize=110)
-        self._build_header(frame).grid(row=0, sticky="ew")
-        self.warning_box = self._build_warnings(frame)
-        self.warning_box.grid(row=1, sticky="ew", pady=(_PAD, 0))
-        self._build_today(frame).grid(row=2, sticky="nsew", pady=(_PAD, 0))
-        self._build_template(frame).grid(row=3, sticky="ew", pady=(_PAD, 0))
-        self._build_announcements(frame).grid(row=4, sticky="ew", pady=(_PAD, 0))
-        bottom = ttk.Frame(frame)
-        bottom.columnconfigure(0, weight=1)
-        bottom.grid(row=5, sticky="ew", pady=(_PAD, 0))
-        self._build_schedule(bottom).grid(row=0, column=0, sticky="nsew")
-        self._build_options(bottom).grid(row=0, column=1, sticky="nsew", padx=(_PAD, 0))
-        self._build_footer(frame).grid(row=6, sticky="ew", pady=(_PAD, 0))
+        frame.columnconfigure(0, weight=5, uniform="column")
+        frame.columnconfigure(1, weight=3, uniform="column")
+        frame.rowconfigure(1, weight=1)
+        self._build_header(frame).grid(row=0, column=0, columnspan=2, sticky="ew")
+
+        left = ttk.Frame(frame)
+        left.grid(row=1, column=0, sticky="nsew", pady=(_PAD, 0), padx=(0, _GAP // 2))
+        left.columnconfigure(0, weight=1)
+        left.rowconfigure(1, weight=1)
+        self.warning_box = self._build_warnings(left)
+        self.warning_box.grid(row=0, sticky="ew", pady=(0, _PAD))
+        self._build_today(left).grid(row=1, sticky="nsew")
+        self._build_schedule(left).grid(row=2, sticky="ew", pady=(_PAD, 0))
+
+        right = ttk.Frame(frame)
+        right.grid(row=1, column=1, sticky="nsew", pady=(_PAD, 0), padx=(_GAP // 2, 0))
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+        self._build_template(right).grid(row=0, sticky="ew")
+        self._build_announcements(right).grid(row=1, sticky="nsew", pady=(_PAD, 0))
+        self._build_options(right).grid(row=2, sticky="ew", pady=(_PAD, 0))
+
+        self._build_footer(frame).grid(
+            row=2, column=0, columnspan=2, sticky="ew", pady=(_PAD, 0)
+        )
 
         self.show()
         self._after = self.root.after(_POLL, self._tick)
 
     def run(self) -> None:
+        self.maximize()
         self.root.mainloop()
+
+    def maximize(self) -> None:
+        """Fill the screen, but for the taskbar or the Dock and the menu bar."""
+        try:
+            self.root.state("zoomed")
+        except tk.TclError:
+            _log.exception("Cannot maximize the window")  # it is usable as it is
+
+    def toggle_full_screen(self) -> None:
+        """Cover the whole screen, or no longer."""
+        on = not self.root.attributes("-fullscreen")
+        self.root.attributes("-fullscreen", on)
+        _log.info("Full screen %s", "on" if on else "off")
+
+    def leave_full_screen(self) -> None:
+        if self.root.attributes("-fullscreen"):
+            self.toggle_full_screen()
 
     def ask_to_close(self) -> None:
         """Close the window if the operator means it: it ends the announcements."""
@@ -212,6 +293,7 @@ class MainWindow:
         self.activity.set(texts.activity(app.generating, app.test_status))
         self.speed_box.current(SPEEDS.index(app.settings.speed))
         self.delay_box.current(DELAYS.index(app.settings.delay))
+        self.end_box.current(0 if app.settings.end_announcements else 1)
         self._show_today(now)
         self._show_announcements()
         self._show_warnings()
@@ -241,7 +323,7 @@ class MainWindow:
         ttk.Label(section, text=title, font=self._title).grid(
             row=0, column=0, sticky="w", pady=(0, 4)
         )
-        box = ttk.LabelFrame(section, padding=8)
+        box = ttk.LabelFrame(section, padding=10)
         # A box keeps room for a name of its own; one of no size takes none.
         box.configure(labelwidget=ttk.Frame(box))
         box.grid(row=1, column=0, sticky="nsew")
@@ -267,7 +349,9 @@ class MainWindow:
         self._schedule_entry.bind(
             "<Configure>", lambda event: self._schedule_entry.xview_moveto(1)
         )
-        self.choose_button = ttk.Button(box, text="Dosya Seç…", command=self.choose)
+        self.choose_button = ttk.Button(
+            box, text="Dosya Seç…", width=self._action_width, command=self.choose
+        )
         self.choose_button.grid(row=0, column=1, padx=(8, 0))
         # There is no button to read the file again: saving it does that.
         self._note(box, self.loaded).grid(
@@ -276,47 +360,96 @@ class MainWindow:
         return section
 
     def _build_today(self, parent: ttk.Frame) -> ttk.Frame:
-        section, box = self._section(parent, "Bugünün Anonsları")
+        section, box = self._section(parent, _TODAY_TITLE)
         box.columnconfigure(0, weight=1)
         box.rowconfigure(0, weight=1)
+        # Every status, and those that an edited row usually has; a rare
+        # status of an edited row may be cut short at its end.
+        statuses = [
+            *(texts.STATUS[status] for status in Status),
+            *(f"{texts.STATUS[status]} {texts.EDITED}" for status in _EDITED_OFTEN),
+        ]
         self.today = self._table(
             box,
-            height=6,
+            height=8,
             columns={
                 "day": "Gün",
                 "time": "Saat",
-                "text": "Ad Soyad",
+                "kind": "Tür",
+                "text": "Anons",
                 "status": "Durum",
             },
-            widths={"day": 90, "time": 60, "text": 300, "status": 150},
+            widths={
+                "day": self._widest(WEEKDAY_NAMES),
+                "time": self._widest(["00:00"]),
+                "kind": self._widest(texts.KINDS.values()),
+                "text": 0,
+                "status": self._widest(statuses),
+            },
+            optional="day",
+            wanted=_WANTED_SENTENCE_WIDTH,
         )
-        self.today.bind("<Configure>", self._on_table_laid_out)
-        self.today.bind("<<TreeviewSelect>>", lambda event: self._show_replay_button())
+        self.today.bind("<Configure>", self._on_table_laid_out, add=True)
+        self.today.bind("<<TreeviewSelect>>", lambda event: self._show_row_buttons())
+        # Opening the editor is harmless; reading out loud is not, so neither a
+        # double click nor a key reads a row.
         self.today.bind("<Double-1>", self._on_double_click)
-        self.today.bind("<Return>", lambda event: self.replay())
+        self.today.bind("<Return>", lambda event: self.edit_row())
         self.today.tag_configure(Status.NEXT.name, font=self._bold)
         self.today.tag_configure(Status.PLAYING.name, font=self._bold, foreground=_BLUE)
+        for status in (Status.PREPARING, Status.QUEUED):
+            self.today.tag_configure(status.name, foreground=_BLUE)
         for status in _DONE:
             self.today.tag_configure(status.name, foreground=_GREY)
         for status in _PROBLEMS:
             self.today.tag_configure(status.name, foreground=_RED)
+        for status in _STRUCK:
+            self.today.tag_configure(status.name, foreground=_GREY, font=self._struck)
         self.today.tag_configure(_NO_ROW, foreground=_GREY)
-        self.replay_button = ttk.Button(
-            box, text="Tekrar Oku", width=_BUTTON_WIDTH, command=self.replay
+
+        actions = ttk.Frame(box)
+        actions.grid(row=0, column=2, sticky="n", padx=(10, 0))
+        self.replay_button = ttk.Button(actions, text="Tekrar Oku", command=self.replay)
+        self.edit_row_button = ttk.Button(
+            actions, text="Düzenle…", command=self.edit_row
         )
-        self.replay_button.grid(row=0, column=2, sticky="n", padx=(8, 0))
+        self.skip_button = ttk.Button(actions, text=texts.SKIP, command=self.skip)
+        self.instant_button = ttk.Button(
+            actions, text="Anlık Anons…", command=self.announce
+        )
+        self.stop_button = ttk.Button(actions, text="Durdur", command=self.stop)
+        # The first three act on the selected row; the last two do not, so
+        # they stand apart.
+        for row, button in enumerate(
+            (self.replay_button, self.edit_row_button, self.skip_button)
+        ):
+            button.configure(width=self._action_width)
+            button.grid(row=row, column=0, sticky="ew", pady=(0, 6))
+        ttk.Separator(actions).grid(row=3, column=0, sticky="ew", pady=(8, 14))
+        for row, button in enumerate((self.instant_button, self.stop_button), 4):
+            button.configure(width=self._action_width)
+            button.grid(row=row, column=0, sticky="ew", pady=(0, 6))
+        _keep_in_view(box, actions)
         ttk.Label(box, textvariable=self.last_announcement).grid(
-            row=1, column=0, columnspan=3, sticky="w", pady=(6, 0)
+            row=1, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
         return section
 
     def _build_options(self, parent: ttk.Frame) -> ttk.Frame:
         section, box = self._section(parent, _OPTIONS_TITLE)
+        box.columnconfigure(1, weight=1)
         self.speed_box = self._choice(
             box, 0, "Ses hızı", map(texts.speed, SPEEDS), self.choose_speed
         )
         self.delay_box = self._choice(
             box, 1, "Gecikme süresi", map(texts.delay, DELAYS), self.choose_delay
+        )
+        self.end_box = self._choice(
+            box,
+            2,
+            "Bitiş anonsu",
+            map(texts.switch, (True, False)),
+            self.choose_end_announcements,
         )
         return section
 
@@ -328,8 +461,7 @@ class MainWindow:
         values: Iterable[str],
         command: Callable[[], None],
     ) -> ttk.Combobox:
-        # Close together, so that the box is no higher than the one beside it.
-        gap = 2 if row else 0
+        gap = 6 if row else 0
         ttk.Label(box, text=name).grid(row=row, column=0, sticky="w", pady=(gap, 0))
         choice = ttk.Combobox(box, values=tuple(values), state="readonly", width=15)
         choice.grid(row=row, column=1, sticky="e", padx=(12, 0), pady=(gap, 0))
@@ -348,30 +480,54 @@ class MainWindow:
 
     def _build_template(self, parent: ttk.Frame) -> ttk.Frame:
         section, box = self._section(parent, _TEMPLATE_TITLE)
-        box.columnconfigure(0, weight=1)
-        entry = ttk.Entry(box, textvariable=self.template)
-        entry.grid(row=0, column=0, sticky="ew")
-        entry.bind("<Return>", lambda event: self.save_template())
-        self.template.trace_add("write", lambda *args: self._show_template_button())
-        self.save_template_button = ttk.Button(
-            box, text="Kaydet", command=self.save_template
+        box.columnconfigure(1, weight=1)
+        self.test_buttons: list[ttk.Button] = []
+        for row, (name, variable) in enumerate(
+            (("Başlangıç", self.template), ("Bitiş", self.end_template))
+        ):
+            gap = (6 if row else 0, 0)
+            ttk.Label(box, text=name).grid(row=row, column=0, sticky="w", pady=gap)
+            entry = ttk.Entry(box, textvariable=variable)
+            entry.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=gap)
+            entry.bind("<Return>", lambda event: self.save_template())
+            variable.trace_add("write", lambda *args: self._show_template_button())
+            button = ttk.Button(
+                box, text="Test", width=_BUTTON_WIDTH, command=self._tester(variable)
+            )
+            button.grid(row=row, column=2, padx=(8, 0), pady=gap)
+            self.test_buttons.append(button)
+        self.test_button, self.end_test_button = self.test_buttons
+        note = self._note(box, f"{texts.TEMPLATE_HINT} {texts.END_HINT}")
+        note.grid(row=2, column=0, columnspan=2, sticky="new", pady=(8, 0))
+        # The note wraps to the width that it gets.
+        note.bind(
+            "<Configure>", lambda event: note.configure(wraplength=max(event.width, 1))
         )
-        self.save_template_button.grid(row=0, column=1, padx=(8, 0))
-        self.test_button = ttk.Button(box, text="Test", command=self.test)
-        self.test_button.grid(row=0, column=2, padx=(8, 0))
-        self._note(box, texts.TEMPLATE_HINT).grid(
-            row=1, column=0, columnspan=3, sticky="w", pady=(6, 0)
+        self.save_template_button = ttk.Button(
+            box, text="Kaydet", width=_BUTTON_WIDTH, command=self.save_template
+        )
+        self.save_template_button.grid(
+            row=2, column=2, sticky="n", padx=(8, 0), pady=(8, 0)
         )
         return section
+
+    def _tester(self, template: tk.StringVar) -> Callable[[], None]:
+        return lambda: self.test(template.get())
 
     def _build_announcements(self, parent: ttk.Frame) -> ttk.Frame:
         section, box = self._section(parent, "Özel Anonslar")
         box.columnconfigure(0, weight=1)
+        box.rowconfigure(0, weight=1)
         self.announcements = self._table(
             box,
             height=3,
             columns={"time": "Saat", "days": "Günler", "text": "Anons"},
-            widths={"time": 60, "days": 200, "text": 320},
+            widths={
+                "time": self._widest(["00:00"]),
+                "days": self._widest([texts.days((1, 3))]),
+                "text": 0,
+            },
+            optional="days",
         )
         self.announcements.tag_configure(_NO_ROW, foreground=_GREY)
         self.announcements.bind(
@@ -391,6 +547,7 @@ class MainWindow:
         ):
             button.configure(width=_BUTTON_WIDTH)
             button.grid(row=row, column=0, sticky="ew", pady=(0, 6))
+        _keep_in_view(box, buttons)
         return section
 
     def _build_warnings(self, parent: ttk.Frame) -> tk.Frame:
@@ -433,9 +590,16 @@ class MainWindow:
         ttk.Label(footer, textvariable=self.activity).grid(
             row=0, column=1, sticky="e", padx=_PAD
         )
-        self.log_button = ttk.Button(footer, text="Kayıtlar", command=self.open_log)
+        self.log_button = ttk.Button(
+            footer, text="Kayıtlar", width=_BUTTON_WIDTH, command=self.open_log
+        )
         self.log_button.grid(row=0, column=2)
         return footer
+
+    def _widest(self, values: Iterable[str]) -> int:
+        """Return how wide a table's column is to be for ``values``, also when
+        they are in bold."""
+        return max(self._bold.measure(value) for value in values) + _COLUMN_PADDING
 
     @staticmethod
     def _table(
@@ -443,9 +607,12 @@ class MainWindow:
         height: int,
         columns: dict[str, str],
         widths: dict[str, int],
+        optional: str | None = None,
+        wanted: int = _WANTED_TEXT_WIDTH,
     ) -> ttk.Treeview:
         """The "text" column takes up the width that is left over, and gives
-        way in a narrow window.
+        way in a narrow window; before it does, the ``optional`` column is
+        left out.
         """
         table = ttk.Treeview(
             parent,
@@ -455,14 +622,23 @@ class MainWindow:
             selectmode="browse",
         )
         for name, heading in columns.items():
-            slack = name == "text"
             table.heading(name, text=heading, anchor="w")
-            table.column(
-                name,
-                width=widths[name],
-                minwidth=_MIN_TEXT_WIDTH if slack else widths[name],
-                stretch=slack,
-            )
+            minwidth = _MIN_TEXT_WIDTH if name == "text" else widths[name]
+            table.column(name, width=widths[name], minwidth=minwidth, stretch=False)
+
+        def fit(event: tk.Event[ttk.Treeview]) -> None:
+            if event.width <= 1:
+                return  # not laid out yet
+            fixed = sum(width for name, width in widths.items() if name != "text")
+            shown = tuple(columns)
+            if optional and event.width - fixed < wanted:
+                shown = tuple(name for name in columns if name != optional)
+                fixed -= widths[optional]
+            if tuple(table.cget("displaycolumns")) != shown:
+                table.configure(displaycolumns=shown)
+            table.column("text", width=max(event.width - fixed, _MIN_TEXT_WIDTH))
+
+        table.bind("<Configure>", fit, add=True)
         table.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=table.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
@@ -472,42 +648,67 @@ class MainWindow:
     def _show_today(self, now: datetime.datetime) -> None:
         rows = self._app.rows()
         day = WEEKDAY_NAMES[now.weekday()]
-        shown = [
-            (day, f"{row.time:%H:%M}", row.summary, texts.STATUS[row.status])
+        shown: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
+            (
+                (
+                    day,
+                    f"{row.time:%H:%M}",
+                    texts.KINDS[row.kind],
+                    row.text,
+                    texts.status(row),
+                ),
+                (row.status.name,),
+            )
             for row in rows
         ]
         if shown == self._shown_rows:
-            return  # left alone, so that it keeps its place while scrolled
+            # Left alone, so that it keeps its place while scrolled. The rows
+            # are the same ones in the same places, but whether they can be
+            # changed, and what is sounding, may not be.
+            self._rows = rows
+            self._show_row_buttons()
+            return
         self._shown_rows = shown
         selected = self._selected_row()
         scrolled_to = self.today.yview()[0]
         self._rows = rows
         self.today.delete(*self.today.get_children())
-        for index, (row, values) in enumerate(zip(rows, shown, strict=True)):
-            self.today.insert(
-                "", "end", iid=str(index), values=values, tags=row.status.name
-            )
+        for index, (values, tags) in enumerate(shown):
+            self.today.insert("", "end", iid=str(index), values=values, tags=tags)
         if not rows:
             self.today.insert(
-                "", "end", iid=_NO_ROW, values=("", "", texts.NO_ROWS, ""), tags=_NO_ROW
+                "",
+                "end",
+                iid=_NO_ROW,
+                values=("", "", "", texts.NO_ROWS, ""),
+                tags=_NO_ROW,
             )
         if selected is not None:
-            # The same announcement, whatever its status and its place are now.
+            # The same announcement, whatever its status, time and place are now.
             same = [
-                str(index)
-                for index, row in enumerate(rows)
-                if (row.time, row.summary) == (selected.time, selected.summary)
+                str(index) for index, row in enumerate(rows) if _same(row, selected)
             ]
             self.today.selection_set(same[:1])
-        self._show_replay_button()
+        self._show_row_buttons()
         current = [
-            str(index)
+            index
             for index, row in enumerate(rows)
-            if row.status in (Status.PLAYING, Status.NEXT)
+            if row.status in BUSY or row.status is Status.NEXT
         ]
-        self._current_row = current[0] if current else None
+        # The rows of the minute that is being read or comes next.
+        self._current_rows = [
+            str(index) for index in current if rows[index].time == rows[current[0]].time
+        ]
         upcoming = next(
-            ((row.time, row.summary) for row in rows if row.status is Status.NEXT),
+            ((row.time, row.key) for row in rows if row.status is Status.NEXT),
+            None,
+        )
+        reading = next(
+            (
+                str(index)
+                for index, row in enumerate(rows)
+                if row.status is Status.PLAYING
+            ),
             None,
         )
         if upcoming != self._upcoming:
@@ -517,17 +718,24 @@ class MainWindow:
             # The day has not moved on, so the table stays where the operator
             # is, for example at a row that was read again.
             self.today.yview_moveto(scrolled_to)
+        if reading is not None and rows[int(reading)].key != self._reading:
+            # The row being read is kept in view as the reading moves on.
+            self.today.see(reading)
+        self._reading = None if reading is None else rows[int(reading)].key
 
     def _on_table_laid_out(self, event: tk.Event[ttk.Treeview]) -> None:
         """Only once the table has its size: a later resize must not undo what
         the operator scrolled to."""
-        if event.height > 1:
-            self.today.unbind("<Configure>")
+        if event.height > 1 and not self._laid_out:
+            self._laid_out = True
             self._see_current()
 
     def _see_current(self) -> None:
-        if self._current_row is not None:
-            self.today.see(self._current_row)
+        """Bring the whole minute in view, its first row last so that it is the
+        one that shows if not all of them fit."""
+        if self._current_rows:
+            self.today.see(self._current_rows[-1])
+            self.today.see(self._current_rows[0])
 
     def _selected_row(self) -> Row | None:
         """A row's id in today's table is its index among the rows shown."""
@@ -536,14 +744,21 @@ class MainWindow:
             return None
         return self._rows[int(selected[0])]
 
-    def _show_replay_button(self) -> None:
+    def _show_row_buttons(self) -> None:
         row = self._selected_row()
         replayable = row is not None and row.replayable
+        editable = row is not None and row.editable
+        skippable = row is not None and row.skippable
+        skipped = row is not None and row.status is Status.SKIPPING
         self.replay_button.state(["!disabled" if replayable else "disabled"])
+        self.edit_row_button.state(["!disabled" if editable else "disabled"])
+        self.skip_button.state(["!disabled" if skippable else "disabled"])
+        self.skip_button.configure(text=texts.UNSKIP if skipped else texts.SKIP)
+        self.stop_button.state(["!disabled" if self._app.sounding else "disabled"])
 
     def _on_double_click(self, event: tk.Event[ttk.Treeview]) -> None:
         if self.today.identify_row(event.y):  # not on the headings or below the rows
-            self.replay()
+            self.edit_row()
 
     def _show_announcements(self) -> None:
         """A row's id is the index of its custom announcement."""
@@ -586,7 +801,11 @@ class MainWindow:
         self.delete_button.state([state])
 
     def _show_template_button(self) -> None:
-        changed = self.template.get().strip() != self._app.settings.template
+        settings = self._app.settings
+        changed = (
+            self.template.get().strip(),
+            self.end_template.get().strip(),
+        ) != (settings.template, settings.end_template)
         self.save_template_button.state(["!disabled" if changed else "disabled"])
 
     def _show_warnings(self) -> None:
@@ -659,20 +878,29 @@ class MainWindow:
 
     def save_template(self) -> None:
         template = self.template.get().strip()
-        if template == self._app.settings.template:
+        end_template = self.end_template.get().strip()
+        settings = self._app.settings
+        if (template, end_template) == (settings.template, settings.end_template):
             return
+        for problem, wanted in (
+            (texts.START_NEEDS_PLACEHOLDER, template),
+            (texts.END_NEEDS_PLACEHOLDER, end_template),
+        ):
+            if not is_valid_template(wanted):
+                self._alert(_TEMPLATE_TITLE, problem)
+                return
         try:
-            self._app.set_template(template)
+            self._app.set_templates(template, end_template)
         except ValueError:
             self._alert(_TEMPLATE_TITLE, texts.TEMPLATE_NEEDS_PLACEHOLDER)
         except OSError:
-            _log.exception("Cannot save the template")
+            _log.exception("Cannot save the templates")
             self._alert(_TEMPLATE_TITLE, texts.CANNOT_SAVE)
         self.show()
 
-    def test(self) -> None:
+    def test(self, template: str) -> None:
         try:
-            self._app.test(self.template.get().strip())
+            self._app.test(template.strip())
         except ValueError:
             self._alert(_TEMPLATE_TITLE, texts.TEMPLATE_NEEDS_PLACEHOLDER)
         self.show()
@@ -681,6 +909,39 @@ class MainWindow:
         row = self._selected_row()
         if row is not None and self._app.replay(row):
             self.show()
+
+    def edit_row(self) -> None:
+        row = self._selected_row()
+        if row is None or not row.editable:
+            return
+        editing = self._app.editing(row)
+        if editing is None:
+            self._alert(_TODAY_TITLE, texts.CHANGE_PROBLEMS[ChangeProblem.GONE])
+            self.show()
+            return
+        ChangeDialog(self.root, self._app, row, editing).wait()
+        self.show()
+
+    def skip(self) -> None:
+        row = self._selected_row()
+        if row is None or not row.skippable:
+            return
+        try:
+            self._app.skip(row, row.status is not Status.SKIPPING)
+        except ChangeError as error:
+            self._alert(_TODAY_TITLE, texts.CHANGE_PROBLEMS[error.problem])
+        except OSError:
+            _log.exception("Cannot save the skipping of an announcement")
+            self._alert(_TODAY_TITLE, texts.CANNOT_SAVE)
+        self.show()
+
+    def announce(self) -> None:
+        InstantDialog(self.root, self._app).wait()
+        self.show()
+
+    def stop(self) -> None:
+        self._app.cut()
+        self.show()
 
     def choose_speed(self) -> None:
         speed = SPEEDS[self.speed_box.current()]
@@ -691,6 +952,11 @@ class MainWindow:
         delay = DELAYS[self.delay_box.current()]
         if delay != self._app.settings.delay:
             self._change(self._app.set_delay, delay)
+
+    def choose_end_announcements(self) -> None:
+        on = self.end_box.current() == 0
+        if on != self._app.settings.end_announcements:
+            self._change(self._app.set_end_announcements, on)
 
     def _change[Value](self, setting: Callable[[Value], None], value: Value) -> None:
         try:
@@ -749,3 +1015,20 @@ class MainWindow:
         self._alert(
             APP_NAME, "Beklenmeyen bir hata oluştu. Ayrıntılar kayıt dosyasındadır."
         )
+
+
+def _keep_in_view(box: ttk.LabelFrame, buttons: ttk.Frame) -> None:
+    """Let the table in the first row of ``box`` give way in height, but not so
+    far that one of the ``buttons`` beside it goes. Their height is known once
+    they are laid out."""
+    buttons.bind(
+        "<Configure>",
+        lambda event: box.rowconfigure(0, minsize=buttons.winfo_reqheight()),
+    )
+
+
+def _same(row: Row, other: Row) -> bool:
+    """Whether two rows are of the same announcement, whatever became of it."""
+    if row.key is not None or other.key is not None:
+        return row.key == other.key
+    return (row.time, row.kind, row.text) == (other.time, other.kind, other.text)

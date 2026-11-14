@@ -1,6 +1,7 @@
 import datetime
 import json
 import logging
+import queue
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -11,31 +12,49 @@ from announcer import VERSION
 from announcer.app import TEST_NAME, App, SlotTakenError, backup_copy
 from announcer.chime import CHIME_PATH
 from announcer.loader import ScheduleFileError, UnreadableFileError
-from announcer.models import CustomAnnouncement
+from announcer.models import CustomAnnouncement, Kind
 from announcer.settings import Settings, load_settings, save_settings
-from announcer.template import DEFAULT_TEMPLATE
+from announcer.template import DEFAULT_END_TEMPLATE, DEFAULT_TEMPLATE, render
 from announcer.timetable import SlotHolder
 from announcer.today import Row, Status
 from support import (
+    MONDAY,
     ROWS,
     FakeClock,
     FakeOutput,
     FakeProvider,
     at,
+    statuses,
     wait_for,
+    wait_for_speech,
     write_schedule,
 )
 
 SIX_PM, SEVEN_PM = datetime.time(18, 0), datetime.time(19, 0)
 WATER = CustomAnnouncement("Su içmeyi unutmayın.", SEVEN_PM)
+WELCOME, GOODBYE = "Hoş geldiniz, {ad_soyad}.", "Güle güle, {ad_soyad}."
+# The statuses of today's rows of the schedule: the start of both sessions
+# at six and their end at seven, before six and once six is read.
+UPCOMING = [Status.NEXT, Status.NEXT, Status.WAITING, Status.WAITING]
+READ_AT_SIX = [Status.PLAYED, Status.PLAYED, Status.NEXT, Status.NEXT]
 
 
-def wait_for_speech(app: App) -> None:
-    wait_for(app, lambda: not app.generating)
+def whom(row: Row) -> str:
+    """The athlete that a row is for, or what a custom announcement says."""
+    return row.key[2] if isinstance(row.key, tuple) and row.key[2] else row.text
 
 
-def statuses(app: App) -> list[Status]:
-    return [row.status for row in app.rows()]
+def starts(app: App) -> list[str]:
+    """Whom today's rows welcome; each of them is also seen off an hour later."""
+    return [whom(row) for row in app.rows() if row.kind is Kind.START]
+
+
+def started(name: str) -> str:
+    return render(DEFAULT_TEMPLATE, name)
+
+
+def ended(name: str) -> str:
+    return render(DEFAULT_END_TEMPLATE, name)
 
 
 def stored_speech(tmp_path: Path) -> set[Path]:
@@ -51,7 +70,13 @@ def test_choosing_a_schedule_loads_it_remembers_the_file_and_generates_its_speec
 ) -> None:
     app.choose_schedule(schedule)
 
-    assert [row.summary for row in app.rows()] == ["Ayşe Yılmaz, Mehmet Demir"]
+    # Each athlete has a row of their own, which shows the sentence read.
+    assert [(row.time, row.kind, row.text) for row in app.rows()] == [
+        (SIX_PM, Kind.START, started("Ayşe Yılmaz")),
+        (SIX_PM, Kind.START, started("Mehmet Demir")),
+        (SEVEN_PM, Kind.END, ended("Ayşe Yılmaz")),
+        (SEVEN_PM, Kind.END, ended("Mehmet Demir")),
+    ]
     assert app.refreshed_at == clock.now
     assert load_settings(settings_file).settings.schedule_path == schedule
     assert app.generating
@@ -59,7 +84,46 @@ def test_choosing_a_schedule_loads_it_remembers_the_file_and_generates_its_speec
 
     assert app.unspoken == ()
     assert sorted(text for text, _ in provider.calls) == sorted(
-        DEFAULT_TEMPLATE.replace("{ad_soyad}", name) for name, _, _ in ROWS
+        render(template, name)
+        for template in (DEFAULT_TEMPLATE, DEFAULT_END_TEMPLATE)
+        for name, _, _ in ROWS
+    )
+
+
+def test_athletes_of_a_minute_have_a_row_each_in_the_order_of_the_schedule(
+    app: App, tmp_path: Path
+) -> None:
+    in_order = [
+        ("Zeynep Kaya", "Pazartesi", "18:00"),
+        ("Can Öztürk", "Pazartesi", "19:00"),
+        ("Ayşe Yılmaz", "Pazartesi", "18:00"),
+        ("Mehmet Demir", "Pazartesi", "18:00"),
+    ]
+    app.choose_schedule(write_schedule(tmp_path / "in-order.xlsx", in_order))
+    eight_pm = datetime.time(20, 0)
+    app.save_announcement(CustomAnnouncement("Su içmeyi unutmayın.", eight_pm))
+
+    # Within a minute those whose session ends first, then those whose session
+    # starts, then the custom announcement.
+    assert [(row.time, row.kind, whom(row)) for row in app.rows()] == [
+        (SIX_PM, Kind.START, "Zeynep Kaya"),
+        (SIX_PM, Kind.START, "Ayşe Yılmaz"),
+        (SIX_PM, Kind.START, "Mehmet Demir"),
+        (SEVEN_PM, Kind.END, "Zeynep Kaya"),
+        (SEVEN_PM, Kind.END, "Ayşe Yılmaz"),
+        (SEVEN_PM, Kind.END, "Mehmet Demir"),
+        (SEVEN_PM, Kind.START, "Can Öztürk"),
+        (eight_pm, Kind.END, "Can Öztürk"),
+        (eight_pm, Kind.CUSTOM, "Su içmeyi unutmayın."),
+    ]
+    # And they are read in that order, after one chime.
+    slot = app.timetable.slot_at(MONDAY, SEVEN_PM)
+    assert slot is not None
+    assert slot.texts == (
+        ended("Zeynep Kaya"),
+        ended("Ayşe Yılmaz"),
+        ended("Mehmet Demir"),
+        started("Can Öztürk"),
     )
 
 
@@ -75,7 +139,7 @@ def test_schedule_that_cannot_be_used_is_not_chosen(
         app.choose_schedule(broken)
 
     assert app.settings.schedule_path == schedule
-    assert len(app.rows()) == 1
+    assert starts(app) == ["Ayşe Yılmaz", "Mehmet Demir"]
     assert (app.schedule_error, app.refreshed_at) == (None, refreshed_at)
 
 
@@ -87,7 +151,7 @@ def test_start_loads_the_schedule_that_was_chosen_before(
 
     app.start()
 
-    assert len(app.rows()) == 1
+    assert starts(app) == ["Ayşe Yılmaz", "Mehmet Demir"]
     assert app.refreshed_at is not None
 
 
@@ -100,10 +164,7 @@ def test_refresh_reads_the_file_again(
 
     app.refresh()
 
-    assert [row.summary for row in app.rows()] == [
-        "Ayşe Yılmaz, Mehmet Demir",
-        "Elif Şahin",
-    ]
+    assert starts(app) == ["Ayşe Yılmaz", "Mehmet Demir", "Elif Şahin"]
     assert app.refreshed_at == at(9)
 
 
@@ -117,14 +178,14 @@ def test_failed_refresh_keeps_the_schedule_that_was_read_last(
     app.refresh()
 
     assert isinstance(app.schedule_error, ScheduleFileError)
-    assert [row.summary for row in app.rows()] == ["Ayşe Yılmaz, Mehmet Demir"]
+    assert starts(app) == ["Ayşe Yılmaz", "Mehmet Demir"]
     assert app.refreshed_at == at(8)
 
     write_schedule(schedule, ROWS[:1])
     app.refresh()
 
     assert app.schedule_error is None
-    assert [row.summary for row in app.rows()] == ["Ayşe Yılmaz"]
+    assert starts(app) == ["Ayşe Yılmaz"]
 
 
 def test_schedule_file_that_was_saved_is_read_again_by_itself(
@@ -135,12 +196,9 @@ def test_schedule_file_that_was_saved_is_read_again_by_itself(
     clock.now = at(9)
 
     write_schedule(schedule, [*ROWS, ("Elif Şahin", "Pazartesi", "20:30")])
-    wait_for(app, lambda: len(app.rows()) == 2)
+    wait_for(app, lambda: len(starts(app)) == 3)
 
-    assert [row.summary for row in app.rows()] == [
-        "Ayşe Yılmaz, Mehmet Demir",
-        "Elif Şahin",
-    ]
+    assert starts(app) == ["Ayşe Yılmaz", "Mehmet Demir", "Elif Şahin"]
     assert app.refreshed_at == at(9)
 
 
@@ -173,7 +231,7 @@ def test_schedule_file_that_is_still_being_written_is_left_alone(
         time.sleep(0.01)
 
     assert app.schedule_error is None
-    assert len(app.rows()) == 1
+    assert starts(app) == ["Ayşe Yılmaz", "Mehmet Demir"]
 
 
 def test_schedule_file_that_disappears_is_reported_and_read_when_it_returns(
@@ -184,11 +242,11 @@ def test_schedule_file_that_disappears_is_reported_and_read_when_it_returns(
 
     schedule.unlink()
     wait_for(app, lambda: app.schedule_error is not None)
-    assert len(app.rows()) == 1
+    assert starts(app) == ["Ayşe Yılmaz", "Mehmet Demir"]
 
     write_schedule(schedule, ROWS[:1])
     wait_for(app, lambda: app.schedule_error is None)
-    assert [row.summary for row in app.rows()] == ["Ayşe Yılmaz"]
+    assert starts(app) == ["Ayşe Yılmaz"]
 
 
 def test_changed_schedule_file_that_cannot_be_read_is_tried_a_few_times(
@@ -227,7 +285,7 @@ def test_missing_speech_is_tried_again_every_few_minutes(
     wait_for_speech(app)
 
     assert not app.unspoken
-    assert len(provider.calls) == asked + 3
+    assert len(provider.calls) == asked + 6  # each athlete's start and end
 
 
 def test_schedule_file_that_cannot_be_read_is_tried_again_every_few_minutes(
@@ -254,20 +312,24 @@ def test_schedule_file_that_cannot_be_read_is_tried_again_every_few_minutes(
 
 
 def test_slot_that_is_running_when_the_app_starts_is_not_announced(
-    app: App,
+    make_app: Callable[[], App],
     schedule: Path,
     output: FakeOutput,
     clock: FakeClock,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    app.choose_schedule(schedule)
-    wait_for_speech(app)
+    before = make_app()
+    before.choose_schedule(schedule)
+    wait_for_speech(before)
+    before.stop()
     clock.now = at(18, 0, 5)
+    # It reads the schedule as it starts, from the settings that ``before`` left.
+    app = make_app()
 
     with caplog.at_level(logging.WARNING, logger="announcer.app"):
         app.start()
 
-    assert statuses(app) == [Status.PASSED]
+    assert statuses(app) == [Status.PASSED, Status.PASSED, Status.NEXT, Status.NEXT]
     assert "18:00 not announced, its minute had begun when the app started" in (
         caplog.text
     )
@@ -277,18 +339,25 @@ def test_slot_that_is_running_when_the_app_starts_is_not_announced(
     assert output.played == []
 
 
-def test_new_template_is_stored_and_spoken(
+def test_new_templates_are_stored_and_spoken(
     app: App, schedule: Path, settings_file: Path, provider: FakeProvider
 ) -> None:
     app.choose_schedule(schedule)
     wait_for_speech(app)
 
-    app.set_template("Hoş geldiniz, {ad_soyad}.")
+    app.set_templates(WELCOME, GOODBYE)
     wait_for_speech(app)
 
-    assert load_settings(settings_file).settings.template == "Hoş geldiniz, {ad_soyad}."
-    assert app.timetable.slots[0].texts[0] == "Hoş geldiniz, Ayşe Yılmaz."
+    stored = load_settings(settings_file).settings
+    assert (stored.template, stored.end_template) == (WELCOME, GOODBYE)
+    assert (app.spoken_template, app.spoken_end_template) == (WELCOME, GOODBYE)
+    start, end = app.timetable.slots[:2]
+    assert (start.texts[0], end.texts[0]) == (
+        "Hoş geldiniz, Ayşe Yılmaz.",
+        "Güle güle, Ayşe Yılmaz.",
+    )
     assert ("Hoş geldiniz, Zeynep Kaya.", app.settings.voice) in provider.calls
+    assert ("Güle güle, Zeynep Kaya.", app.settings.voice) in provider.calls
     assert app.unspoken == ()
 
 
@@ -297,7 +366,7 @@ def test_template_changed_while_speech_is_generated_is_spoken_too(
 ) -> None:
     app.choose_schedule(schedule)
     assert app.generating
-    app.set_template("Hoş geldiniz, {ad_soyad}.")
+    app.set_templates(WELCOME, DEFAULT_END_TEMPLATE)
     wait_for_speech(app)
 
     assert ("Hoş geldiniz, Ayşe Yılmaz.", app.settings.voice) in provider.calls
@@ -308,9 +377,11 @@ def test_template_without_the_placeholder_is_rejected(
     app: App, settings_file: Path
 ) -> None:
     with pytest.raises(ValueError, match="placeholder"):
-        app.set_template("Hoş geldiniz.")
+        app.set_templates("Hoş geldiniz.", DEFAULT_END_TEMPLATE)
+    with pytest.raises(ValueError, match="placeholder"):
+        app.set_templates(DEFAULT_TEMPLATE, "Güle güle.")
 
-    assert app.settings.template == DEFAULT_TEMPLATE
+    assert app.settings == Settings()
     assert not settings_file.exists()
 
 
@@ -322,9 +393,13 @@ def test_custom_announcement_is_added_and_stored(
     app.save_announcement(WATER)
 
     assert load_settings(settings_file).settings.custom_announcements == (WATER,)
-    assert [row.summary for row in app.rows()] == [
-        "Ayşe Yılmaz, Mehmet Demir",
-        "Su içmeyi unutmayın.",
+    # The end of a session does not take its minute: the announcement follows it.
+    assert [(row.time, row.kind, row.text) for row in app.rows()] == [
+        (SIX_PM, Kind.START, started("Ayşe Yılmaz")),
+        (SIX_PM, Kind.START, started("Mehmet Demir")),
+        (SEVEN_PM, Kind.END, ended("Ayşe Yılmaz")),
+        (SEVEN_PM, Kind.END, ended("Mehmet Demir")),
+        (SEVEN_PM, Kind.CUSTOM, "Su içmeyi unutmayın."),
     ]
 
 
@@ -373,7 +448,7 @@ def test_custom_announcement_is_deleted(app: App, settings_file: Path) -> None:
 
     assert app.settings.custom_announcements == (closing,)
     assert load_settings(settings_file).settings.custom_announcements == (closing,)
-    assert [row.summary for row in app.rows()] == ["Salon kapanıyor."]
+    assert [row.text for row in app.rows()] == ["Salon kapanıyor."]
 
 
 def test_athletes_win_a_slot_when_a_reload_creates_a_conflict(
@@ -385,10 +460,14 @@ def test_athletes_win_a_slot_when_a_reload_creates_a_conflict(
 
     app.refresh()
 
-    assert [(row.summary, row.status) for row in app.rows()] == [
-        ("Ayşe Yılmaz, Mehmet Demir", Status.NEXT),
-        ("Elif Şahin", Status.WAITING),
-        ("Su içmeyi unutmayın.", Status.CONFLICT),
+    assert [(row.kind, whom(row), row.status) for row in app.rows()] == [
+        (Kind.START, "Ayşe Yılmaz", Status.NEXT),
+        (Kind.START, "Mehmet Demir", Status.NEXT),
+        (Kind.END, "Ayşe Yılmaz", Status.WAITING),
+        (Kind.END, "Mehmet Demir", Status.WAITING),
+        (Kind.START, "Elif Şahin", Status.WAITING),
+        (Kind.CUSTOM, "Su içmeyi unutmayın.", Status.CONFLICT),
+        (Kind.END, "Elif Şahin", Status.WAITING),
     ]
     assert len(app.timetable.conflicts) == 1
     # The announcement stays stored: it still plays on the other days.
@@ -401,7 +480,9 @@ def test_change_that_cannot_be_saved_changes_nothing(
     settings_file.mkdir(parents=True)  # a folder where the file should be
 
     with pytest.raises(OSError):
-        app.set_template("Hoş geldiniz, {ad_soyad}.")
+        app.set_templates(WELCOME, GOODBYE)
+    with pytest.raises(OSError):
+        app.set_end_announcements(False)
     with pytest.raises(OSError):
         app.save_announcement(WATER)
     with pytest.raises(OSError):
@@ -428,21 +509,65 @@ def test_due_slot_is_announced_and_shown_as_played(
 ) -> None:
     app.choose_schedule(schedule)
     wait_for_speech(app)
-    assert statuses(app) == [Status.NEXT]
+    assert statuses(app) == UPCOMING
 
     app.start()
     clock.now = at(18, 0, 1)
-    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
+    wait_for(app, lambda: statuses(app) == READ_AT_SIX)
 
     assert output.played[0] == CHIME_PATH
     assert [path.parent for path in output.played[1:]] == [tmp_path / "audio"] * 2
     last = app.last_announcement
     assert last is not None
-    assert (last.due, last.summary, last.status) == (
+    assert (last.due, last.parts, last.status) == (
         at(18),
-        "Ayşe Yılmaz, Mehmet Demir",
+        ((Kind.START, "Ayşe Yılmaz"), (Kind.START, "Mehmet Demir")),
         Status.PLAYED,
     )
+
+    clock.now = at(19, 0, 1)
+    wait_for(app, lambda: statuses(app) == [Status.PLAYED] * 4)
+
+    assert len(output.played) == 6
+    last = app.last_announcement
+    assert last is not None
+    assert (last.due, last.parts) == (
+        at(19),
+        ((Kind.END, "Ayşe Yılmaz"), (Kind.END, "Mehmet Demir")),
+    )
+
+
+def test_rows_follow_the_reading_from_one_athlete_to_the_next(
+    app: App, output: FakeOutput, clock: FakeClock, tmp_path: Path
+) -> None:
+    three = [*ROWS[:2], ("Can Öztürk", "Pazartesi", "18:00")]
+    app.choose_schedule(write_schedule(tmp_path / "three.xlsx", three))
+    wait_for_speech(app)
+    # The player holds each file until the rows were looked at.
+    sounding: queue.Queue[Path] = queue.Queue()
+    looked: queue.Queue[None] = queue.Queue()
+
+    def hold(path: Path) -> None:
+        sounding.put(path)
+        looked.get(timeout=5)
+
+    output.while_playing = hold
+    app.start()
+    clock.now = at(18)
+    seen: list[list[Status]] = []
+    for _ in range(4):  # the chime, then each athlete
+        sounding.get(timeout=5)
+        app.poll()
+        seen.append(statuses(app)[:3])
+        looked.put(None)
+    wait_for(app, lambda: statuses(app)[:3] == [Status.PLAYED] * 3)
+
+    assert seen == [
+        [Status.QUEUED, Status.QUEUED, Status.QUEUED],
+        [Status.PLAYING, Status.QUEUED, Status.QUEUED],
+        [Status.PLAYED, Status.PLAYING, Status.QUEUED],
+        [Status.PLAYED, Status.PLAYED, Status.PLAYING],
+    ]
 
 
 def test_slot_without_speech_is_shown_as_skipped(
@@ -455,11 +580,11 @@ def test_slot_without_speech_is_shown_as_skipped(
     provider.offline = True
     app.choose_schedule(schedule)
     wait_for_speech(app)
-    assert len(app.unspoken) == 3
+    assert len(app.unspoken) == 6
 
     app.start()
     clock.now = at(18)
-    wait_for(app, lambda: statuses(app) == [Status.NO_SPEECH])
+    wait_for(app, lambda: statuses(app)[:3] == [*[Status.NO_SPEECH] * 2, Status.NEXT])
 
     assert output.played == []
 
@@ -473,7 +598,7 @@ def test_slot_that_the_output_cannot_play_is_shown_as_failed(
 
     app.start()
     clock.now = at(18)
-    wait_for(app, lambda: statuses(app) == [Status.NO_OUTPUT])
+    wait_for(app, lambda: statuses(app)[:3] == [*[Status.NO_OUTPUT] * 2, Status.NEXT])
 
     last = app.last_announcement
     assert last is not None
@@ -495,11 +620,18 @@ def test_slot_that_was_slept_through_is_shown_as_skipped(
     clock.now = at(18, 30)
     wait_for(app, lambda: statuses(app)[1] is Status.ASLEEP)
 
-    assert statuses(app) == [Status.PLAYED, Status.ASLEEP, Status.NEXT]
+    assert statuses(app) == [
+        Status.PLAYED,
+        Status.ASLEEP,
+        Status.ASLEEP,
+        Status.NEXT,
+        Status.NEXT,
+        Status.NEXT,
+    ]
     assert output.played == played
     last = app.last_announcement
     assert last is not None
-    assert last.summary == "Günaydın."
+    assert last.parts == ((Kind.CUSTOM, "Günaydın."),)
 
 
 def test_outcomes_of_yesterday_are_not_shown_today(
@@ -515,7 +647,7 @@ def test_outcomes_of_yesterday_are_not_shown_today(
     clock.now = at(19) + datetime.timedelta(days=7)
     wait_for(app, lambda: statuses(app)[-1] is Status.PLAYED)
 
-    assert statuses(app) == [Status.ASLEEP, Status.PLAYED]
+    assert statuses(app) == [*[Status.ASLEEP] * 2, *[Status.PLAYED] * 3]
 
 
 def test_test_announcement_speaks_the_template_with_a_made_up_name(
@@ -527,7 +659,7 @@ def test_test_announcement_speaks_the_template_with_a_made_up_name(
     assert app.test_status is None
 
     app.test("Merhaba {ad_soyad}.")
-    assert app.test_status is Status.PLAYING
+    assert app.test_status is Status.PREPARING
     wait_for(app, lambda: app.test_status is Status.PLAYED)
 
     assert provider.calls == [(f"Merhaba {TEST_NAME}.", app.settings.voice)]
@@ -579,7 +711,7 @@ def test_dropped_custom_announcements_are_counted(
     assert app.dropped_announcements == 1
     assert len(app.settings.custom_announcements) == 1
     assert app.settings_backed_up
-    app.set_template("Hoş geldiniz, {ad_soyad}.")
+    app.set_templates(WELCOME, DEFAULT_END_TEMPLATE)
     assert '"25:00"' not in settings_file.read_text(encoding="utf-8")
     assert '"25:00"' in backup_copy(settings_file).read_text(encoding="utf-8")
 
@@ -618,28 +750,54 @@ def test_athletes_keep_the_old_template_until_the_new_one_has_speech(
 ) -> None:
     app.choose_schedule(schedule)
     wait_for_speech(app)
-    old = app.timetable.slots[0].texts
+    old = app.timetable.slots[0].texts, app.timetable.slots[1].texts
 
     provider.offline = True
-    app.set_template("Hoş geldiniz, {ad_soyad}.")
+    app.set_templates(WELCOME, GOODBYE)
     wait_for_speech(app)
 
-    assert app.settings.template == "Hoş geldiniz, {ad_soyad}."
-    assert app.spoken_template == DEFAULT_TEMPLATE
-    assert app.timetable.slots[0].texts == old
-    assert len(app.unspoken) == 3
+    assert (app.settings.template, app.settings.end_template) == (WELCOME, GOODBYE)
+    assert (app.spoken_template, app.spoken_end_template) == (
+        DEFAULT_TEMPLATE,
+        DEFAULT_END_TEMPLATE,
+    )
+    assert (app.timetable.slots[0].texts, app.timetable.slots[1].texts) == old
+    assert len(app.unspoken) == 6
     app.start()
     clock.now = at(18)
-    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
+    wait_for(app, lambda: statuses(app) == READ_AT_SIX)
     assert len(output.played) == 3  # the chime and both athletes
 
     provider.offline = False
     app.refresh()
     wait_for_speech(app)
 
-    assert app.spoken_template == "Hoş geldiniz, {ad_soyad}."
+    assert (app.spoken_template, app.spoken_end_template) == (WELCOME, GOODBYE)
     assert app.timetable.slots[0].texts[0] == "Hoş geldiniz, Ayşe Yılmaz."
+    assert app.timetable.slots[1].texts[0] == "Güle güle, Ayşe Yılmaz."
     assert not app.unspoken
+
+
+def test_outcome_stays_with_its_athlete_when_the_template_changes(
+    app: App, schedule: Path, provider: FakeProvider, clock: FakeClock
+) -> None:
+    provider.unspeakable = {started("Mehmet Demir")}
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    app.start()
+    clock.now = at(18)
+    wait_for(app, lambda: statuses(app)[:2] == [Status.PLAYED, Status.NO_SPEECH])
+    clock.now = at(18, 5)
+
+    app.set_templates(WELCOME, GOODBYE)
+    wait_for(app, lambda: app.spoken_template == WELCOME)
+
+    assert [(row.text, row.status) for row in app.rows()] == [
+        ("Hoş geldiniz, Ayşe Yılmaz.", Status.PLAYED),
+        ("Hoş geldiniz, Mehmet Demir.", Status.NO_SPEECH),
+        ("Güle güle, Ayşe Yılmaz.", Status.NEXT),
+        ("Güle güle, Mehmet Demir.", Status.NEXT),
+    ]
 
 
 def test_template_with_stored_speech_is_spoken_at_once(
@@ -647,14 +805,17 @@ def test_template_with_stored_speech_is_spoken_at_once(
 ) -> None:
     app.choose_schedule(schedule)
     wait_for_speech(app)
-    app.set_template("Hoş geldiniz, {ad_soyad}.")
+    app.set_templates(WELCOME, GOODBYE)
     wait_for_speech(app)
     provider.offline = True
 
-    app.set_template(DEFAULT_TEMPLATE)
+    app.set_templates(DEFAULT_TEMPLATE, DEFAULT_END_TEMPLATE)
 
     assert not app.generating
-    assert app.spoken_template == DEFAULT_TEMPLATE
+    assert (app.spoken_template, app.spoken_end_template) == (
+        DEFAULT_TEMPLATE,
+        DEFAULT_END_TEMPLATE,
+    )
 
 
 def test_new_speed_is_stored_and_spoken_once_its_speech_exists(
@@ -676,10 +837,10 @@ def test_new_speed_is_stored_and_spoken_once_its_speech_exists(
     assert (app.generating, app.spoken_speed) == (True, 1.0)
     wait_for_speech(app)
     assert app.spoken_speed == 0.9
-    assert provider.speeds == [1.0] * 3 + [0.9] * 3
+    assert provider.speeds == [1.0] * 6 + [0.9] * 6
     app.start()
     clock.now = at(18)
-    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
+    wait_for(app, lambda: statuses(app) == READ_AT_SIX)
     assert len(output.played) == 3
     assert not normal.intersection(output.played)
 
@@ -702,7 +863,7 @@ def test_announcements_keep_the_old_speed_until_the_new_one_has_speech(
     wait_for_speech(app)
 
     assert (app.settings.speed, app.spoken_speed) == (1.2, 1.0)
-    assert len(app.unspoken) == 4
+    assert len(app.unspoken) == 7
     app.start()
     clock.now = at(18)
     wait_for(app, lambda: statuses(app)[0] is Status.PLAYED)
@@ -715,7 +876,7 @@ def test_announcements_keep_the_old_speed_until_the_new_one_has_speech(
     assert app.spoken_speed == 1.2
     assert not app.unspoken
     clock.now = at(19)
-    wait_for(app, lambda: statuses(app)[1] is Status.PLAYED)
+    wait_for(app, lambda: statuses(app)[-1] is Status.PLAYED)
     assert output.played[-1] not in normal  # a custom announcement has it too
 
 
@@ -769,23 +930,36 @@ def test_delay_is_stored_and_moves_every_announcement(
     assert not app.generating  # the speech is the same
     assert [row.time for row in app.rows()] == [
         datetime.time(18, 2),
+        datetime.time(18, 2),
+        datetime.time(19, 2),
+        datetime.time(19, 2),
         datetime.time(19, 2),
     ]
     app.start()
     clock.now = at(18)
     time.sleep(0.1)
     app.poll()
-    assert (statuses(app), output.played) == ([Status.NEXT, Status.WAITING], [])
+    assert (statuses(app), output.played) == (
+        [*[Status.NEXT] * 2, *[Status.WAITING] * 3],
+        [],
+    )
 
     clock.now = at(18, 2)
-    wait_for(app, lambda: statuses(app)[0] is Status.PLAYED)
-    clock.now = at(19, 2)
     wait_for(app, lambda: statuses(app)[1] is Status.PLAYED)
+    clock.now = at(19, 2)
+    wait_for(app, lambda: statuses(app)[-1] is Status.PLAYED)
 
     last = app.last_announcement
     assert last is not None
-    assert (last.due, last.summary) == (at(19, 2), "Su içmeyi unutmayın.")
-    assert len(output.played) == 5
+    assert (last.due, last.parts) == (
+        at(19, 2),
+        (
+            (Kind.END, "Ayşe Yılmaz"),
+            (Kind.END, "Mehmet Demir"),
+            (Kind.CUSTOM, "Su içmeyi unutmayın."),
+        ),
+    )
+    assert len(output.played) == 7
 
 
 def test_delay_does_not_change_which_times_are_taken(app: App, schedule: Path) -> None:
@@ -798,7 +972,10 @@ def test_delay_does_not_change_which_times_are_taken(app: App, schedule: Path) -
 
     assert [row.time for row in app.rows()] == [
         datetime.time(18, 2),
+        datetime.time(18, 2),
         datetime.time(18, 4),
+        datetime.time(19, 2),
+        datetime.time(19, 2),
     ]
     assert app.timetable.conflicts == ()
 
@@ -813,7 +990,7 @@ def test_change_of_the_delay_keeps_what_is_known_and_repeats_nothing(
     clock.now = at(9)
     wait_for(app, lambda: statuses(app)[0] is Status.PLAYED)
     clock.now = at(18)
-    wait_for(app, lambda: statuses(app) == [Status.PLAYED, Status.PLAYED])
+    wait_for(app, lambda: statuses(app) == [Status.PLAYED, *READ_AT_SIX])
     played = list(output.played)
 
     clock.now = at(18, 5)
@@ -822,13 +999,16 @@ def test_change_of_the_delay_keeps_what_is_known_and_repeats_nothing(
     assert [(row.time, row.status) for row in app.rows()] == [
         (datetime.time(9, 10), Status.PLAYED),
         (datetime.time(18, 10), Status.PLAYED),
+        (datetime.time(18, 10), Status.PLAYED),
+        (datetime.time(19, 10), Status.NEXT),
+        (datetime.time(19, 10), Status.NEXT),
     ]
     clock.now = at(18, 10)
     time.sleep(0.1)
     app.poll()
     assert output.played == played
     app.set_delay(0)
-    assert statuses(app) == [Status.PLAYED, Status.PLAYED]
+    assert statuses(app) == [Status.PLAYED, *READ_AT_SIX]
 
 
 def test_shorter_delay_announces_at_once_what_would_have_been_dropped(
@@ -841,11 +1021,11 @@ def test_shorter_delay_announces_at_once_what_would_have_been_dropped(
     clock.now = at(18, 2)
     time.sleep(0.1)
     app.poll()
-    assert (statuses(app), output.played) == ([Status.NEXT], [])
+    assert (statuses(app), output.played) == (UPCOMING, [])
 
     app.set_delay(0)
 
-    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
+    wait_for(app, lambda: statuses(app) == READ_AT_SIX)
     assert len(output.played) == 3
     last = app.last_announcement
     assert last is not None
@@ -864,20 +1044,25 @@ def test_row_is_announced_again_on_request(
     wait_for_speech(app)
     app.start()
     clock.now = at(18)
-    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
-    played = list(output.played)
+    wait_for(app, lambda: statuses(app) == READ_AT_SIX)
+    chime, _, mehmet = output.played
     clock.now = at(18, 7)
 
-    assert app.replay(app.rows()[0])
+    assert app.replay(app.rows()[1])
 
-    assert statuses(app) == [Status.PLAYING]
-    assert not app.replay(app.rows()[0])  # not while it is sounding
-    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
-    assert output.played == played * 2
+    # Only that athlete is read again.
+    assert statuses(app) == [Status.PLAYED, Status.QUEUED, Status.NEXT, Status.NEXT]
+    assert not app.replay(app.rows()[1])  # not while it is still to sound
+    wait_for(app, lambda: statuses(app) == READ_AT_SIX)
+    assert output.played[3:] == [chime, mehmet]
     last = app.last_announcement
     assert last is not None
-    assert (last.due, last.status) == (at(18), Status.PLAYED)
-    assert '18:00 asked for again: "Ayşe Yılmaz, antrenmanınız' in caplog.text
+    assert (last.due, last.parts, last.status) == (
+        at(18),
+        ((Kind.START, "Mehmet Demir"),),
+        Status.PLAYED,
+    )
+    assert f'18:00 asked for again: "{started("Mehmet Demir")}"\n' in caplog.text
 
 
 def test_row_whose_time_went_by_can_be_announced_afterwards(
@@ -890,12 +1075,13 @@ def test_row_whose_time_went_by_can_be_announced_afterwards(
     wait_for_speech(app)
     clock.now = at(18, 5)
     app.start()
-    assert statuses(app) == [Status.PASSED]
+    assert statuses(app) == [Status.PASSED, Status.PASSED, Status.NEXT, Status.NEXT]
 
     assert app.replay(app.rows()[0])
-    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
+    wait_for(app, lambda: statuses(app)[0] is Status.PLAYED)
 
-    assert len(output.played) == 3
+    assert statuses(app) == [Status.PLAYED, Status.PASSED, Status.NEXT, Status.NEXT]
+    assert len(output.played) == 2
     assert not normal.intersection(output.played)  # at the speed in use
 
 
@@ -912,8 +1098,11 @@ def test_row_is_not_read_again_while_what_was_at_its_time_is_sounding(
     late = ("Can Öztürk", "Pazartesi", "18:00")
     app.choose_schedule(write_schedule(tmp_path / "more.xlsx", [*ROWS, late]))
     wait_for_speech(app)
-    assert [(row.summary, row.status) for row in app.rows()] == [
-        ("Ayşe Yılmaz, Mehmet Demir, Can Öztürk", Status.PASSED)
+    # The athlete's row still shows what sounds, the schedule changed or not.
+    assert [(row.kind, whom(row), row.status) for row in app.rows()][:3] == [
+        (Kind.START, "Ayşe Yılmaz", Status.QUEUED),
+        (Kind.START, "Mehmet Demir", Status.PASSED),
+        (Kind.START, "Can Öztürk", Status.PASSED),
     ]
 
     assert not app.replay(app.rows()[0])
@@ -922,7 +1111,7 @@ def test_row_is_not_read_again_while_what_was_at_its_time_is_sounding(
     wait_for(app, lambda: app.last_announcement is not None)
     last = app.last_announcement
     assert last is not None
-    assert last.summary == "Ayşe Yılmaz, Mehmet Demir"
+    assert last.parts == ((Kind.START, "Ayşe Yılmaz"),)
     assert app.replay(app.rows()[0])
 
 
@@ -952,7 +1141,7 @@ def test_start_speaks_at_a_speed_that_has_speech(
         caplog.text
     )
     clock.now = at(18)
-    wait_for(app, lambda: statuses(app) == [Status.PLAYED])
+    wait_for(app, lambda: statuses(app) == READ_AT_SIX)
     assert len(output.played) == 3
 
     provider.offline = False
@@ -972,11 +1161,14 @@ def test_row_that_cannot_be_replayed_is_left_alone(
     assert (waiting.status, passed.status) == (Status.NEXT, Status.PASSED)
 
     assert not app.replay(waiting)  # no longer what the row is
-    assert not app.replay(Row(SIX_PM, "Zeynep Kaya", Status.PASSED))
+    zeynep = (at(18), Kind.START, "Zeynep Kaya")  # trains on Tuesday
+    assert not app.replay(
+        Row(SIX_PM, Kind.START, started("Zeynep Kaya"), Status.PASSED, zeynep)
+    )
     app.set_delay(10)
     assert not app.replay(passed)  # it has moved to a time that is still to come
 
-    assert statuses(app) == [Status.NEXT]
+    assert statuses(app) == UPCOMING
 
 
 def test_outcome_does_not_pass_to_what_is_put_at_that_time_later(
@@ -1010,9 +1202,12 @@ def test_actions_and_outcomes_are_logged_with_their_cause(
     wait_for_speech(app)
     app.start()
     clock.now = at(18)
-    wait_for(app, lambda: statuses(app)[0] is Status.PARTLY_PLAYED)
+    wait_for(app, lambda: statuses(app)[:2] == [Status.PLAYED, Status.NO_SPEECH])
+    last = app.last_announcement
+    assert last is not None
+    assert last.status is Status.PARTLY_PLAYED
     clock.now = at(20)
-    wait_for(app, lambda: statuses(app)[1] is Status.ASLEEP)
+    wait_for(app, lambda: statuses(app)[2] is Status.ASLEEP)
 
     log = caplog.text
     assert f"Version {VERSION} started" in log
