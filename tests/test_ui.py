@@ -9,7 +9,7 @@ import time
 import tkinter as tk
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font, messagebox, ttk
 
 import pytest
 
@@ -18,7 +18,7 @@ from announcer.chime import CHIME_PATH
 from announcer.models import ALL_WEEKDAYS, CustomAnnouncement, Kind
 from announcer.template import DEFAULT_END_TEMPLATE, DEFAULT_TEMPLATE, render
 from announcer.today import Row, Status
-from announcer.ui import announcement_dialog, change_dialog, main_window
+from announcer.ui import announcement_dialog, change_dialog, main_window, theme
 from announcer.ui.announcement_dialog import AnnouncementDialog
 from announcer.ui.change_dialog import ChangeDialog
 from announcer.ui.instant_dialog import InstantDialog
@@ -33,6 +33,7 @@ from support import (
     write_schedule,
 )
 
+OFF_THE_SCREEN = "+5000+5000"
 WATER = CustomAnnouncement("Su içmeyi unutmayın.", datetime.time(19, 0))
 CLOSING = CustomAnnouncement("Salon kapanıyor.", datetime.time(9, 30), frozenset({5}))
 # Their sessions start at 18:00 on the schedule's Monday, in this order.
@@ -212,12 +213,6 @@ def text_entry(parent: tk.Misc) -> ttk.Entry:
         each for each in widgets(parent, ttk.Entry) if not isinstance(each, ttk.Spinbox)
     ]
     return found
-
-
-def master_of(widget: tk.Misc) -> tk.Misc:
-    master = widget.master
-    assert master is not None
-    return master
 
 
 def test_fresh_window_asks_for_a_schedule(window: MainWindow) -> None:
@@ -1703,20 +1698,234 @@ def test_wrapped_warnings_get_the_lines_they_need(
     assert last_line_in_view or window.warnings.yview() != (0.0, 1.0)
 
 
-def test_tables_give_way_in_height_no_further_than_the_buttons_beside_them(
+@pytest.mark.parametrize("table_name", ["today", "announcements"])
+def test_table_has_a_scrollbar_only_while_not_all_of_its_rows_fit(
+    window: MainWindow, table_name: str
+) -> None:
+    table: ttk.Treeview = getattr(window, table_name)
+    [scrollbar] = widgets(table.master, ttk.Scrollbar)
+    scrolled = str(table.cget("yscrollcommand"))
+
+    table.tk.call(scrolled, 0.0, 0.5)
+    assert scrollbar.winfo_manager() == "grid"
+    assert scrollbar.get() == (0.0, 0.5)
+
+    table.tk.call(scrolled, 0.0, 1.0)
+    assert not scrollbar.winfo_manager()
+
+    table.tk.call(scrolled, 0.25, 1.0)
+    assert scrollbar.winfo_manager() == "grid"
+
+
+def test_window_and_its_dialogs_have_the_same_look_on_every_system(
+    window: MainWindow, make_instant_dialog: Callable[[], InstantDialog]
+) -> None:
+    style = ttk.Style(window.root)
+    assert style.theme_use() == "clam"
+    assert tk.TkVersion >= 9
+
+    assert window.root.cget("background") == theme.WINDOW
+    dialog = make_instant_dialog()
+    assert dialog.window.cget("background") == theme.CARD
+    assert style.lookup("TFrame", "background") == theme.CARD
+    assert str(window.instant_button.cget("style")) == "Primary.TButton"
+    assert str(dialog.read_button.cget("style")) == "Primary.TButton"
+    assert style.lookup("Primary.TButton", "background") == theme.INK
+
+
+def test_no_colour_of_the_base_theme_is_left_in_any_state(window: MainWindow) -> None:
+    style = ttk.Style(window.root)
+    palette = {
+        value
+        for value in vars(theme).values()
+        if isinstance(value, str) and value.startswith("#")
+    }
+    restyled = (
+        ".",
+        "TButton",
+        "Primary.TButton",
+        "Danger.TButton",
+        "TEntry",
+        "Shown.TEntry",
+        "TCombobox",
+        "TSpinbox",
+        "TCheckbutton",
+        "TRadiobutton",
+        "Treeview",
+        "Treeview.Heading",
+        "Vertical.TScrollbar",
+    )
+
+    for name in restyled:
+        for option, colours in style.map(name).items():
+            assert {str(colour[-1]) for colour in colours} <= palette, (name, option)
+    for field in ("TEntry", "TCombobox", "TSpinbox"):
+        for state in ([], ["focus"], ["readonly"], ["readonly", "focus"], ["disabled"]):
+            text = style.lookup(field, "foreground", state)
+            assert text != style.lookup(field, "fieldbackground", state), (field, state)
+            assert text == (theme.TEXT if "disabled" not in state else "#a3a9b3")
+
+
+def test_row_keeps_the_colour_of_its_status_while_it_is_selected(
     window: MainWindow,
 ) -> None:
-    if sys.platform != "darwin":
-        # Only macOS lays a window out while it is kept off the screen.
-        window.root.deiconify()
-    window.root.update_idletasks()
-    beside = (master_of(window.add_button), master_of(window.instant_button))
+    style = ttk.Style(window.root)
 
-    def high_enough(buttons: tk.Misc) -> bool:
-        minsize = int(master_of(buttons).grid_rowconfigure(0)["minsize"])
-        return minsize >= buttons.winfo_reqheight() > 1
+    assert not style.map("Treeview", "foreground")
+    assert style.map("Treeview", "background")
 
-    pump(window, lambda: all(high_enough(buttons) for buttons in beside))
+
+def test_arrows_of_a_time_box_are_easy_to_hit(window: MainWindow) -> None:
+    shown = tk.Toplevel(window.root)
+    shown.geometry(OFF_THE_SCREEN)
+    box = ttk.Spinbox(shown, from_=0, to=23, width=3)
+    box.pack()
+    pump(window, lambda: bool(box.identify(1, 1)))
+
+    rows: dict[str, int] = {}
+    for y in range(box.winfo_height()):
+        part = str(box.identify(box.winfo_width() - 8, y))
+        rows[part] = rows.get(part, 0) + 1
+
+    assert rows["Plain.Spinbox.uparrow"] >= 10
+    assert rows["Plain.Spinbox.downarrow"] >= 10
+
+
+def test_pointer_follows_a_button_that_a_press_disables_or_closes(
+    window: MainWindow, make_instant_dialog: Callable[[], InstantDialog]
+) -> None:
+    errors: list[str] = []
+    window.root.tk.createcommand("bgerror", errors.append)
+    stop = window.stop_button
+    assert stop.instate(["disabled"])
+    stop.configure(cursor=theme.POINTER)
+
+    stop.event_generate("<ButtonRelease-1>", x=2, y=2)
+    assert not str(stop.cget("cursor"))
+
+    dialog = make_instant_dialog()
+    cancel = button(dialog.window, "Vazgeç")
+    cancel.state(["pressed"])
+    cancel.event_generate("<ButtonRelease-1>", x=2, y=2)
+    window.root.update()
+    assert not dialog.window.winfo_exists()
+    assert errors == []
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="only macOS has a dark look")
+def test_window_and_dialogs_stay_light_where_the_system_is_dark(
+    window: MainWindow, make_instant_dialog: Callable[[], InstantDialog]
+) -> None:
+    for shown in (window.root, make_instant_dialog().window):
+        assert shown.tk.call("wm", "attributes", shown, "-appearance") == "aqua"
+
+
+def test_pointer_is_a_hand_over_what_can_be_pressed(window: MainWindow) -> None:
+    pressable, disabled = window.instant_button, window.replay_button
+    assert disabled.instate(["disabled"])
+
+    for button in (pressable, disabled):
+        button.event_generate("<Motion>", x=2, y=2)
+
+    assert str(pressable.cget("cursor")) == theme.POINTER
+    assert not str(disabled.cget("cursor"))
+    for box in (window.speed_box, window.delay_box, window.end_box):
+        assert str(box.cget("cursor")) == theme.POINTER
+
+
+@pytest.mark.skipif(
+    sys.platform == "darwin", reason="macOS lists the choices in a menu of its own"
+)
+def test_choice_drops_its_list_at_one_click_and_keeps_its_text_when_it_is_closed(
+    window: MainWindow, app: App
+) -> None:
+    window.root.deiconify()
+    window.root.update()
+    box = window.delay_box
+    popdown = str(box.tk.call("ttk::combobox::PopdownWindow", box))
+
+    def dropped() -> bool:
+        return bool(box.tk.call("winfo", "ismapped", popdown))
+
+    box.event_generate("<Button-1>", x=5, y=5)
+    pump(window, dropped)
+    box.tk.call("event", "generate", popdown, "<Button-1>")
+    pump(window, lambda: not dropped())
+    assert box.get() == "Yok"
+    assert box.instate(["!pressed"])
+
+    box.event_generate("<Button-1>", x=5, y=5)
+    pump(window, dropped)
+    choices = f"{popdown}.f.l"
+    box.tk.call(choices, "selection", "clear", 0, "end")
+    box.tk.call(choices, "selection", "set", 2)
+    box.tk.call("event", "generate", choices, "<ButtonRelease-1>")
+    pump(window, lambda: not dropped())
+    assert box.get() == "2 dk"
+    assert app.settings.delay == 2
+
+
+def test_choosing_a_schedule_stands_out_until_one_is_chosen(
+    window: MainWindow, schedule: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert str(window.choose_button.cget("style")) == "Primary.TButton"
+
+    choose(window, schedule, monkeypatch)
+
+    assert str(window.choose_button.cget("style")) == "TButton"
+
+
+def test_fonts_of_the_look_follow_the_font_of_the_system(window: MainWindow) -> None:
+    base = font.nametofont("TkDefaultFont", window.root)
+    family, size = str(base.cget("family")), int(base.cget("size"))
+    try:
+        base.configure(size=13)
+        assert theme.describe(window.root) == (family, 13)
+        assert theme.describe(window.root, 2, "bold") == (family, 15, "bold")
+        base.configure(size=-12)
+        assert theme.describe(window.root, 2) == (family, -14)
+        assert theme.describe(window.root, -1, "overstrike") == (
+            family,
+            -11,
+            "overstrike",
+        )
+    finally:
+        base.configure(size=size)
+
+
+@pytest.mark.parametrize(("left", "top"), [(100, 50), (-1900, -300)])
+def test_dialog_opens_over_the_window_a_little_above_its_middle(
+    window: MainWindow,
+    make_instant_dialog: Callable[[], InstantDialog],
+    monkeypatch: pytest.MonkeyPatch,
+    left: int,
+    top: int,
+) -> None:
+    dialog = make_instant_dialog()
+    steps: list[str] = []
+    for step in ("deiconify", "wait_visibility", "grab_set", "wait_window"):
+        monkeypatch.setattr(
+            dialog.window, step, lambda *args, step=step: steps.append(step)
+        )
+    for name, value in (
+        ("winfo_rootx", left),
+        ("winfo_rooty", top),
+        ("winfo_width", 1200),
+        ("winfo_height", 800),
+    ):
+        monkeypatch.setattr(window.root, name, lambda value=value: value)
+
+    dialog.wait()
+
+    assert steps == ["deiconify", "wait_visibility", "grab_set", "wait_window"]
+    width, height = dialog.window.winfo_reqwidth(), dialog.window.winfo_reqheight()
+    assert 1 < width < 1200
+    assert 1 < height < 800
+    placed = dialog.window.geometry().split("+")[1:]
+    assert [int(coordinate) for coordinate in placed] == [
+        left + (1200 - width) // 2,
+        top + (800 - height) // 3,
+    ]
 
 
 def test_window_opens_maximized_and_stays_usable_where_it_cannot_be(

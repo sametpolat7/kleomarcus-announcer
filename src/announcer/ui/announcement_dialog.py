@@ -1,39 +1,33 @@
 import datetime
 import logging
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import ttk
 
-from announcer.app import App, SlotTakenError
+from announcer.app import App, ChangeProblem, SlotTakenError
 from announcer.models import ALL_WEEKDAYS, WEEKDAY_NAMES, CustomAnnouncement
 from announcer.today import BUSY
 from announcer.ui import texts
-from announcer.ui.keys import bind_return
+from announcer.ui.dialog import WRAP, Dialog, time_boxes
 
 _log = logging.getLogger(__name__)
 
-_NO_TEXT = "Anons metni boş olamaz."
 _FOLLOW = 250  # milliseconds
 
 
-class AnnouncementDialog:
+class AnnouncementDialog(Dialog):
     """``index`` is the place of the announcement to change among the app's
     custom announcements, or None to add a new one.
     """
 
     def __init__(self, parent: tk.Misc, app: App, index: int | None = None) -> None:
+        existing = None if index is None else app.settings.custom_announcements[index]
+        super().__init__(
+            parent,
+            "Özel Anons Ekle" if existing is None else "Özel Anonsu Düzenle",
+            self.save,
+        )
         self._app = app
         self._index = index
-        existing = None if index is None else app.settings.custom_announcements[index]
-
-        self.window = tk.Toplevel(parent)
-        self.window.title(
-            "Özel Anons Ekle" if existing is None else "Özel Anonsu Düzenle"
-        )
-        self.window.resizable(False, False)
-        self.window.transient(parent.winfo_toplevel())
-        self.window.geometry(
-            f"+{parent.winfo_rootx() + 60}+{parent.winfo_rooty() + 60}"
-        )
 
         time = existing.time if existing else datetime.time(12, 0)
         weekdays = existing.weekdays if existing else ALL_WEEKDAYS
@@ -43,33 +37,19 @@ class AnnouncementDialog:
         self.every_day = tk.BooleanVar(value=weekdays == ALL_WEEKDAYS)
         self.days = [tk.BooleanVar(value=day in weekdays) for day in ALL_WEEKDAYS]
 
-        frame = ttk.Frame(self.window, padding=16)
-        frame.grid(sticky="nsew")
-
+        frame = self.frame
         ttk.Label(frame, text="Anons metni").grid(row=0, column=0, sticky="w")
         entry = ttk.Entry(frame, textvariable=self.text, width=60)
-        entry.grid(row=1, column=0, sticky="ew", pady=(2, 12))
+        entry.grid(row=1, column=0, sticky="ew", pady=(4, 14))
 
         ttk.Label(frame, text="Saat").grid(row=2, column=0, sticky="w")
-        clock = ttk.Frame(frame)
-        clock.grid(row=3, column=0, sticky="w", pady=(2, 12))
-        for column, (variable, last) in enumerate(((self.hour, 23), (self.minute, 59))):
-            if column:
-                ttk.Label(clock, text=":").grid(row=0, column=1, padx=4)
-            ttk.Spinbox(
-                clock,
-                textvariable=variable,
-                from_=0,
-                to=last,
-                wrap=True,
-                width=3,
-                format="%02.0f",
-                justify="center",
-            ).grid(row=0, column=column * 2)
+        time_boxes(frame, self.hour, self.minute)[0].grid(
+            row=3, column=0, sticky="w", pady=(4, 14)
+        )
 
         ttk.Label(frame, text="Günler").grid(row=4, column=0, sticky="w")
         choice = ttk.Frame(frame)
-        choice.grid(row=5, column=0, sticky="w", pady=(2, 4))
+        choice.grid(row=5, column=0, sticky="w", pady=(4, 4))
         for column, (label, value) in enumerate(
             (("Her gün", True), ("Seçili günler", False))
         ):
@@ -87,13 +67,13 @@ class AnnouncementDialog:
             for name, variable in zip(WEEKDAY_NAMES, self.days, strict=True)
         ]
         for column, box in enumerate(self.day_boxes):
-            box.grid(row=column // 4, column=column % 4, sticky="w", padx=(0, 12))
+            box.grid(row=column // 4, column=column % 4, sticky="w", padx=(0, 14))
         self.show_days()
 
         # Empty until a test is asked for here.
         self.test_status = tk.StringVar()
         self._tested = False
-        ttk.Label(frame, textvariable=self.test_status, wraplength=520).grid(
+        ttk.Label(frame, textvariable=self.test_status, wraplength=WRAP).grid(
             row=7, column=0, sticky="w", pady=(0, 8)
         )
 
@@ -105,23 +85,15 @@ class AnnouncementDialog:
         ttk.Button(buttons, text="Vazgeç", command=self.window.destroy).grid(
             row=0, column=1, padx=(0, 8)
         )
-        ttk.Button(buttons, text="Kaydet", command=self.save, default="active").grid(
-            row=0, column=2
-        )
-
-        bind_return(self.window, self.save)
-        self.window.bind("<Escape>", lambda event: self.window.destroy())
+        ttk.Button(
+            buttons, text="Kaydet", style="Primary.TButton", command=self.save
+        ).grid(row=0, column=2)
         entry.focus_set()
-
-    def wait(self) -> None:
-        self.window.wait_visibility()
-        self.window.grab_set()
-        self.window.wait_window()
 
     def test(self) -> None:
         text = self.text.get().strip()
         if not text:
-            self._alert(_NO_TEXT)
+            self.alert(texts.CHANGE_PROBLEMS[ChangeProblem.NO_TEXT])
             return
         self._app.preview(text)
         if not self._tested:
@@ -148,22 +120,22 @@ class AnnouncementDialog:
         try:
             self._app.save_announcement(announcement, self._index)
         except SlotTakenError as error:
-            self._alert(texts.conflict_alert(error.conflicts))
+            self.alert(texts.conflict_alert(error.conflicts))
         except OSError:
             _log.exception("Cannot save the custom announcement")
-            self._alert(texts.CANNOT_SAVE)
+            self.alert(texts.CANNOT_SAVE)
         else:
             self.window.destroy()
 
     def _entered(self) -> CustomAnnouncement | None:
         text = self.text.get().strip()
         if not text:
-            self._alert(_NO_TEXT)
+            self.alert(texts.CHANGE_PROBLEMS[ChangeProblem.NO_TEXT])
             return None
         try:
             time = datetime.time(int(self.hour.get()), int(self.minute.get()))
         except ValueError:
-            self._alert("Saat 00:00 ile 23:59 arasında olmalıdır.")
+            self.alert(texts.INVALID_TIME)
             return None
         weekdays = (
             ALL_WEEKDAYS
@@ -171,7 +143,7 @@ class AnnouncementDialog:
             else frozenset(day for day in ALL_WEEKDAYS if self.days[day].get())
         )
         if not weekdays:
-            self._alert("En az bir gün seçin.")
+            self.alert("En az bir gün seçin.")
             return None
         return CustomAnnouncement(text, time, weekdays)
 
@@ -186,6 +158,3 @@ class AnnouncementDialog:
         state = "disabled" if self.every_day.get() else "!disabled"
         for box in self.day_boxes:
             box.state([state])
-
-    def _alert(self, message: str) -> None:
-        messagebox.showerror("Özel Anons", message, parent=self.window)
