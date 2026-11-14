@@ -1845,10 +1845,9 @@ def test_choice_drops_its_list_at_one_click_and_keeps_its_text_when_it_is_closed
     choices = f"{popdown}.f.l"
 
     def dropped_after(*event: str) -> bool:
-        """Windows tells of a change of focus a moment after it happened."""
         box.tk.call("event", "generate", *event)
-        over = time.monotonic() + 0.5
-        pump(window, lambda: time.monotonic() > over)
+        focus_has_settled = time.monotonic() + 0.5
+        pump(window, lambda: time.monotonic() > focus_has_settled)
         return bool(box.tk.call("winfo", "ismapped", popdown))
 
     click = (str(box), "<Button-1>", "-x", "5", "-y", "5")
