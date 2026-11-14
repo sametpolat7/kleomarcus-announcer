@@ -215,7 +215,7 @@ def test_rejects_a_file_that_is_not_named_as_a_workbook(tmp_path: Path) -> None:
     workbook = Workbook()
     workbook.worksheets[0].append(HEADER)
     for name in ("list.txt", "list.xls", "list"):
-        workbook.save(tmp_path / name)  # a workbook inside, but not by its name
+        workbook.save(tmp_path / name)
 
         with pytest.raises(WrongFileTypeError):
             load_schedule(tmp_path / name)

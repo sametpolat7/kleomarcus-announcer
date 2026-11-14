@@ -31,8 +31,8 @@ class Settings:
     voice: str = DEFAULT_VOICE
     schedule_path: Path | None = None
     template: str = DEFAULT_TEMPLATE  # for the start of a session
-    end_template: str = DEFAULT_END_TEMPLATE  # for its end
-    end_announcements: bool = True  # whether the end of a session is announced
+    end_template: str = DEFAULT_END_TEMPLATE
+    end_announcements: bool = True
     custom_announcements: tuple[CustomAnnouncement, ...] = ()
     speed: float = NORMAL_SPEED
     delay: int = 0  # minutes that every announcement is made after its time

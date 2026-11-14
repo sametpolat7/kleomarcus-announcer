@@ -63,10 +63,9 @@ _TIME_PATTERN = re.compile(r"(\d{1,2})[:.](\d{2})(?:[:.][0-5]\d)?")
 
 
 def _fold(text: str) -> str:
-    """Accents are removed by decomposing each letter and dropping the combining
-    marks, which also covers text that arrives already decomposed. The dotless
-    "ı" has no decomposition, so it is replaced first. The system locale is
-    deliberately not consulted.
+    """Decomposing each letter and dropping the combining marks also covers text
+    that arrives already decomposed. The dotless "ı" has no decomposition, so it
+    is replaced first. The system locale is deliberately not consulted.
     """
     decomposed = unicodedata.normalize("NFKD", text.replace("ı", "i"))
     return "".join(
@@ -136,7 +135,6 @@ def _read_rows(path: Path) -> list[tuple[object, ...]]:
 
 
 def _locate_columns(header: tuple[object, ...]) -> tuple[int, int, int]:
-    """Return the indexes of the name, day and time columns."""
     positions: dict[str, int] = {}
     for index, cell in enumerate(header):
         positions.setdefault(_fold(_clean(cell)), index)

@@ -11,14 +11,12 @@ from announcer.ui.keys import bind_return
 _log = logging.getLogger(__name__)
 
 _TITLE = "Bugünkü Anonsu Düzenle"
-_FOLLOW = 250  # milliseconds between two looks at how speech is coming along
+_FOLLOW = 250  # milliseconds
 _GREY = "#808080"
 
 
 class ChangeDialog:
-    """Changes one row of today's table for today only: when it is read and
-    what it says.
-    """
+    """Changes one row of today's table for today only."""
 
     def __init__(self, parent: tk.Misc, app: App, row: Row, editing: Editing) -> None:
         self._app = app
@@ -61,8 +59,6 @@ class ChangeDialog:
         ttk.Label(clock, text=texts.TIME_NOT_DELAYED, foreground=_GREY).grid(
             row=0, column=3, padx=(16, 0)
         )
-        # What the operator fills in, held still while a new text's speech is
-        # made.
         self._inputs: list[ttk.Widget] = []
         for column, (variable, last) in enumerate(((self.hour, 23), (self.minute, 59))):
             if column:
@@ -127,7 +123,6 @@ class ChangeDialog:
         self.window.wait_window()
 
     def reset(self) -> None:
-        """Fill in what the plan says; it is kept only once it is saved."""
         planned = self._editing.planned
         self.hour.set(f"{planned.hour:02d}")
         self.minute.set(f"{planned.minute:02d}")
@@ -156,7 +151,7 @@ class ChangeDialog:
     def save(self) -> None:
         """A new text is saved once its speech is there, so that it can be read."""
         if self._speech is not None:
-            return  # already being saved
+            return
         try:
             time = datetime.time(int(self.hour.get()), int(self.minute.get()))
         except ValueError:

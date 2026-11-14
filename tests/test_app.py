@@ -45,7 +45,7 @@ def whom(row: Row) -> str:
 
 
 def starts(app: App) -> list[str]:
-    """Whom today's rows welcome; each of them is also seen off an hour later."""
+    """Each athlete welcomed today is also seen off an hour later."""
     return [whom(row) for row in app.rows() if row.kind is Kind.START]
 
 
@@ -70,7 +70,6 @@ def test_choosing_a_schedule_loads_it_remembers_the_file_and_generates_its_speec
 ) -> None:
     app.choose_schedule(schedule)
 
-    # Each athlete has a row of their own, which shows the sentence read.
     assert [(row.time, row.kind, row.text) for row in app.rows()] == [
         (SIX_PM, Kind.START, started("Ayşe Yılmaz")),
         (SIX_PM, Kind.START, started("Mehmet Demir")),
@@ -103,8 +102,6 @@ def test_athletes_of_a_minute_have_a_row_each_in_the_order_of_the_schedule(
     eight_pm = datetime.time(20, 0)
     app.save_announcement(CustomAnnouncement("Su içmeyi unutmayın.", eight_pm))
 
-    # Within a minute those whose session ends first, then those whose session
-    # starts, then the custom announcement.
     assert [(row.time, row.kind, whom(row)) for row in app.rows()] == [
         (SIX_PM, Kind.START, "Zeynep Kaya"),
         (SIX_PM, Kind.START, "Ayşe Yılmaz"),
@@ -116,7 +113,6 @@ def test_athletes_of_a_minute_have_a_row_each_in_the_order_of_the_schedule(
         (eight_pm, Kind.END, "Can Öztürk"),
         (eight_pm, Kind.CUSTOM, "Su içmeyi unutmayın."),
     ]
-    # And they are read in that order, after one chime.
     slot = app.timetable.slot_at(MONDAY, SEVEN_PM)
     assert slot is not None
     assert slot.texts == (
@@ -393,7 +389,7 @@ def test_custom_announcement_is_added_and_stored(
     app.save_announcement(WATER)
 
     assert load_settings(settings_file).settings.custom_announcements == (WATER,)
-    # The end of a session does not take its minute: the announcement follows it.
+    # The end of a session does not take its minute.
     assert [(row.time, row.kind, row.text) for row in app.rows()] == [
         (SIX_PM, Kind.START, started("Ayşe Yılmaz")),
         (SIX_PM, Kind.START, started("Mehmet Demir")),
@@ -470,7 +466,7 @@ def test_athletes_win_a_slot_when_a_reload_creates_a_conflict(
         (Kind.END, "Elif Şahin", Status.WAITING),
     ]
     assert len(app.timetable.conflicts) == 1
-    # The announcement stays stored: it still plays on the other days.
+    # The announcement still plays on the other days.
     assert app.settings.custom_announcements == (WATER,)
 
 
@@ -543,7 +539,6 @@ def test_rows_follow_the_reading_from_one_athlete_to_the_next(
     three = [*ROWS[:2], ("Can Öztürk", "Pazartesi", "18:00")]
     app.choose_schedule(write_schedule(tmp_path / "three.xlsx", three))
     wait_for_speech(app)
-    # The player holds each file until the rows were looked at.
     sounding: queue.Queue[Path] = queue.Queue()
     looked: queue.Queue[None] = queue.Queue()
 
@@ -1050,7 +1045,6 @@ def test_row_is_announced_again_on_request(
 
     assert app.replay(app.rows()[1])
 
-    # Only that athlete is read again.
     assert statuses(app) == [Status.PLAYED, Status.QUEUED, Status.NEXT, Status.NEXT]
     assert not app.replay(app.rows()[1])  # not while it is still to sound
     wait_for(app, lambda: statuses(app) == READ_AT_SIX)

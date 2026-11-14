@@ -1,7 +1,3 @@
-"""End to end over the fakes: the end of a session, and what the operator does
-with today's announcements, one athlete at a time.
-"""
-
 import datetime
 import queue
 import threading
@@ -42,7 +38,7 @@ from support import (
 SIX_PM, SEVEN_PM, EIGHT_PM = (datetime.time(hour) for hour in (18, 19, 20))
 DAY = datetime.timedelta(days=1)
 TUESDAY = MONDAY + DAY
-# Who trains on Monday at six, in the order of the schedule.
+# The athletes of ``ROWS``, in its order.
 AYSE, MEHMET, ZEYNEP = "Ayşe Yılmaz", "Mehmet Demir", "Zeynep Kaya"
 NEW_START, NEW_END = "Hoş geldiniz, {ad_soyad}.", "Güle güle, {ad_soyad}."
 WATER = CustomAnnouncement("Su içmeyi unutmayın.", SEVEN_PM)
@@ -62,7 +58,6 @@ def name_of(row: Row) -> str:
 
 
 def row_of(app: App, kind: Kind, name: str = "") -> Row:
-    """Return the first of today's rows of that kind, for ``name`` if given."""
     return next(
         row
         for row in app.rows()
@@ -89,19 +84,17 @@ def end_text(name: str) -> str:
 
 
 def said(path: Path) -> str:
-    """What a played file says. The fake provider's speech holds its text."""
+    """The fake provider's speech holds its text."""
     if path == CHIME_PATH:
         return CHIME
     return path.read_text(encoding="utf-8").split("|", 1)[1]
 
 
 def heard(output: FakeOutput) -> list[str]:
-    """What was played, in order."""
     return [said(path) for path in output.played]
 
 
 def speech_file(directory: Path, text: str) -> Path:
-    """The stored speech of ``text`` among the files in ``directory``."""
     return next(path for path in directory.glob("*.mp3") if said(path) == text)
 
 
@@ -121,7 +114,6 @@ def skip_everyone(app: App, names: Iterable[str] = (AYSE, MEHMET)) -> None:
 def held_back(
     provider: FakeProvider, monkeypatch: pytest.MonkeyPatch, text: str
 ) -> threading.Event:
-    """Keep the speech of ``text`` from being made until the event is set."""
     release = threading.Event()
     synthesize = provider.synthesize
 
@@ -135,8 +127,6 @@ def held_back(
 
 
 def held_sounding(output: FakeOutput, text: str, nth: int = 1) -> threading.Event:
-    """Keep ``text`` sounding the ``nth`` time that it sounds, until the event
-    is set; the chime and the other texts end as usual."""
     release = threading.Event()
     times = 0
 
@@ -154,8 +144,6 @@ def held_sounding(output: FakeOutput, text: str, nth: int = 1) -> threading.Even
 def statuses_while_sounding(
     app: App, output: FakeOutput, files: int
 ) -> list[tuple[str, list[Status]]]:
-    """Hold each of the next ``files`` files while it sounds, and return what
-    it says with the statuses of today's rows at that moment."""
     sounding: queue.Queue[Path] = queue.Queue()
     go_on: queue.Queue[None] = queue.Queue()
 
@@ -473,7 +461,7 @@ def test_athletes_keep_both_old_templates_until_both_new_ones_have_speech(
     app.set_templates(NEW_START, NEW_END)
     wait_for_speech(app)
 
-    # The new start has all of its speech, but is not used without the end.
+    # The new start is not used without the end.
     assert (app.spoken_template, app.spoken_end_template) == (
         DEFAULT_TEMPLATE,
         DEFAULT_END_TEMPLATE,
@@ -489,7 +477,7 @@ def test_athletes_keep_both_old_templates_until_both_new_ones_have_speech(
     wait_for_speech(app)
 
     assert (app.spoken_template, app.spoken_end_template) == (NEW_START, NEW_END)
-    assert statuses(app)[:2] == [Status.PLAYED] * 2  # and not read again
+    assert statuses(app)[:2] == [Status.PLAYED] * 2
     clock.now = at(19)
     wait_for(app, lambda: statuses(app)[2:] == [Status.PLAYED] * 2)
     assert heard(output)[3:] == [
@@ -941,8 +929,7 @@ def test_row_moved_to_another_time_is_announced_then_and_only_then(
 
     app.edit(row_of(app, Kind.START, AYSE), datetime.time(18, 30), editing.text)
 
-    # The time chosen is when it is read: the delay is not added to it. The
-    # other athlete of the minute stays where they were.
+    # The delay is not added to the time chosen.
     assert [(row.time, row.kind, name_of(row), row.edited) for row in app.rows()] == [
         (datetime.time(18, 1), Kind.START, MEHMET, False),
         (datetime.time(18, 30), Kind.START, AYSE, True),
@@ -1055,7 +1042,6 @@ def test_new_sentence_of_one_athlete_is_used_once_its_speech_is_made_and_is_read
     editing = app.editing(row_of(app, Kind.START, AYSE))
     assert editing is not None
     texts = app.texts_of(editing, NEW_START)
-    # The name typed in as the placeholder is put in.
     assert texts == (render(NEW_START, AYSE),)
 
     provider.offline = True
@@ -1082,7 +1068,6 @@ def test_new_sentence_of_one_athlete_is_used_once_its_speech_is_made_and_is_read
         start_text(AYSE),
         render(NEW_START, AYSE),
     )
-    # The other athlete of the minute, and the end, keep their sentences.
     assert [(row.text, row.edited) for row in app.rows()] == [
         (render(NEW_START, AYSE), True),
         (start_text(MEHMET), False),
@@ -1245,7 +1230,7 @@ def test_stored_sentence_with_a_placeholder_is_offered_for_editing_as_said(
     editing = app.editing(row)
     assert editing is not None
     assert (editing.planned_text, editing.text) == (start_text(MEHMET), welcome)
-    app.edit(row, SIX_PM, editing.text)  # saved as it was offered
+    app.edit(row, SIX_PM, editing.text)
     assert (row_of(app, Kind.START, MEHMET).text, app.changes) == (
         welcome,
         (Change(MONDAY, at(18), Kind.START, MEHMET, text=welcome),),
@@ -1436,7 +1421,7 @@ def test_custom_announcement_given_a_new_text_or_deleted_loses_todays_change(
     app.save_announcement(WATER)
     wait_for_speech(app)
     app.start()
-    skip_everyone(app)  # and their ends: only the custom one is read
+    skip_everyone(app)  # only the custom one is read
     speak_ahead(app, [CLOSING])
     app.edit(row_of(app, Kind.CUSTOM), SEVEN_PM, CLOSING)
     app.skip(row_of(app, Kind.CUSTOM))
@@ -1625,7 +1610,6 @@ def test_cut_stops_what_sounds_and_what_is_queued_after_it_is_still_read(
     release.set()
 
     wait_for(app, lambda: instant(app, "Kapılar kapanıyor.").status is Status.PLAYED)
-    # The athlete being read and the one after them are both cut off.
     assert statuses(app)[:2] == [Status.STOPPED] * 2
     assert heard(output) == [CHIME, start_text(AYSE), CHIME, "Kapılar kapanıyor."]
     assert row_of(app, Kind.START, AYSE).replayable

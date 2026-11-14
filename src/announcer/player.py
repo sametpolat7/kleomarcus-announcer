@@ -104,9 +104,8 @@ class Player:
     ``on_started`` with its tag when a group begins to sound, and
     ``on_speaking`` with its tag and the place of a text among its texts when
     that text begins to sound, so they should only hand that over, for
-    example by putting it on a queue. A group may be
-    queued with a tag; the player only hands that back, so the caller can tell
-    which group it was.
+    example by putting it on a queue. The player only hands a group's tag back,
+    so the caller can tell which group it was.
     ``find_audio`` is asked for the speech of a text at the speed its group
     was queued with. ``clock`` gives the time of day in seconds and is how a
     sleep is noticed. A player runs once: after ``stop`` it cannot be started
@@ -265,7 +264,6 @@ class Player:
                 try:
                     self._output.start(path)
                 except PlaybackError:
-                    # The files after an unplayable one are still played.
                     _log.exception("Cannot play %s", path)
                     unplayable.add(index)
                     continue

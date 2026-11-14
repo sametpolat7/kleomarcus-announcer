@@ -23,7 +23,7 @@ EDITED = Change(
 )
 CUSTOM = Change(MONDAY, SEVEN_PM, Kind.CUSTOM, text="Su içmeyi unutmayın lütfen.")
 
-# A change that loads; each unusable one below differs from it in one way.
+# Each unusable change below differs from this one in one way.
 USABLE = {
     "day": "2026-11-09",
     "set_for": "2026-11-09 18:00",

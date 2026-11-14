@@ -634,7 +634,6 @@ def test_each_text_is_told_with_its_place_once_its_file_has_started(
 
     player.play(["Ayşe", "Mehmet"], "first")
 
-    # Nothing is told for the chime.
     assert events == [
         ("started", "first"),
         ("sounds", CHIME),
@@ -808,10 +807,10 @@ def test_cut_of_a_group_that_does_not_sound_cuts_nothing(
 ) -> None:
     def press(path: Path) -> None:
         if path == AYSE:
-            player.cut("second")  # still waiting for its turn
+            player.cut("second")
             player.cut(None)
         elif path == MEHMET:
-            player.cut("first")  # a stale press: that group is over
+            player.cut("first")
 
     output.while_playing = press
 

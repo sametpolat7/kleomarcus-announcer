@@ -7,7 +7,6 @@ from announcer.chime import CHIME_PATH, SAMPLE_RATE, render_chime
 
 
 def read_samples(data: bytes) -> array.array[int]:
-    """Return the samples of 16-bit mono WAV data."""
     with wave.open(io.BytesIO(data), "rb") as file:
         assert file.getnchannels() == 1
         assert file.getsampwidth() == 2

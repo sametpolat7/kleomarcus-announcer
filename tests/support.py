@@ -12,7 +12,7 @@ from announcer.tts import TtsError
 
 MONDAY = datetime.date(2026, 11, 9)
 
-# A schedule of made-up athletes: name, day and time.
+# A schedule of made-up athletes.
 ROWS = [
     ("Ayşe Yılmaz", "Pazartesi", "18:00"),
     ("Mehmet Demir", "Pazartesi", "18:00"),
@@ -75,10 +75,9 @@ class FakeProvider:
 
 
 class FakeOutput:
-    """Each file is busy for one look, or for ever if ``endless`` is set; then
-    each look takes a moment, so that the player does not spin while the
-    tests take away its pauses. ``while_playing`` is called during a look with
-    the file, which is where a test lets time pass.
+    """If ``endless`` is set, each look takes a moment, so that the player does
+    not spin while the tests take away its pauses. A test lets time pass in
+    ``while_playing``.
     """
 
     def __init__(self) -> None:

@@ -10,8 +10,7 @@ _GREY = "#808080"
 
 
 class InstantDialog:
-    """Takes a sentence and has it read at once; today's table then shows how
-    that goes."""
+    """Today's table shows how reading the sentence goes."""
 
     def __init__(self, parent: tk.Misc, app: App) -> None:
         self._app = app

@@ -102,13 +102,12 @@ class ChangeError(Exception):
 
 @dataclass(frozen=True)
 class Editing:
-    """What a row of today's table says, with and without today's change."""
-
     kind: Kind
-    planned: datetime.time  # when it is announced without the change
+    planned: datetime.time  # when the row is announced without today's change
     time: datetime.time  # when it is announced with it
-    # What it says without the change: the template for athletes, or the
-    # custom announcement's text; and what it says with it.
+    # What it says without the change: for an athlete, the template filled in
+    # with the name; for a custom announcement, its text. And what it says
+    # with the change.
     planned_text: str
     text: str
     name: str  # the athlete's; empty for a custom announcement
@@ -119,8 +118,7 @@ class Editing:
 
 @dataclass
 class SpeechRequest:
-    """Speech asked for ahead of time with ``make_speech``; ``poll`` fills in
-    how that went."""
+    """``poll`` fills in ``done`` and ``spoken``."""
 
     texts: tuple[str, ...]
     done: bool = False
@@ -145,8 +143,6 @@ class _Group:
 
 @dataclass(frozen=True)
 class _Test:
-    """A test announcement, queued in the player by itself."""
-
     number: int
 
 
@@ -239,14 +235,11 @@ class App:
         loaded = self._load_settings()
         self.settings: Settings = loaded.settings
         self.dropped_announcements: int = loaded.dropped
-        # The templates that athletes are announced with, at the start and at
-        # the end of their session, and the speed that everything is spoken
-        # at. They follow the ones in the settings as soon as there is speech
-        # for every announcement with them.
+        # The spoken templates and speed follow the ones in the settings as soon as
+        # there is speech for every announcement with them.
         self.spoken_template: str = self.settings.template
         self.spoken_end_template: str = self.settings.end_template
         self.spoken_speed: float = self.settings.speed
-        # What the operator changed for today, kept in a file of its own.
         self.changes_file = settings_file.with_name("changes.json")
         self.changes_unreadable = False
         self.changes_backed_up = False
@@ -352,9 +345,8 @@ class App:
         self._rebuild()
 
     def set_templates(self, template: str, end_template: str) -> None:
-        """Set the templates for the start and the end of a session. Raises
-        ``ValueError`` if one has no place for the name and ``OSError`` if they
-        cannot be saved; nothing changes then.
+        """Raises ``ValueError`` if one of the templates has no place for the name
+        and ``OSError`` if they cannot be saved; nothing changes then.
         """
         self._save(
             dataclasses.replace(
@@ -448,8 +440,7 @@ class App:
         self._ask_for((test, text, self.settings.speed))
 
     def make_speech(self, texts: Iterable[str]) -> SpeechRequest:
-        """Make the speech for ``texts`` ahead of time, at the speed that is in
-        use and at the one in the settings. ``poll`` fills in the request."""
+        """``poll`` fills in the request."""
         speeds = tuple(dict.fromkeys((self.spoken_speed, self.settings.speed)))
         request = SpeechRequest(tuple(dict.fromkeys(texts)))
         self._ask_for((request, speeds))
@@ -463,15 +454,11 @@ class App:
 
     @property
     def sounding(self) -> bool:
-        """Whether ``cut`` has something to cut off: what is being read, or speech
-        that is being made to be read at once."""
+        """Whether ``cut`` has something to cut off."""
         return self._sounding is not None or bool(self._preparing)
 
     def replay(self, row: Row) -> bool:
-        """Returns whether the row was announced again: not if it is not among
-        today's any more, or is not ``replayable``. The row then tells how
-        that went.
-        """
+        """The row then tells how the replay went."""
         if not row.replayable or row not in self.rows():
             return False
         if isinstance(row.key, Instant):
@@ -516,10 +503,7 @@ class App:
         self._prepare(instant)
 
     def cut(self) -> None:
-        """Cut off what is being read, and drop the instant announcements and
-        tests whose speech is still being made. What is queued after them is
-        read as usual.
-        """
+        """What is queued after what is cut off is read as usual."""
         if not self.sounding:
             return
         _log.info("Cut off by the operator")
@@ -535,8 +519,7 @@ class App:
             self._sounding = None
 
     def editing(self, row: Row) -> Editing | None:
-        """Return what the row says with and without today's change, or None if
-        it cannot be changed any more."""
+        """Return None if the row cannot be changed any more."""
         key = row.key
         current = {other.key: other for other in self.rows()}.get(key)
         planned = self._planned(key) if isinstance(key, tuple) else None
@@ -568,10 +551,9 @@ class App:
         )
 
     def skip(self, row: Row, skipped: bool = True) -> None:
-        """Skip the row today, or no longer. The end of a session follows its
-        start, if its time has not come. Raises ``ChangeError`` if the row's
-        time has come and ``OSError`` if it cannot be saved; nothing changes
-        then.
+        """The end of a session follows its start, if its time has not come. Raises
+        ``ChangeError`` if the row's time has come and ``OSError`` if it cannot be
+        saved; nothing changes then.
         """
         key = self._changeable(row, skipping=True)
         keys = [key]
@@ -600,10 +582,9 @@ class App:
         self._build()
 
     def edit(self, row: Row, time: datetime.time, text: str) -> None:
-        """Change when the row is announced today and what it says. What equals
-        the plan is not a change, and a new text needs its speech first: see
-        ``make_speech``. Raises ``ChangeError`` if the change cannot be made and
-        ``OSError`` if it cannot be saved; nothing changes then.
+        """A new text needs its speech first: see ``make_speech``. Raises
+        ``ChangeError`` if the change cannot be made and ``OSError`` if it cannot be
+        saved; nothing changes then.
         """
         editing = self.editing(row)
         key = row.key
@@ -643,7 +624,6 @@ class App:
 
     @staticmethod
     def texts_of(editing: Editing, text: str) -> tuple[str, ...]:
-        """Return what is said with ``text`` for the row being edited."""
         return (said(text, editing.name),)
 
     def poll(self) -> bool:
@@ -719,7 +699,6 @@ class App:
         )
 
     def _spoken(self, wanted: _Wanted, spoken: bool) -> None:
-        """Take in speech that was made to be read at once, or ahead of time."""
         match wanted:
             case (SpeechRequest() as request, _):
                 request.done, request.spoken = True, spoken
@@ -790,7 +769,6 @@ class App:
             self._events.put(_Spoken(wanted, spoken))
 
     def _part(self, key: PartId) -> tuple[Slot, Part] | None:
-        """Return today's part with the key of a row, and its slot."""
         today = self._clock().date()
         for slot in self.timetable.slots_on(today):
             for part in slot.parts:
@@ -838,8 +816,7 @@ class App:
         return self._change(key) or Change(self._clock().date(), *key)
 
     def _changeable(self, row: Row, skipping: bool) -> PartId:
-        """Return the key of the row, if it can still be skipped, or edited;
-        raises ``ChangeError`` if not."""
+        """Raises ``ChangeError`` if the row can no longer be skipped, or edited."""
         key = row.key
         current = {other.key: other for other in self.rows()}.get(key)
         if (
@@ -927,9 +904,8 @@ class App:
         return True
 
     def _retry_schedule(self) -> bool:
-        """Return whether the schedule file was read again. There is no button
-        for that, and a file on a network drive may turn up without having
-        changed."""
+        """There is no button for reading the schedule file again, and a file on a
+        network drive may turn up without having changed."""
         if self.schedule_error is None or abs(self._clock() - self._read_at) < _RETRY:
             return False
         _log.info("Trying again to read the schedule file")
@@ -937,7 +913,6 @@ class App:
         return True
 
     def _retry_speech(self) -> bool:
-        """Return whether speech was asked for again."""
         if (
             not self.unspoken
             or self.generating

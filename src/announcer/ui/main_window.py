@@ -25,10 +25,10 @@ from announcer.ui.instant_dialog import InstantDialog
 
 _log = logging.getLogger(__name__)
 
-_POLL = 250  # milliseconds between two looks at what the app has to report
+_POLL = 250  # milliseconds
 _MINUTE = datetime.timedelta(minutes=1)
 _PAD = 12
-_GAP = 20  # pixels between the two columns and around the window
+_GAP = 20  # pixels
 
 _PROBLEMS = frozenset(
     {
@@ -55,11 +55,11 @@ _WARNING_LINES = 3  # how many are shown before the rest has to be scrolled to
 _TEMPLATE_TITLE = "Anons Şablonları"
 _OPTIONS_TITLE = "Anons Ayarları"
 _TODAY_TITLE = "Bugünün Anonsları"
-_BUTTON_WIDTH = 10  # in characters, of the custom announcements' buttons
-_COLUMN_PADDING = 20  # pixels around the widest value of a table's column
+_BUTTON_WIDTH = 10  # in characters
+_COLUMN_PADDING = 20  # pixels
 # Pixels of the column that takes up the slack: below the first, a table
-# leaves out the column it can do without; below the second, the column is
-# cut short rather than the one beside it.
+# leaves out the column it can do without; the column gets no narrower than
+# the second.
 _WANTED_TEXT_WIDTH = 160
 _MIN_TEXT_WIDTH = 60
 # Today's table shows the sentences that are read; the day, which the heading
@@ -112,7 +112,7 @@ def _set_icon(root: tk.Tk) -> None:
 
 def tell_already_running() -> None:
     root = tk.Tk()
-    root.withdraw()  # only the message is shown
+    root.withdraw()
     _set_icon(root)
     messagebox.showinfo(APP_NAME, texts.ALREADY_RUNNING, parent=root)
     root.destroy()
@@ -140,8 +140,8 @@ class MainWindow:
         self._reading: object = None  # the key of the row being read
         # The time and the key of the next row; the template does not change it.
         self._upcoming: tuple[datetime.time, object] | None = None
-        self._update_failed = False  # the last look at the app raised an error
-        self._laid_out = False  # today's table has had its size
+        self._update_failed = False
+        self._laid_out = False
         self.closed = False
 
         self.root = tk.Tk()
@@ -182,14 +182,14 @@ class MainWindow:
         # Kept on the window, as tkinter drops a font that nothing refers to.
         self._bold = font.nametofont("TkDefaultFont").copy()
         self._bold.configure(weight="bold")
-        self._large = _resized(self._bold, 8)  # the date and the time
-        self._title = _resized(self._bold, 2)  # the name of a section
-        self._small = _resized(font.nametofont("TkDefaultFont"), -2)  # a note
+        self._large = _resized(self._bold, 8)
+        self._title = _resized(self._bold, 2)
+        self._small = _resized(font.nametofont("TkDefaultFont"), -2)
         self._struck = font.nametofont("TkDefaultFont").copy()
         self._struck.configure(overstrike=True)
-        # One width for the buttons beside today's table, from the longest of
-        # their labels in the font they have, so none is cut short on any
-        # system. Negative, so it is the least width in characters.
+        # One width for the buttons beside today's table and Dosya Seç…, from
+        # the longest of their labels in the font they have, so none is cut
+        # short on any system. Negative, so it is the least width in characters.
         normal = font.nametofont("TkDefaultFont")
         labels = (
             "Tekrar Oku",
@@ -205,9 +205,7 @@ class MainWindow:
         )
 
         # Today's announcements on the left, where the operator looks, with
-        # whatever varies in height; what is rarely changed on the right. The
-        # height left over goes to today's table and to the custom
-        # announcements, which give way first when there is too little.
+        # whatever varies in height; what is rarely changed on the right.
         frame = ttk.Frame(self.root, padding=_GAP)
         frame.grid(sticky="nsew")
         frame.columnconfigure(0, weight=5, uniform="column")
@@ -244,14 +242,12 @@ class MainWindow:
         self.root.mainloop()
 
     def maximize(self) -> None:
-        """Fill the screen, but for the taskbar or the Dock and the menu bar."""
         try:
             self.root.state("zoomed")
         except tk.TclError:
             _log.exception("Cannot maximize the window")  # it is usable as it is
 
     def toggle_full_screen(self) -> None:
-        """Cover the whole screen, or no longer."""
         on = not self.root.attributes("-fullscreen")
         self.root.attributes("-fullscreen", on)
         _log.info("Full screen %s", "on" if on else "off")
@@ -261,7 +257,7 @@ class MainWindow:
             self.toggle_full_screen()
 
     def ask_to_close(self) -> None:
-        """Close the window if the operator means it: it ends the announcements."""
+        """Closing the window ends the announcements."""
         if messagebox.askyesno(
             APP_NAME, texts.CLOSE_QUESTION, default="no", parent=self.root
         ):
@@ -280,7 +276,7 @@ class MainWindow:
 
     def show(self) -> None:
         if self.closed:
-            return  # closed while a dialog was open; there is nothing to show
+            return  # closed while a dialog was open
         app, now = self._app, self._clock()
         self._shown_at = _moment(now)
         path = app.settings.schedule_path
@@ -313,10 +309,6 @@ class MainWindow:
     def _section(
         self, parent: ttk.Frame, title: str
     ) -> tuple[ttk.Frame, ttk.LabelFrame]:
-        """Return one part of the window, and the box in it under its name.
-
-        The part is what is placed in the window; the box is what is filled.
-        """
         section = ttk.Frame(parent)
         section.columnconfigure(0, weight=1)
         section.rowconfigure(1, weight=1)
@@ -363,8 +355,7 @@ class MainWindow:
         section, box = self._section(parent, _TODAY_TITLE)
         box.columnconfigure(0, weight=1)
         box.rowconfigure(0, weight=1)
-        # Every status, and those that an edited row usually has; a rare
-        # status of an edited row may be cut short at its end.
+        # A rare status of an edited row may be cut short at its end.
         statuses = [
             *(texts.STATUS[status] for status in Status),
             *(f"{texts.STATUS[status]} {texts.EDITED}" for status in _EDITED_OFTEN),
@@ -499,7 +490,6 @@ class MainWindow:
         self.test_button, self.end_test_button = self.test_buttons
         note = self._note(box, f"{texts.TEMPLATE_HINT} {texts.END_HINT}")
         note.grid(row=2, column=0, columnspan=2, sticky="new", pady=(8, 0))
-        # The note wraps to the width that it gets.
         note.bind(
             "<Configure>", lambda event: note.configure(wraplength=max(event.width, 1))
         )
@@ -597,8 +587,7 @@ class MainWindow:
         return footer
 
     def _widest(self, values: Iterable[str]) -> int:
-        """Return how wide a table's column is to be for ``values``, also when
-        they are in bold."""
+        """Wide enough for ``values`` also when they are in bold."""
         return max(self._bold.measure(value) for value in values) + _COLUMN_PADDING
 
     @staticmethod
@@ -684,7 +673,6 @@ class MainWindow:
                 tags=_NO_ROW,
             )
         if selected is not None:
-            # The same announcement, whatever its status, time and place are now.
             same = [
                 str(index) for index, row in enumerate(rows) if _same(row, selected)
             ]
@@ -695,7 +683,6 @@ class MainWindow:
             for index, row in enumerate(rows)
             if row.status in BUSY or row.status is Status.NEXT
         ]
-        # The rows of the minute that is being read or comes next.
         self._current_rows = [
             str(index) for index in current if rows[index].time == rows[current[0]].time
         ]
@@ -715,11 +702,9 @@ class MainWindow:
             self._upcoming = upcoming
             self._see_current()
         else:
-            # The day has not moved on, so the table stays where the operator
-            # is, for example at a row that was read again.
+            # The day has not moved on, so the table stays where the operator is.
             self.today.yview_moveto(scrolled_to)
         if reading is not None and rows[int(reading)].key != self._reading:
-            # The row being read is kept in view as the reading moves on.
             self.today.see(reading)
         self._reading = None if reading is None else rows[int(reading)].key
 

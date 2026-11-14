@@ -12,20 +12,19 @@ from pathlib import Path
 
 CHIME_PATH = Path(__file__).parent / "assets" / "chime.wav"
 
-SAMPLE_RATE = 22_050  # samples per second; mono, 16-bit
+SAMPLE_RATE = 22_050  # samples per second
 
 _NOTES = (523.25, 659.25, 783.99)  # C5, E5 and G5 in hertz: a rising major chord
 _NOTE_SPACING = 0.28  # seconds from the start of one note to the next
 _NOTE_LENGTH = 1.3  # seconds that each note rings
 _ATTACK = 0.005  # seconds for a note to reach full strength, to avoid a click
-_DECAY = 4.0  # how fast a note dies away
+_DECAY = 4.0
 _OVERTONE = 0.3  # strength of the octave above each note; gives a bell colour
 _FADE_OUT = 0.03  # seconds of fade at the very end, to finish on silence
 _PEAK = 0.6  # loudest sample, as a share of full scale
 
 
 def render_chime() -> bytes:
-    """Return the chime as the contents of a WAV file."""
     note_samples = round(_NOTE_LENGTH * SAMPLE_RATE)
     starts = [
         round(index * _NOTE_SPACING * SAMPLE_RATE) for index in range(len(_NOTES))

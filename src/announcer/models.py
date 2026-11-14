@@ -2,7 +2,7 @@ import datetime
 from dataclasses import dataclass
 from enum import Enum
 
-# Turkish weekday names indexed like ``date.weekday()``: 0 is Monday.
+# Indexed like ``date.weekday()``.
 WEEKDAY_NAMES: tuple[str, ...] = (
     "Pazartesi",
     "Salı",
@@ -30,21 +30,21 @@ class Kind(Enum):
 
     END = "end"  # athletes whose session ends
     START = "start"  # athletes whose session starts
-    CUSTOM = "custom"  # a custom announcement
+    CUSTOM = "custom"
     INSTANT = "instant"  # typed by the operator and read at once
 
 
 @dataclass(frozen=True)
 class AthleteEntry:
     name: str
-    weekday: int  # 0 is Monday, as in ``date.weekday()``
+    weekday: int  # as in ``date.weekday()``
     time: datetime.time  # start of the session, to the minute
 
 
 @dataclass(frozen=True)
 class CustomAnnouncement:
     text: str
-    time: datetime.time  # to the minute
+    time: datetime.time
     weekdays: frozenset[int] = ALL_WEEKDAYS  # as in ``date.weekday()``
 
     def __post_init__(self) -> None:

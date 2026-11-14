@@ -37,8 +37,6 @@ def due_slot(
 
 
 def untaken(date: datetime.date, slot: Slot, fired: Collection[PartId]) -> Slot | None:
-    """Return the slot with only the parts that are still to be announced, or
-    None if there are none."""
     parts = tuple(
         part
         for part in slot.parts
@@ -149,7 +147,8 @@ class Scheduler:
             self._thread.join()
 
     def check(self) -> None:
-        """The first look only notes the time, as the scheduler begins with it."""
+        """The first look announces nothing: it notes the time and leaves out the
+        slot of its minute."""
         now = self._clock()
         before, self._checked_at = self._checked_at, now
         timetable = self._timetable  # the same one for the whole look
