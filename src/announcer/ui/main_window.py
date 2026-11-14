@@ -484,7 +484,7 @@ class MainWindow:
         for column, button in enumerate(
             (self.add_button, self.edit_button, self.delete_button)
         ):
-            button.grid(row=0, column=column, padx=(8, 0))
+            button.grid(row=0, column=column, padx=(6, 0))
         self.announcements = self._table(
             body,
             row=0,
