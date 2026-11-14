@@ -16,11 +16,12 @@
 
 A desktop app that makes the lobby announcements of
 [Kleomarcus Spor Akademi](https://www.kleomarcus.com). It reads the weekly
-training schedule from an Excel file and, when a session starts, plays a chime
-and calls each athlete by name through the computer's speakers.
+training schedule from an Excel file and, when a session starts and again when
+it ends an hour later, plays a chime and calls each athlete by name through the
+computer's speakers.
 
 <p align="center">
-  <img src="docs/screenshot.png" width="760" alt="The main window, showing today's announcements">
+  <img src="docs/screenshot.png" width="860" alt="The main window, showing today's announcements">
 </p>
 
 ## Features
@@ -30,19 +31,26 @@ and calls each athlete by name through the computer's speakers.
 - **Turkish text-to-speech.** Each sentence is generated once, stored on the
   computer and played from there, so stored announcements play without a
   connection.
+- **Start and end of a session.** Each athlete is welcomed when the session
+  starts and seen off when it ends, an hour later, each with a template of
+  its own. The end can be switched off.
 - **Custom announcements.** Free text at a fixed time, every day or on chosen
   weekdays, such as a closing reminder.
-- **Today's announcements.** A table of the day's announcements with the
-  status of each: waiting, next, playing, played or skipped, and why.
-- **Read again.** An announcement whose time has come can be read once more
-  with one button.
+- **Today's announcements.** A table of the day's announcements, one row per
+  athlete, with the sentence that is read, its kind and its status: waiting,
+  next, queued, playing, played or skipped, and why.
+- **Changes for today.** An athlete's announcement, or a custom one, that is
+  still to come can be skipped, moved or reworded, for today only.
+- **Read again, read now, stop.** An announcement whose time has come can be
+  read once more, a sentence typed in can be read at once, and whatever is
+  being read can be cut off.
 - **Speed and delay.** The speech can be made slower or faster, and every
   announcement can be made a few minutes after its time, for athletes who
   arrive late.
 - **No late announcements.** An announcement missed during a restart or a
   sleep is not played afterwards; it is shown as skipped.
-- **Turkish interface.** One window with a test button, warnings for problems
-  and a log file.
+- **Turkish interface.** One window that fills the screen, with test
+  buttons, warnings for problems and a log file.
 
 ## Install
 
@@ -107,47 +115,93 @@ fictional names.
 
 ## How it behaves
 
-- **Announcement text.** Athletes are announced with a template, by default
-  `{ad_soyad}, antrenmanınız başlamıştır. İyi antrenmanlar dileriz.`, where
-  `{ad_soyad}` stands for the name and may be moved anywhere in the sentence.
-  A new template is used once all of its speech exists.
+- **Window.** The window opens maximized. **F11** (on macOS also
+  **Control-Command-F**) switches to full screen, which hides the taskbar or
+  the menu bar and the Dock, and back; **Esc** leaves full screen too.
+- **Announcement text.** Athletes are announced with two templates: at the
+  start of the session, by default
+  `{ad_soyad}, antrenmanınız başlamıştır. İyi antrenmanlar dileriz.`, and at
+  its end, by default
+  `{ad_soyad}, antrenmanınız sona ermiştir. Görüşmek üzere.`. `{ad_soyad}`
+  stands for the name and may be moved anywhere in the sentence. New
+  templates are used once all of their speech exists.
+- **End of a session.** A session lasts an hour, so its end is announced an
+  hour after its start; **Bitiş anonsu** switches that off and on. When one
+  session ends in the minute that another starts, both are announced after a
+  single chime, the end first. An athlete who has two sessions in a row is
+  seen off and welcomed again.
 - **Speed.** **Ses hızı** sets how fast everything is spoken, from 0.8 to 1.2
   times the speed of the voice. The speech is generated again for a new
   speed, which needs a connection, and the new speed is used once all of its
   speech exists. **Test** speaks at the chosen speed at once.
 - **Delay.** **Gecikme süresi** moves every announcement, of athletes and
   custom ones alike, by 1 to 10 minutes: with a delay of one minute, a
-  session listed for 19:00 is announced at 19:01. Today's table shows the
-  time at which an announcement is made. A change of the delay repeats
-  nothing that was announced, and what a shorter delay puts behind the clock
-  is announced at once.
+  session listed for 19:00 is announced at 19:01 and its end at 20:01.
+  Today's table shows the time at which an announcement is made. A change of
+  the delay repeats nothing that was announced, and what a shorter delay puts
+  behind the clock is announced at once.
+- **Today's table.** Each row is one announcement of the day and shows the
+  sentence that is read: the start or the end of one athlete's session, a
+  custom announcement or one read with **Anlık Anons**. Athletes due in the
+  same minute are read one after the other after a single chime; the row
+  being read says so, those after it are queued. The buttons beside the table
+  act on the selected row; nothing is read by a double click or a key.
+- **Skip.** **Atla** leaves out a row whose time has not come, today only; it
+  is shown struck through. Skipping an athlete's start skips the end of that
+  session too. **Atlamayı Geri Al** brings a row back, also within the first
+  half minute of its time; for a start it brings back the end as well, and
+  the end can be brought back by itself.
+- **Edit.** **Düzenle…**, or a double click, changes a row whose time has
+  not come, today only: the time it is read at and the sentence that is
+  read. Moving a start leaves the end of that session where it is. The delay
+  is not added to a time chosen there. A new sentence is saved once its
+  speech has been generated, which needs a connection. **Plana Dön** fills in
+  the plan again. The schedule file and the custom announcements stay as they
+  are, and tomorrow is as planned. Skipped and edited rows are kept when the
+  app is restarted that day. A row can no longer be skipped or edited in the
+  last two seconds before its time.
 - **Read again.** **Tekrar Oku** reads the selected row of today's table once
-  more, with the chime and everyone in that row. It is there for a row whose
-  time has come, whether it was announced or skipped, and the row then tells
-  how that went.
+  more, after the chime: that athlete's sentence, or the custom or typed-in
+  announcement. It is there for a row whose time has come, whether it was
+  announced or skipped, once the rest of its minute has been read, and the row
+  then tells how that went.
+- **Read now.** **Anlık Anons…** reads a sentence that is typed in at once,
+  after whatever is being read, and adds it to today's table. Its speech is
+  generated first, which needs a connection.
+- **Stop.** **Durdur** cuts off what is being read, and drops an announcement
+  typed in or a test whose speech is still being generated. What is queued
+  after it is still read.
 - **Timing.** A session is announced within the first 30 seconds of its
   minute, by an app that was already running when the minute began. The app
   does not keep the computer awake: an announcement that falls into a sleep
   is skipped and shown as such.
-- **Conflicts.** A custom announcement needs a minute of its own. Where
-  athletes start in the same minute, the athletes are announced and the
-  window says so.
+- **Conflicts.** A custom announcement may not share its minute with the
+  start of a session or with another custom announcement. Where athletes
+  start in the same minute, the athletes are announced and the window says
+  so. Where sessions only end, the custom announcement is read after their
+  end, after the same chime. A row moved with **Düzenle…** joins whatever is
+  in its new minute.
 - **Internet.** Only generating new speech needs a connection. Speech that
   could not be generated is tried again every five minutes.
 - **One copy.** A second copy of the app says that one is running and exits.
 
 ## Files on the computer
 
-| What             | Windows                                                  | macOS                                                            |
-| ---------------- | -------------------------------------------------------- | ---------------------------------------------------------------- |
-| Settings         | `%LOCALAPPDATA%\Kleomarcus Announcer\config.json`        | `~/Library/Application Support/Kleomarcus Announcer/config.json` |
-| Log              | `%LOCALAPPDATA%\Kleomarcus Announcer\Logs\announcer.log` | `~/Library/Logs/Kleomarcus Announcer/announcer.log`              |
-| Generated speech | `%LOCALAPPDATA%\Kleomarcus Announcer\Cache\audio`        | `~/Library/Caches/Kleomarcus Announcer/audio`                    |
+| What             | Windows                                                  | macOS                                                             |
+| ---------------- | -------------------------------------------------------- | ----------------------------------------------------------------- |
+| Settings         | `%LOCALAPPDATA%\Kleomarcus Announcer\config.json`        | `~/Library/Application Support/Kleomarcus Announcer/config.json`  |
+| Today's changes  | `%LOCALAPPDATA%\Kleomarcus Announcer\changes.json`       | `~/Library/Application Support/Kleomarcus Announcer/changes.json` |
+| Log              | `%LOCALAPPDATA%\Kleomarcus Announcer\Logs\announcer.log` | `~/Library/Logs/Kleomarcus Announcer/announcer.log`               |
+| Generated speech | `%LOCALAPPDATA%\Kleomarcus Announcer\Cache\audio`        | `~/Library/Caches/Kleomarcus Announcer/audio`                     |
 
-The settings hold the chosen schedule file, the template, the custom
-announcements, the speed, the delay and the voice (`tr-TR-EmelNeural`; any
+The settings hold the chosen schedule file, the templates, whether the end of
+a session is announced, the custom announcements, the speed, the delay and
+the voice (`tr-TR-EmelNeural`; any
 voice of the service can be set in `config.json`). If the file is damaged the app starts with the
-defaults and keeps a copy as `config.json.backup`. The **Kayıtlar** button
+defaults and keeps a copy as `config.json.backup`. Today's changes are kept
+in `changes.json` until the day is over; if that file is damaged, the day is
+announced as planned and a copy is kept as `changes.json.backup`. The
+**Kayıtlar** button
 opens the log. Deleting the speech folder is safe: the speech is generated
 again, which also replaces a sentence that sounds cut off. Removing the app
 leaves these files in place; delete the folders by hand to remove them too.
@@ -197,6 +251,7 @@ The code lives in `src/announcer`, in small modules with one job each:
 | `player`, `chime`           | Play the chime and the speech                               |
 | `logo`                      | Draw the logo and the window icons                          |
 | `settings`, `files`, `logs` | Settings, safe file writes and the log                      |
+| `changes`                   | Today's skipped and edited announcements                    |
 | `app`, `today`              | Tie everything together behind the window                   |
 | `ui`                        | The tkinter window and its Turkish wording                  |
 
