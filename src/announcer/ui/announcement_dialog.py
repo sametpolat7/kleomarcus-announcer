@@ -5,8 +5,9 @@ from tkinter import messagebox, ttk
 
 from announcer.app import App, SlotTakenError
 from announcer.models import ALL_WEEKDAYS, WEEKDAY_NAMES, CustomAnnouncement
-from announcer.today import Status
+from announcer.today import BUSY
 from announcer.ui import texts
+from announcer.ui.keys import bind_return
 
 _log = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ class AnnouncementDialog:
             row=0, column=2
         )
 
-        self.window.bind("<Return>", lambda event: self.save())
+        bind_return(self.window, self.save)
         self.window.bind("<Escape>", lambda event: self.window.destroy())
         entry.focus_set()
 
@@ -136,7 +137,7 @@ class AnnouncementDialog:
         status = self._app.test_status
         self.test_status.set(texts.activity(generating=False, test=status))
         # One test at a time: pressing again would only queue the same text.
-        busy = status is Status.PLAYING
+        busy = status in BUSY
         self.test_button.state(["disabled" if busy else "!disabled"])
         self.window.after(_FOLLOW, self._follow_test)
 

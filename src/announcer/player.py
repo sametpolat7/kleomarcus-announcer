@@ -2,14 +2,14 @@
 goes unnoticed, and what was playing then carries on by that much.
 """
 
-import datetime
 import logging
 import os
 import queue
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
@@ -22,9 +22,11 @@ import pygame
 
 _log = logging.getLogger(__name__)
 
-# When a group of texts was queued, the texts, when they were due, and the
-# speed of the speech to play.
-type _Queued = tuple[float, tuple[str, ...], datetime.datetime | None, float]
+# When a group of texts was queued, the texts, what the caller tagged it with,
+# and the speed of the speech to play.
+type _Queued = tuple[float, tuple[str, ...], Hashable | None, float]
+
+_NOTHING = object()  # what is being played while nothing is
 
 
 class PlaybackError(Exception):
@@ -74,20 +76,37 @@ class PygameOutput:
         pygame.mixer.quit()
 
 
+class Heard(Enum):
+    """What became of one text of a group."""
+
+    YES = "yes"
+    NO_SPEECH = "no speech"  # there was no stored speech for it
+    UNPLAYABLE = "unplayable"  # the audio output could not play it
+    LATE = "late"  # the computer was asleep
+    CUT = "cut"  # cut off by ``Player.cut``
+
+
 @dataclass(frozen=True)
 class Playback:
     texts: tuple[str, ...]  # everything that was due
     missing: tuple[str, ...]  # the texts skipped for lack of stored speech
     late: tuple[str, ...]  # the texts skipped because the computer was asleep
     failed: bool  # the audio output could not play some or all of the others
-    due: datetime.datetime | None = None  # as given when the texts were queued
+    tag: Hashable | None = None  # as given when the texts were queued
+    cut: tuple[str, ...] = ()  # the texts not heard in full because of ``cut``
+    # What became of each text, in the same order, so that two texts that
+    # read the same are told apart.
+    heard: tuple[Heard, ...] = ()
 
 
 class Player:
-    """``on_played`` is called on the player's thread after each group, so it
-    should only hand the result over, for example by putting it on a queue. A
-    group may be queued with the moment it was due; the player only hands that
-    back with the outcome, so the caller can tell which group it was.
+    """``on_played`` is called on the player's thread after each group,
+    ``on_started`` with its tag when a group begins to sound, and
+    ``on_speaking`` with its tag and the place of a text among its texts when
+    that text begins to sound, so they should only hand that over, for
+    example by putting it on a queue. A group may be
+    queued with a tag; the player only hands that back, so the caller can tell
+    which group it was.
     ``find_audio`` is asked for the speech of a text at the speed its group
     was queued with. ``clock`` gives the time of day in seconds and is how a
     sleep is noticed. A player runs once: after ``stop`` it cannot be started
@@ -107,25 +126,42 @@ class Player:
         on_played: Callable[[Playback], None],
         chime: Path = CHIME_PATH,
         clock: Callable[[], float] = time.time,
+        on_started: Callable[[Hashable | None], None] = lambda tag: None,
+        on_speaking: Callable[[Hashable | None, int], None] = lambda tag, index: None,
     ) -> None:
         self._find_audio = find_audio
         self._output = output
         self._on_played = on_played
+        self._on_started = on_started
+        self._on_speaking = on_speaking
         self._chime = chime
         self._clock = clock
         self._looked_at = 0.0
         self._asleep_until = float("-inf")  # texts queued before this are late
         self._queue: queue.Queue[_Queued | None] = queue.Queue()
         self._stopped = threading.Event()
+        self._cut = threading.Event()  # the group that is sounding is to end
+        self._sounding: object = _NOTHING  # the tag of that group
+        self._sounding_lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, name="player", daemon=True)
 
     def enqueue(
         self,
         texts: Sequence[str],
-        due: datetime.datetime | None = None,
+        tag: Hashable | None = None,
         speed: float = NORMAL_SPEED,
     ) -> None:
-        self._queue.put((self._clock(), tuple(texts), due, speed))
+        self._queue.put((self._clock(), tuple(texts), tag, speed))
+
+    def cut(self, tag: Hashable | None) -> None:
+        """Safe to call from any thread. Cut off the group with ``tag`` if it is
+        being played, within a fraction of a second; the groups queued after it
+        are played as usual. Nothing happens once that group is over, so a
+        late call never cuts off the one after it.
+        """
+        with self._sounding_lock:
+            if self._sounding is not _NOTHING and self._sounding == tag:
+                self._cut.set()
 
     def start(self) -> None:
         self._thread.start()
@@ -140,55 +176,85 @@ class Player:
     def play(
         self,
         texts: Sequence[str],
-        due: datetime.datetime | None = None,
+        tag: Hashable | None = None,
         speed: float = NORMAL_SPEED,
     ) -> None:
         """Returns when ``texts`` are announced and the outcome is reported."""
         self._looked_at = self._clock()
-        self._announce(tuple(texts), due, speed, skip=False)
+        self._announce(tuple(texts), tag, speed, skip=False)
 
     def _announce(
         self,
         texts: tuple[str, ...],
-        due: datetime.datetime | None,
+        tag: Hashable | None,
         speed: float,
         skip: bool,
     ) -> None:
         """With ``skip`` nothing is played, because the texts are already late."""
         if self._stopped.is_set():
             return
-        spoken: list[tuple[str, Path]] = []
-        missing: list[str] = []
-        for text in texts:
+        spoken: list[tuple[int, str, Path]] = []  # with its place among ``texts``
+        heard = [Heard.YES] * len(texts)
+        for index, text in enumerate(texts):
             path = self._find_audio(text, speed)
             if path is None:
-                missing.append(text)
+                heard[index] = Heard.NO_SPEECH
             else:
-                spoken.append((text, path))
+                spoken.append((index, text, path))
 
-        failed = False
+        def started(file: int) -> None:
+            if file:  # file 0 is the chime
+                self._on_speaking(tag, spoken[file - 1][0])
+
+        unplayable: set[int] = set()  # files that the output could not play
         finished = 0  # how many files, the chime included, were played out
+        cut_off = False
         if spoken and not skip:
-            files = [self._chime, *(path for _, path in spoken)]
+            files = [self._chime, *(path for _, _, path in spoken)]
+            with self._sounding_lock:
+                self._sounding = tag
+                self._cut.clear()
+            self._on_started(tag)
             try:
-                failed, finished = self._play_files(files)
+                unplayable, finished = self._play_files(files, started)
             except PlaybackError:
                 _log.exception("Cannot play an announcement")
-                failed, finished = True, len(files)
+                unplayable, finished = set(range(len(files))), len(files)
+            finally:
+                with self._sounding_lock:
+                    self._sounding = _NOTHING
+                    cut_off = self._cut.is_set() and finished < len(files)
         if self._stopped.is_set():
             return  # cut off by ``stop``, so there is nothing true to report
-        # File 0 is the chime, so file n belongs to text n - 1. A text that
-        # was cut off by a sleep counts as late, like those after it.
-        late = tuple(text for text, _ in spoken[max(finished - 1, 0) :])
-        self._on_played(Playback(texts, tuple(missing), late, failed, due))
+        for file in unplayable - {0}:  # file 0 is the chime
+            heard[spoken[file - 1][0]] = Heard.UNPLAYABLE
+        # File n belongs to text n - 1. A text that was cut off by a sleep
+        # counts as late, like those after it; one that was cut off by
+        # ``cut`` counts as cut, like those after it.
+        for place, _, _ in spoken[max(finished - 1, 0) :]:
+            heard[place] = Heard.CUT if cut_off else Heard.LATE
+        self._on_played(
+            Playback(
+                texts,
+                _of(texts, heard, Heard.NO_SPEECH),
+                _of(texts, heard, Heard.LATE),
+                bool(unplayable),
+                tag,
+                _of(texts, heard, Heard.CUT),
+                tuple(heard),
+            )
+        )
 
-    def _play_files(self, paths: Sequence[Path]) -> tuple[bool, int]:
-        """Returns whether any file could not be played, and how many files were
-        dealt with before the player was stopped or the computer slept: all of
-        them if neither happened. Raises ``PlaybackError`` if there is no
-        audio device.
+    def _play_files(
+        self, paths: Sequence[Path], started: Callable[[int], None]
+    ) -> tuple[set[int], int]:
+        """Returns the places of the files that could not be played, and how
+        many files were dealt with before the player was stopped or cut off,
+        or the computer slept: all of them if none of that happened.
+        ``started`` is told the place of each file that begins to sound.
+        Raises ``PlaybackError`` if there is no audio device.
         """
-        unplayable = False
+        unplayable: set[int] = set()
         # The device is opened for each announcement and closed again, so
         # speakers that were plugged in or switched since are used.
         self._output.open()
@@ -201,8 +267,9 @@ class Player:
                 except PlaybackError:
                     # The files after an unplayable one are still played.
                     _log.exception("Cannot play %s", path)
-                    unplayable = True
+                    unplayable.add(index)
                     continue
+                started(index)
                 while self._output.busy():
                     if not self._wait(self._POLL):
                         return unplayable, index
@@ -212,7 +279,7 @@ class Player:
 
     def _wait(self, seconds: float) -> bool:
         stopped = self._stopped.wait(seconds)
-        return not (self._slept() or stopped)
+        return not (self._slept() or stopped or self._cut.is_set())
 
     def _slept(self) -> bool:
         before, now = self._looked_at, self._clock()
@@ -236,11 +303,15 @@ class Player:
                 self._looked_at = self._clock()
             if item is None or self._stopped.is_set():
                 break
-            queued_at, texts, due, speed = item
+            queued_at, texts, tag, speed = item
             try:
                 self._slept()  # a sleep between two announcements counts too
                 skip = queued_at < self._asleep_until
-                self._announce(texts, due, speed, skip)
+                self._announce(texts, tag, speed, skip)
             except Exception:
                 # One failed announcement must not silence every later one.
                 _log.exception("Announcing failed")
+
+
+def _of(texts: Sequence[str], heard: Sequence[Heard], what: Heard) -> tuple[str, ...]:
+    return tuple(text for text, was in zip(texts, heard, strict=True) if was is what)

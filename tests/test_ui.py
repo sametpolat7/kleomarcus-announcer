@@ -1,7 +1,10 @@
 import datetime
 import gc
 import logging
+import queue
+import re
 import sys
+import threading
 import time
 import tkinter as tk
 from collections.abc import Callable, Iterator
@@ -10,12 +13,15 @@ from tkinter import filedialog, messagebox, ttk
 
 import pytest
 
-from announcer.app import App
-from announcer.models import ALL_WEEKDAYS, CustomAnnouncement
-from announcer.template import DEFAULT_TEMPLATE
-from announcer.today import Status
-from announcer.ui import announcement_dialog, main_window
+from announcer.app import App, Editing
+from announcer.chime import CHIME_PATH
+from announcer.models import ALL_WEEKDAYS, CustomAnnouncement, Kind
+from announcer.template import DEFAULT_END_TEMPLATE, DEFAULT_TEMPLATE, render
+from announcer.today import Row, Status
+from announcer.ui import announcement_dialog, change_dialog, main_window
 from announcer.ui.announcement_dialog import AnnouncementDialog
+from announcer.ui.change_dialog import ChangeDialog
+from announcer.ui.instant_dialog import InstantDialog
 from announcer.ui.main_window import MainWindow
 from support import (
     ROWS,
@@ -29,6 +35,28 @@ from support import (
 
 WATER = CustomAnnouncement("Su içmeyi unutmayın.", datetime.time(19, 0))
 CLOSING = CustomAnnouncement("Salon kapanıyor.", datetime.time(9, 30), frozenset({5}))
+# Their sessions start at 18:00 on the schedule's Monday, in this order.
+AYSE, MEHMET = "Ayşe Yılmaz", "Mehmet Demir"
+
+
+def welcome(name: str) -> str:
+    """What is read at the start of the athlete's session."""
+    return render(DEFAULT_TEMPLATE, name)
+
+
+def goodbye(name: str) -> str:
+    """What is read at the end of the athlete's session."""
+    return render(DEFAULT_END_TEMPLATE, name)
+
+
+def start_row(name: str) -> tuple[str, ...]:
+    """The row of the start of the athlete's session, but for its status."""
+    return ("Pazartesi", "18:00", "Başlangıç", welcome(name))
+
+
+def end_row(name: str) -> tuple[str, ...]:
+    """The row of the end of the athlete's session, but for its status."""
+    return ("Pazartesi", "19:00", "Bitiş", goodbye(name))
 
 
 @pytest.fixture
@@ -108,6 +136,49 @@ def select(window: MainWindow, row: str) -> None:
     window.root.update()  # the buttons follow the selection
 
 
+def statuses(window: MainWindow) -> list[str]:
+    return [values[4] for values in today(window)]
+
+
+def brought_into_view(window: MainWindow, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The ids of the rows that today's table is told to bring into view from
+    now on, in that order."""
+    seen: list[str] = []
+    monkeypatch.setattr(window.today, "see", seen.append)
+    return seen
+
+
+class Holder:
+    """Keeps each file that the output plays sounding until the test lets it
+    end."""
+
+    def __init__(self) -> None:
+        self._sounding: queue.Queue[Path] = queue.Queue()  # each file, as it begins
+        self._go_on = threading.Semaphore(0)
+
+    def hold(self, path: Path) -> None:
+        self._sounding.put(path)
+        self._go_on.acquire(timeout=5)
+
+    def next(self) -> Path:
+        """Wait for the next file to begin, and return it."""
+        return self._sounding.get(timeout=5)
+
+    def end(self, files: int = 1) -> None:
+        """Let the file that sounds end, and as many as ``files`` in all."""
+        self._go_on.release(files)
+
+
+@pytest.fixture
+def holder(app: App, output: FakeOutput) -> Iterator[Holder]:
+    """Each file sounds until the test lets it end. Whatever is still held is
+    let go before the app is stopped."""
+    made = Holder()
+    output.while_playing = made.hold
+    yield made
+    made.end(10)  # so that nothing is held after a failure
+
+
 def double_click(window: MainWindow, x: int, y: int) -> None:
     """Two clicks in a row are a double click to tkinter."""
     for _ in range(2):
@@ -115,16 +186,70 @@ def double_click(window: MainWindow, x: int, y: int) -> None:
         window.today.event_generate("<ButtonRelease-1>", x=x, y=y)
 
 
+def press(widget: tk.Misc, key: str) -> None:
+    """Do what ``key`` is bound to over ``widget``. Tk hands a key only to the
+    window that has the focus, which one kept off the screen never gets, so
+    the binding is run with the fields of a key press filled in. A binding
+    that returns "break" ends there, as it ends the key's handling in Tk."""
+    fields = {"W": str(widget), "K": key.strip("<>"), "A": "{}", "T": "2"}
+    script = re.sub(r"%(.)", lambda found: fields.get(found[1], "0"), widget.bind(key))
+    widget.tk.eval(f"while 1 {{{script}\nbreak}}")
+
+
+def focus_on(widget: tk.Misc, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tk gives the focus only to a window on the screen, so the window that
+    ``widget`` is in is told that the focus is on it."""
+    monkeypatch.setattr(widget.winfo_toplevel(), "focus_get", lambda: widget)
+
+
+def widgets[Widget: tk.Misc](parent: tk.Misc, kind: type[Widget]) -> list[Widget]:
+    """The widgets of ``kind`` in ``parent``, however deep, in the order made."""
+    found: list[Widget] = []
+    for child in parent.winfo_children():
+        if isinstance(child, kind):
+            found.append(child)
+        found += widgets(child, kind)
+    return found
+
+
+def button(parent: tk.Misc, text: str) -> ttk.Button:
+    [found] = [
+        each for each in widgets(parent, ttk.Button) if each.cget("text") == text
+    ]
+    return found
+
+
+def text_entry(parent: tk.Misc) -> ttk.Entry:
+    """The entry of a dialog's text, as a spinbox is an entry too."""
+    [found] = [
+        each for each in widgets(parent, ttk.Entry) if not isinstance(each, ttk.Spinbox)
+    ]
+    return found
+
+
+def master_of(widget: tk.Misc) -> tk.Misc:
+    master = widget.master
+    assert master is not None
+    return master
+
+
 def test_fresh_window_asks_for_a_schedule(window: MainWindow) -> None:
     assert window.schedule_path.get() == ""
     assert window.loaded.get() == "Son Yüklenme Tarihi: —"
     assert window.today_title.get() == "9 Kasım 2026 Pazartesi"
     assert window.time.get() == "08:00:00"
-    assert today(window) == [("", "", "Bugün için anons yok.", "")]
+    assert today(window) == [("", "", "", "Bugün için anons yok.", "")]
     assert announcements(window) == [("", "", "Özel anons yok.")]
     assert window.last_announcement.get() == "Son anons: —"
     assert window.template.get() == DEFAULT_TEMPLATE
-    assert (window.speed_box.get(), window.delay_box.get()) == ("1.0× (Normal)", "Yok")
+    assert window.end_template.get() == DEFAULT_END_TEMPLATE
+    assert (
+        window.speed_box.get(),
+        window.delay_box.get(),
+        window.end_box.get(),
+    ) == ("1.0× (Normal)", "Yok", "Açık")
+    assert window.stop_button.instate(["disabled"])  # nothing is sounding
+    assert window.instant_button.instate(["!disabled"])
     assert warnings(window).startswith("• Sporcu listesi seçilmedi.")
 
 
@@ -135,11 +260,39 @@ def test_choosing_a_schedule_shows_todays_announcements(
 
     assert window.schedule_path.get() == str(schedule)
     assert window.loaded.get() == "Son Yüklenme Tarihi: 09.11.2026 08:00:00"
+    assert window.today.heading("text", "text") == "Anons"
+    # Each athlete has a row of their own, at the start of the session and, an
+    # hour later, at its end, which shows what is read.
     assert today(window) == [
-        ("Pazartesi", "18:00", "Ayşe Yılmaz, Mehmet Demir", "Sıradaki")
+        (*start_row(AYSE), "Sıradaki"),
+        (*start_row(MEHMET), "Sıradaki"),
+        (*end_row(AYSE), "Bekliyor"),
+        (*end_row(MEHMET), "Bekliyor"),
     ]
     pump(window, lambda: warnings(window) == "")
     assert not window.warning_box.winfo_manager()  # the box is taken away
+
+
+def test_athletes_of_a_minute_have_a_row_each_in_the_order_of_the_schedule(
+    window: MainWindow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [
+        ("Zeynep Kaya", "Pazartesi", "18:00"),
+        ("Elif Şahin", "Pazartesi", "17:00"),
+        ("Ali Kara", "Pazartesi", "18:00"),
+    ]
+
+    choose(window, write_schedule(tmp_path / "order.xlsx", rows), monkeypatch)
+
+    # Those whose session ends are said goodbye to before the next are welcomed.
+    assert [values[1:4] for values in today(window)] == [
+        ("17:00", "Başlangıç", welcome("Elif Şahin")),
+        ("18:00", "Bitiş", goodbye("Elif Şahin")),
+        ("18:00", "Başlangıç", welcome("Zeynep Kaya")),
+        ("18:00", "Başlangıç", welcome("Ali Kara")),
+        ("19:00", "Bitiş", goodbye("Zeynep Kaya")),
+        ("19:00", "Bitiş", goodbye("Ali Kara")),
+    ]
 
 
 def test_schedule_that_cannot_be_used_gives_an_alert(
@@ -164,7 +317,7 @@ def test_schedule_that_cannot_be_used_gives_an_alert(
         "Bu dosya yüklenemez. Sporcu listesi bir Excel (.xlsx) dosyası olmalıdır.",
     ]
     assert window.schedule_path.get() == str(schedule)
-    assert len(today(window)) == 1
+    assert len(today(window)) == 4
 
 
 def test_saved_schedule_file_is_shown_by_itself(
@@ -180,8 +333,11 @@ def test_saved_schedule_file_is_shown_by_itself(
 
     write_schedule(schedule, [*ROWS, ("Elif Şahin", "Pazartesi", "20:30")])
 
-    pump(window, lambda: len(today(window)) == 2)
-    assert today(window)[1] == ("Pazartesi", "20:30", "Elif Şahin", "Bekliyor")
+    pump(window, lambda: len(today(window)) == 6)
+    assert today(window)[4:] == [
+        ("Pazartesi", "20:30", "Başlangıç", welcome("Elif Şahin"), "Bekliyor"),
+        ("Pazartesi", "21:30", "Bitiş", goodbye("Elif Şahin"), "Bekliyor"),
+    ]
     assert window.loaded.get() == "Son Yüklenme Tarihi: 09.11.2026 09:15:00"
 
 
@@ -194,14 +350,17 @@ def test_status_follows_the_clock(
     choose(window, schedule, monkeypatch)
     clock.now = at(18, 0, 20)
     pump(window, lambda: window.time.get() == "18:00:20")
-    assert today(window)[0][3] == "Sıradaki"
+    assert statuses(window) == ["Sıradaki", "Sıradaki", "Bekliyor", "Bekliyor"]
 
-    clock.now = at(18, 0, 31)  # too late for it now, with nothing else changing
-    pump(window, lambda: today(window)[0][3] == "Saati geçti")
+    clock.now = at(18, 0, 31)  # too late for them now, with nothing else changing
+    pump(window, lambda: statuses(window) == ["Saati geçti"] * 2 + ["Sıradaki"] * 2)
     clock.now = at(0, 0) + datetime.timedelta(days=1)
     pump(window, lambda: window.today_title.get() == "10 Kasım 2026 Salı")
 
-    assert today(window) == [("Salı", "20:00", "Zeynep Kaya", "Sıradaki")]
+    assert today(window) == [
+        ("Salı", "20:00", "Başlangıç", welcome("Zeynep Kaya"), "Sıradaki"),
+        ("Salı", "21:00", "Bitiş", goodbye("Zeynep Kaya"), "Bekliyor"),
+    ]
 
 
 def test_due_slot_is_shown_as_played(
@@ -216,11 +375,158 @@ def test_due_slot_is_shown_as_played(
 
     app.start()
     clock.now = at(18)
-    pump(window, lambda: today(window)[0][3] == "Okundu")
+    pump(window, lambda: statuses(window)[:2] == ["Okundu"] * 2)
 
     assert window.last_announcement.get() == (
-        "Son anons: 18:00 · Ayşe Yılmaz, Mehmet Demir · Okundu"
+        "Son anons: 18:00 · Okundu · Başlangıç: Ayşe Yılmaz, Mehmet Demir"
     )
+
+
+def test_table_follows_the_reading_from_one_athlete_to_the_next(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    clock: FakeClock,
+    holder: Holder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    wait_for(app, lambda: not app.generating)
+    app.start()
+    clock.now = at(18)
+
+    assert holder.next() == CHIME_PATH
+    pump(window, lambda: statuses(window)[:2] == ["Sırada"] * 2)
+    holder.end()
+    holder.next()
+    pump(window, lambda: statuses(window)[:2] == ["Okunuyor", "Sırada"])
+    assert window.today.item("0", "tags") == ("PLAYING",)  # in bold and blue
+    holder.end()
+    holder.next()
+    pump(window, lambda: statuses(window)[:2] == ["Okundu", "Okunuyor"])
+    assert window.today.item("0", "tags") == ("PLAYED",)  # in grey
+    assert window.today.item("1", "tags") == ("PLAYING",)
+    holder.end()
+    pump(window, lambda: statuses(window)[:2] == ["Okundu"] * 2)
+
+    assert statuses(window)[2:] == ["Sıradaki"] * 2
+    assert window.last_announcement.get() == (
+        "Son anons: 18:00 · Okundu · Başlangıç: Ayşe Yılmaz, Mehmet Demir"
+    )
+
+
+def test_row_being_read_is_brought_into_view_as_the_reading_moves_on(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    clock: FakeClock,
+    holder: Holder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    wait_for(app, lambda: not app.generating)
+    window.root.update()
+    seen = brought_into_view(window, monkeypatch)
+    app.start()
+    clock.now = at(18)
+
+    assert holder.next() == CHIME_PATH
+    pump(window, lambda: statuses(window)[:2] == ["Sırada"] * 2)
+    # The day moved on: the whole minute, its first row last.
+    assert seen == ["1", "0"]
+    holder.end()
+    holder.next()
+    pump(window, lambda: statuses(window)[:2] == ["Okunuyor", "Sırada"])
+    assert seen == ["1", "0", "0"]
+    holder.end()
+    holder.next()
+    pump(window, lambda: statuses(window)[:2] == ["Okundu", "Okunuyor"])
+    assert seen == ["1", "0", "0", "1"]  # Mehmet Demir's row, as he is read
+    holder.end()
+    pump(window, lambda: statuses(window)[:2] == ["Okundu"] * 2)
+
+    # The ends were next already while the minute was read, so the table
+    # stays where it is until their minute comes.
+    assert seen == ["1", "0", "0", "1"]
+    assert statuses(window)[2:] == ["Sıradaki"] * 2
+
+
+def test_replay_waits_until_the_rest_of_the_minute_is_read(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    output: FakeOutput,
+    clock: FakeClock,
+    holder: Holder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    wait_for(app, lambda: not app.generating)
+    select(window, "0")
+    app.start()
+    clock.now = at(18)
+    assert holder.next() == CHIME_PATH
+    holder.end()
+    holder.next()  # Ayşe Yılmaz's sentence
+    holder.end()
+    holder.next()  # Mehmet Demir's
+
+    pump(window, lambda: statuses(window)[:2] == ["Okundu", "Okunuyor"])
+
+    # She was heard, but her minute is still being read.
+    assert window.today.selection() == ("0",)
+    assert window.replay_button.instate(["disabled"])
+    window.replay()  # a press that comes anyway
+    assert statuses(window)[:2] == ["Okundu", "Okunuyor"]
+    holder.end()
+    pump(window, lambda: statuses(window)[:2] == ["Okundu"] * 2)
+    assert window.today.selection() == ("0",)
+    assert window.replay_button.instate(["!disabled"])
+    assert len(output.played) == 3  # the chime and the two sentences, once
+
+
+def test_rows_that_were_read_stay_read_when_the_template_changes(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    wait_for(app, lambda: not app.generating)
+    app.start()
+    clock.now = at(18)
+    pump(window, lambda: statuses(window)[:2] == ["Okundu"] * 2)
+    clock.now = at(18, 5)
+
+    window.template.set("Hoş geldiniz, {ad_soyad}.")
+    window.save_template_button.invoke()
+
+    pump(window, lambda: today(window)[0][3] == "Hoş geldiniz, Ayşe Yılmaz.")
+    assert today(window)[:2] == [
+        ("Pazartesi", "18:00", "Başlangıç", "Hoş geldiniz, Ayşe Yılmaz.", "Okundu"),
+        ("Pazartesi", "18:00", "Başlangıç", "Hoş geldiniz, Mehmet Demir.", "Okundu"),
+    ]
+
+
+def test_table_stays_where_it_is_when_the_template_changes(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    wait_for(app, lambda: not app.generating)
+    window.root.update()
+    seen = brought_into_view(window, monkeypatch)
+
+    window.template.set("Hoş geldiniz, {ad_soyad}.")
+    window.save_template_button.invoke()
+    pump(window, lambda: today(window)[0][3] == "Hoş geldiniz, Ayşe Yılmaz.")
+
+    # The day has not moved on: the same athletes are next.
+    assert statuses(window)[:2] == ["Sıradaki"] * 2
+    assert seen == []
 
 
 def test_replay_needs_a_selected_row_whose_time_has_come(
@@ -240,10 +546,10 @@ def test_replay_needs_a_selected_row_whose_time_has_come(
     select(window, "0")
     assert window.replay_button.instate(["disabled"])  # it is still to come
     window.replay()
-    assert today(window)[0][3] == "Sıradaki"
+    assert today(window)[0][4] == "Sıradaki"
 
     clock.now = at(18, 1)
-    pump(window, lambda: today(window)[0][3] == "Saati geçti")
+    pump(window, lambda: today(window)[0][4] == "Saati geçti")
 
     assert window.today.selection() == ("0",)
     assert window.replay_button.instate(["!disabled"])
@@ -261,31 +567,46 @@ def test_replay_button_announces_the_selected_row_again(
     wait_for(app, lambda: not app.generating)
     app.start()
     clock.now = at(18)
-    pump(window, lambda: today(window)[0][3] == "Okundu")
-    played = list(output.played)
+    pump(window, lambda: statuses(window)[:2] == ["Okundu"] * 2)
+    chime, ayse, _ = played = list(output.played)
     clock.now = at(18, 4)
     select(window, "0")
 
     window.replay_button.invoke()
 
-    assert today(window)[0][3] == "Okunuyor"
+    # Only the selected athlete is read again.
+    assert statuses(window)[:2] == ["Sırada", "Okundu"]
     assert window.replay_button.instate(["disabled"])  # one at a time
-    pump(window, lambda: today(window)[0][3] == "Okundu")
-    assert output.played == played * 2
+    pump(window, lambda: today(window)[0][4] == "Okundu")
+    assert output.played == [*played, chime, ayse]
     assert window.today.selection() == ("0",)
     assert window.replay_button.instate(["!disabled"])
+    assert window.last_announcement.get() == (
+        "Son anons: 18:00 · Okundu · Başlangıç: Ayşe Yılmaz"
+    )
 
 
-def test_double_click_replays_a_row_but_not_from_the_headings(
+def test_double_click_and_return_open_the_editor_of_a_row_and_never_read_it(
     window: MainWindow,
     app: App,
     schedule: Path,
     clock: FakeClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    opened: list[tuple[Row, Editing]] = []
+
+    class Editor:
+        def __init__(
+            self, parent: tk.Misc, app: App, row: Row, editing: Editing
+        ) -> None:
+            opened.append((row, editing))
+
+        def wait(self) -> None:
+            pass
+
+    monkeypatch.setattr(main_window, "ChangeDialog", Editor)
     choose(window, schedule, monkeypatch)
     wait_for(app, lambda: not app.generating)
-    clock.now = at(18, 5)
     if sys.platform != "darwin":
         # Only macOS lays a window out while it is kept off the screen.
         window.root.deiconify()
@@ -296,10 +617,22 @@ def test_double_click_replays_a_row_but_not_from_the_headings(
     left, top, _, height = place
 
     double_click(window, left + 5, top // 2)  # the headings are above the row
-    assert today(window)[0][3] == "Saati geçti"
+    assert opened == []
 
     double_click(window, left + 5, top + height // 2)
-    assert today(window)[0][3] == "Okunuyor"
+    press(window.today, "<Return>")
+    assert [(row.time, row.kind, row.text) for row, _ in opened] == [
+        (datetime.time(18), Kind.START, welcome(AYSE))
+    ] * 2
+    assert (opened[0][1].name, opened[0][1].planned_text) == (AYSE, welcome(AYSE))
+
+    clock.now = at(18, 5)  # it can be read again now, but no longer changed
+    pump(window, lambda: today(window)[0][4] == "Saati geçti")
+    double_click(window, left + 5, top + height // 2)
+    press(window.today, "<Return>")
+
+    assert len(opened) == 2
+    assert today(window)[0][4] == "Saati geçti"
 
 
 def test_table_stays_where_it_is_while_a_row_is_read_again(
@@ -315,23 +648,362 @@ def test_table_stays_where_it_is_while_a_row_is_read_again(
     wait_for(app, lambda: not app.generating)
     clock.now = at(18, 5)
     app.start()
-    pump(window, lambda: today(window)[0][3] == "Saati geçti")
-    brought_into_view: list[str] = []
-    monkeypatch.setattr(window.today, "see", brought_into_view.append)
+    pump(window, lambda: today(window)[0][4] == "Saati geçti")
+    seen = brought_into_view(window, monkeypatch)
     select(window, "0")
 
     window.replay_button.invoke()
-    pump(window, lambda: today(window)[0][3] == "Okundu")
-    assert brought_into_view == []
+    pump(window, lambda: today(window)[0][4] == "Okundu")
+    assert seen == []
 
-    output.endless = True
-    clock.now = at(19)  # the day moves on to the next announcement
-    pump(window, lambda: today(window)[1][3] == "Okunuyor")
-    assert brought_into_view == ["1"]
+    output.endless = True  # the chime goes on, so the next ones stay queued
+    clock.now = at(19)  # the day moves on to the next announcements
+    pump(window, lambda: statuses(window)[2:] == ["Sırada"] * 3)
+    # The whole minute: its last row, then its first.
+    assert seen == ["4", "2"]
+
+
+def test_table_brings_the_whole_next_minute_into_view_when_the_day_moves_on(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    app.save_announcement(WATER)
+    window.show()
+    window.root.update()
+    seen = brought_into_view(window, monkeypatch)
+
+    clock.now = at(18, 0, 31)  # the starts went by, and the ends are next
+
+    pump(window, lambda: statuses(window)[2:] == ["Sıradaki"] * 3)
+    # Its first row last, so that it is the one that shows if not all fit.
+    assert seen == ["4", "2"]
+    clock.now = at(18, 30)  # only the clock moves
+    pump(window, lambda: window.time.get() == "18:30:00")
+    assert seen == ["4", "2"]
+
+
+def test_table_follows_the_next_row_when_the_first_athlete_of_its_minute_is_skipped(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    window.root.update()
+    seen = brought_into_view(window, monkeypatch)
+    select(window, "0")
+
+    window.skip_button.invoke()
+
+    # Mehmet Demir's row is the next one now, and it is the minute's only one.
+    assert statuses(window) == ["Atlanacak", "Sıradaki", "Atlanacak", "Bekliyor"]
+    assert seen == ["1", "1"]
+    window.skip_button.invoke()
+    assert statuses(window) == ["Sıradaki", "Sıradaki", "Bekliyor", "Bekliyor"]
+    assert seen == ["1", "1", "1", "0"]
+
+
+def test_table_follows_the_next_minute_when_a_change_of_the_delay_moves_it(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    window.root.update()
+    seen = brought_into_view(window, monkeypatch)
+
+    pick(window.delay_box, "2 dk")
+
+    # The same athletes are next, at another time.
+    assert [values[1] for values in today(window)] == ["18:02"] * 2 + ["19:02"] * 2
+    assert statuses(window)[:2] == ["Sıradaki"] * 2
+    assert seen == ["1", "0"]
+
+
+def test_skip_button_skips_the_selected_row_and_takes_that_back(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The line that says that there are none is not an announcement.
+    select(window, "none")
+    assert window.skip_button.instate(["disabled"])
+    assert window.edit_row_button.instate(["disabled"])
+    window.skip()
+
+    choose(window, schedule, monkeypatch)
+    select(window, "0")
+    assert window.skip_button.instate(["!disabled"])
+    assert window.skip_button.cget("text") == "Atla"
+
+    window.skip_button.invoke()
+
+    # Her end goes with it; the other athlete of the minute stays as planned.
+    assert statuses(window) == ["Atlanacak", "Sıradaki", "Atlanacak", "Bekliyor"]
+    assert window.today.item("0", "tags") == ("SKIPPING",)  # struck through
+    assert window.today.selection() == ("0",)
+    assert window.skip_button.cget("text") == "Atlamayı Geri Al"
+    assert window.edit_row_button.instate(["!disabled"])
+    assert [(change.kind, change.name, change.skipped) for change in app.changes] == [
+        (Kind.START, AYSE, True),
+        (Kind.END, AYSE, True),
+    ]
+
+    window.skip_button.invoke()
+
+    assert statuses(window) == ["Sıradaki", "Sıradaki", "Bekliyor", "Bekliyor"]
+    assert window.skip_button.cget("text") == "Atla"
+    assert not app.changes
+    clock.now = at(18, 1)
+    pump(window, lambda: today(window)[0][4] == "Saati geçti")
+    assert window.skip_button.instate(["disabled"])
+    assert window.edit_row_button.instate(["disabled"])
+
+
+def test_skipped_athlete_is_left_out_while_the_other_of_the_minute_is_read(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    output: FakeOutput,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    wait_for(app, lambda: not app.generating)
+    select(window, "0")
+    window.skip_button.invoke()
+    app.start()
+
+    clock.now = at(18)
+    pump(window, lambda: today(window)[1][4] == "Okundu")
+
+    assert statuses(window) == ["Atlanacak", "Okundu", "Atlanacak", "Sıradaki"]
+    assert len(output.played) == 2  # the chime and Mehmet Demir's sentence
+    assert window.last_announcement.get() == (
+        "Son anons: 18:00 · Okundu · Başlangıç: Mehmet Demir"
+    )
+
+
+def test_row_buttons_are_disabled_once_the_row_is_too_close_to_its_minute(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    wait_for(app, lambda: not app.generating)
+    clock.now = at(17, 59, 50)
+    pump(window, lambda: window.time.get() == "17:59:50")
+    select(window, "0")
+    assert window.edit_row_button.instate(["!disabled"])
+    assert window.skip_button.instate(["!disabled"])
+
+    clock.now = at(17, 59, 59)  # only the clock moves; the table reads the same
+    pump(window, lambda: window.time.get() == "17:59:59")
+
+    assert statuses(window) == ["Sıradaki", "Sıradaki", "Bekliyor", "Bekliyor"]
+    assert window.edit_row_button.instate(["disabled"])
+    assert window.skip_button.instate(["disabled"])
+
+
+@pytest.mark.parametrize("pressed", ["edit_row_button", "skip_button"])
+def test_row_buttons_pressed_too_close_to_the_minute_tell_that_it_is_too_late(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    clock: FakeClock,
+    alerts: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    pressed: str,
+) -> None:
+    opened: list[tuple[object, ...]] = []
+    monkeypatch.setattr(main_window, "ChangeDialog", lambda *args: opened.append(args))
+    choose(window, schedule, monkeypatch)
+    clock.now = at(17, 59, 50)
+    window.show()
+    select(window, "0")
+    clock.now = at(17, 59, 59)  # before the window looks at the clock again
+    stale: ttk.Button = getattr(window, pressed)
+    assert stale.instate(["!disabled"])
+
+    stale.invoke()
+
+    assert alerts == ["Bu anonsun saati geldi; artık değiştirilemez."]
+    assert opened == []
+    assert app.changes == ()
+    assert statuses(window) == ["Sıradaki", "Sıradaki", "Bekliyor", "Bekliyor"]
+    assert stale.instate(["disabled"])
+
+
+def test_selection_stays_with_its_row_when_a_start_and_an_end_share_a_minute(
+    window: MainWindow,
+    app: App,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    twice = [
+        ("Ayşe Yılmaz", "Pazartesi", "18:00"),
+        ("Ayşe Yılmaz", "Pazartesi", "19:00"),
+    ]
+    choose(window, write_schedule(tmp_path / "twice.xlsx", twice), monkeypatch)
+    assert [values[1:4] for values in today(window)] == [
+        ("18:00", "Başlangıç", welcome(AYSE)),
+        ("19:00", "Bitiş", goodbye(AYSE)),
+        ("19:00", "Başlangıç", welcome(AYSE)),
+        ("20:00", "Bitiş", goodbye(AYSE)),
+    ]
+    select(window, "2")
+
+    window.skip_button.invoke()
+
+    assert window.today.selection() == ("2",)
+    assert statuses(window) == ["Sıradaki", "Bekliyor", "Atlanacak", "Atlanacak"]
+    assert window.skip_button.cget("text") == "Atlamayı Geri Al"
+    select(window, "1")
+    assert window.skip_button.cget("text") == "Atla"
+
+    window.skip_button.invoke()
+
+    assert window.today.selection() == ("1",)
+    assert statuses(window) == ["Sıradaki", "Atlanacak", "Atlanacak", "Atlanacak"]
+    assert window.skip_button.cget("text") == "Atlamayı Geri Al"
+
+
+def test_edit_button_changes_the_selected_row_for_today_and_keeps_it_selected(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    app.save_announcement(WATER)
+    window.show()
+    select(window, "4")
+
+    def move(dialog: ChangeDialog) -> None:
+        dialog.window.withdraw()
+        dialog.minute.set("30")
+        dialog.hour.set("18")
+        dialog.save()
+
+    monkeypatch.setattr(ChangeDialog, "wait", move)
+
+    window.edit_row_button.invoke()
+
+    assert today(window) == [
+        (*start_row(AYSE), "Sıradaki"),
+        (*start_row(MEHMET), "Sıradaki"),
+        ("Pazartesi", "18:30", "Özel", WATER.text, "Bekliyor (düzenlendi)"),
+        (*end_row(AYSE), "Bekliyor"),
+        (*end_row(MEHMET), "Bekliyor"),
+    ]
+    assert window.today.selection() == ("2",)
+    assert app.settings.custom_announcements == (WATER,)  # for today only
+
+
+def test_edit_button_moves_one_athlete_and_leaves_the_other_of_the_minute(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    select(window, "1")
+
+    def move(dialog: ChangeDialog) -> None:
+        dialog.window.withdraw()
+        dialog.minute.set("30")
+        dialog.save()
+
+    monkeypatch.setattr(ChangeDialog, "wait", move)
+
+    window.edit_row_button.invoke()
+
+    assert today(window) == [
+        (*start_row(AYSE), "Sıradaki"),
+        ("Pazartesi", "18:30", "Başlangıç", welcome(MEHMET), "Bekliyor (düzenlendi)"),
+        (*end_row(AYSE), "Bekliyor"),
+        (*end_row(MEHMET), "Bekliyor"),  # his end stays where it was
+    ]
+    assert window.today.selection() == ("1",)
+    [change] = app.changes
+    assert (change.kind, change.name, change.time) == (
+        Kind.START,
+        MEHMET,
+        datetime.time(18, 30),
+    )
+
+
+def test_stop_button_cuts_off_only_what_is_sounding(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    output: FakeOutput,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    wait_for(app, lambda: not app.generating)
+    app.start()
+    window.stop()  # nothing to cut off
+    assert window.stop_button.instate(["disabled"])
+    # Mehmet Demir's sentence, the second of the minute, goes on until cut off.
+    output.while_playing = lambda path: setattr(
+        output, "endless", len(output.played) > 1
+    )
+    clock.now = at(18)
+    pump(window, lambda: statuses(window)[:2] == ["Okundu", "Okunuyor"])
+    assert app.sounding
+    assert window.stop_button.instate(["!disabled"])
+
+    window.stop_button.invoke()
+
+    assert window.stop_button.instate(["disabled"])
+    pump(window, lambda: today(window)[1][4] == "Durduruldu")
+    # What was heard stays heard, and the ends are still to come.
+    assert statuses(window) == ["Okundu", "Durduruldu", "Sıradaki", "Sıradaki"]
+    assert not app.sounding
+    assert window.last_announcement.get() == (
+        "Son anons: 18:00 · Durduruldu · Başlangıç: Ayşe Yılmaz, Mehmet Demir"
+    )
+
+
+def test_instant_button_has_what_is_typed_read_at_once(
+    window: MainWindow,
+    app: App,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app.start()
+    clock.now = at(9, 15)
+
+    def type_and_read(dialog: InstantDialog) -> None:
+        dialog.window.withdraw()
+        dialog.text.set("Salonu boşaltınız.")
+        dialog.read()
+
+    monkeypatch.setattr(InstantDialog, "wait", type_and_read)
+
+    window.instant_button.invoke()
+
+    instant = ("Pazartesi", "09:15", "Anlık", "Salonu boşaltınız.")
+    assert today(window) == [(*instant, "Hazırlanıyor")]
+    pump(window, lambda: today(window) == [(*instant, "Okundu")])
+    assert window.last_announcement.get() == (
+        "Son anons: 09:15 · Okundu · Anlık: Salonu boşaltınız."
+    )
 
 
 def test_scrolling_over_a_setting_does_not_change_it(window: MainWindow) -> None:
-    for box in (window.speed_box, window.delay_box):
+    for box in (window.speed_box, window.delay_box, window.end_box):
         scrolling = [
             sequence
             for sequence in box.bind_class("TCombobox")
@@ -341,17 +1013,60 @@ def test_scrolling_over_a_setting_does_not_change_it(window: MainWindow) -> None
         assert all(box.bind(sequence) for sequence in scrolling)
 
 
+def test_todays_table_leaves_out_the_day_while_it_is_narrow(
+    window: MainWindow,
+) -> None:
+    window.today.event_generate("<Configure>", width=300, height=200)
+
+    assert tuple(window.today.cget("displaycolumns")) == (
+        "time",
+        "kind",
+        "text",
+        "status",
+    )
+    window.today.event_generate("<Configure>", width=1200, height=200)
+    assert tuple(window.today.cget("displaycolumns")) == (
+        "day",
+        "time",
+        "kind",
+        "text",
+        "status",
+    )
+
+
+@pytest.mark.parametrize(
+    ("table_name", "optional", "wanted"),
+    [("today", "day", 320), ("announcements", "days", 160)],
+)
+def test_table_leaves_out_a_column_before_its_text_gets_narrower_than_wanted(
+    window: MainWindow, table_name: str, optional: str, wanted: int
+) -> None:
+    """Today's table shows whole sentences, so it gives its text more room."""
+    table: ttk.Treeview = getattr(window, table_name)
+    columns = tuple(table.cget("columns"))
+    fixed = sum(int(table.column(name, "width")) for name in columns if name != "text")
+
+    table.event_generate("<Configure>", width=fixed + wanted, height=200)
+    assert tuple(table.cget("displaycolumns")) == columns
+
+    table.event_generate("<Configure>", width=fixed + wanted - 1, height=200)
+    assert tuple(table.cget("displaycolumns")) == tuple(
+        name for name in columns if name != optional
+    )
+
+
 def test_selected_row_stays_selected_when_the_table_changes(
     window: MainWindow, app: App, schedule: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     choose(window, schedule, monkeypatch)
-    select(window, "0")
+    select(window, "1")
 
     app.save_announcement(CustomAnnouncement("Günaydın.", datetime.time(9, 0)))
     window.show()
 
-    assert today(window)[1][2] == "Ayşe Yılmaz, Mehmet Demir"
-    assert window.today.selection() == ("1",)
+    # With the same athlete, now one row further down.
+    assert today(window)[2][:4] == start_row(MEHMET)
+    assert window.today.selection() == ("2",)
 
 
 def test_choosing_a_delay_moves_todays_announcements(
@@ -363,10 +1078,35 @@ def test_choosing_a_delay_moves_todays_announcements(
 
     assert app.settings.delay == 2
     assert today(window) == [
-        ("Pazartesi", "18:02", "Ayşe Yılmaz, Mehmet Demir", "Sıradaki")
+        ("Pazartesi", "18:02", "Başlangıç", welcome(AYSE), "Sıradaki"),
+        ("Pazartesi", "18:02", "Başlangıç", welcome(MEHMET), "Sıradaki"),
+        ("Pazartesi", "19:02", "Bitiş", goodbye(AYSE), "Bekliyor"),
+        ("Pazartesi", "19:02", "Bitiş", goodbye(MEHMET), "Bekliyor"),
     ]
     pick(window.delay_box, "Yok")
-    assert today(window)[0][1] == "18:00"
+    assert [values[1] for values in today(window)] == ["18:00"] * 2 + ["19:00"] * 2
+
+
+def test_end_announcements_can_be_switched_off_and_on(
+    window: MainWindow, app: App, schedule: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    choose(window, schedule, monkeypatch)
+
+    pick(window.end_box, "Kapalı")
+
+    assert not app.settings.end_announcements
+    assert today(window) == [
+        (*start_row(AYSE), "Sıradaki"),
+        (*start_row(MEHMET), "Sıradaki"),
+    ]
+    pick(window.end_box, "Açık")
+    assert app.settings.end_announcements
+    assert today(window) == [
+        (*start_row(AYSE), "Sıradaki"),
+        (*start_row(MEHMET), "Sıradaki"),
+        (*end_row(AYSE), "Bekliyor"),
+        (*end_row(MEHMET), "Bekliyor"),
+    ]
 
 
 def test_choosing_a_speed_generates_the_speech_at_it(
@@ -394,17 +1134,25 @@ def test_settings_show_what_is_stored_and_stay_when_they_cannot_be_saved(
 ) -> None:
     app.set_speed(1.1)
     app.set_delay(5)
+    app.set_end_announcements(False)
     window.show()
-    assert (window.speed_box.get(), window.delay_box.get()) == ("1.1×", "5 dk")
+    boxes = (window.speed_box, window.delay_box, window.end_box)
+    assert [box.get() for box in boxes] == ["1.1×", "5 dk", "Kapalı"]
     settings_file.unlink()
     settings_file.mkdir()  # a folder where the file should be
 
     pick(window.speed_box, "0.8×")
     pick(window.delay_box, "10 dk")
+    pick(window.end_box, "Açık")
 
-    assert alerts == ["Değişiklik kaydedilemedi. Ayrıntılar kayıt dosyasındadır."] * 2
-    assert (window.speed_box.get(), window.delay_box.get()) == ("1.1×", "5 dk")
-    assert (app.settings.speed, app.settings.delay) == (1.1, 5)
+    assert alerts == ["Değişiklik kaydedilemedi. Ayrıntılar kayıt dosyasındadır."] * 3
+    assert [box.get() for box in boxes] == ["1.1×", "5 dk", "Kapalı"]
+    settings = app.settings
+    assert (settings.speed, settings.delay, settings.end_announcements) == (
+        1.1,
+        5,
+        False,
+    )
 
 
 def test_speech_that_cannot_be_generated_is_shown_as_a_warning(
@@ -419,7 +1167,8 @@ def test_speech_that_cannot_be_generated_is_shown_as_a_warning(
     assert window.activity.get() == "Sesler oluşturuluyor…"
     pump(window, lambda: window.activity.get() == "")
 
-    assert warnings(window).startswith("• 3 anonsun sesi oluşturulamadı.")
+    # Three athletes, each with a sentence at the start and one at the end.
+    assert warnings(window).startswith("• 6 anonsun sesi oluşturulamadı.")
 
 
 def test_warnings_show_in_a_box_that_grows_to_three_lines(
@@ -442,12 +1191,18 @@ def test_template_can_be_saved_only_while_it_is_changed(
 
     window.template.set("  Hoş geldiniz, {ad_soyad}.  ")
     assert window.save_template_button.instate(["!disabled"])
+    window.template.set(DEFAULT_TEMPLATE)
+    window.end_template.set("  Güle güle, {ad_soyad}.  ")
+    assert window.save_template_button.instate(["!disabled"])
+    window.template.set("  Hoş geldiniz, {ad_soyad}.  ")
 
     window.save_template_button.invoke()
     assert app.settings.template == "Hoş geldiniz, {ad_soyad}."
+    assert app.settings.end_template == "Güle güle, {ad_soyad}."
     assert window.save_template_button.instate(["disabled"])
 
     window.template.set(f"  {app.settings.template}  ")
+    window.end_template.set(f"{app.settings.end_template}  ")
     assert window.save_template_button.instate(["disabled"])
 
 
@@ -499,14 +1254,61 @@ def test_template_without_the_placeholder_gives_an_alert(
     window: MainWindow, app: App, alerts: list[str]
 ) -> None:
     window.template.set("Hoş geldiniz.")
+    window.end_template.set("Güle güle.")
 
     window.save_template_button.invoke()
     window.test_button.invoke()
+    window.end_test_button.invoke()
 
-    assert alerts == ["Şablonda “{ad_soyad}” yer tutucusu bulunmalıdır."] * 2
+    assert alerts == [
+        "Başlangıç şablonunda “{ad_soyad}” yer tutucusu bulunmalıdır.",
+        "Şablonda “{ad_soyad}” yer tutucusu bulunmalıdır.",
+        "Şablonda “{ad_soyad}” yer tutucusu bulunmalıdır.",
+    ]
     assert app.settings.template == DEFAULT_TEMPLATE
     assert app.test_status is None
     assert window.template.get() == "Hoş geldiniz."
+
+
+@pytest.mark.parametrize(
+    ("template", "end_template", "message"),
+    [
+        (
+            "Hoş geldiniz.",
+            "Güle güle, {ad_soyad}.",
+            "Başlangıç şablonunda “{ad_soyad}” yer tutucusu bulunmalıdır.",
+        ),
+        (
+            "Hoş geldiniz, {ad_soyad}.",
+            "Güle güle.",
+            "Bitiş şablonunda “{ad_soyad}” yer tutucusu bulunmalıdır.",
+        ),
+    ],
+)
+def test_saving_the_templates_names_the_one_without_the_placeholder(
+    window: MainWindow,
+    app: App,
+    alerts: list[str],
+    template: str,
+    end_template: str,
+    message: str,
+) -> None:
+    window.template.set(template)
+    window.end_template.set(end_template)
+
+    window.save_template_button.invoke()
+
+    assert alerts == [message]
+    # Neither is saved, and both stay as typed, to be put right.
+    assert (app.settings.template, app.settings.end_template) == (
+        DEFAULT_TEMPLATE,
+        DEFAULT_END_TEMPLATE,
+    )
+    assert (window.template.get(), window.end_template.get()) == (
+        template,
+        end_template,
+    )
+    assert window.save_template_button.instate(["!disabled"])
 
 
 def test_test_button_announces_what_is_typed_without_saving_it(
@@ -518,9 +1320,17 @@ def test_test_button_announces_what_is_typed_without_saving_it(
     window.test_button.invoke()
     assert window.activity.get() == "Test anonsu hazırlanıyor…"
     pump(window, lambda: window.activity.get() == "Test anonsu okundu.")
+    window.end_template.set("Güle güle {ad_soyad}.")
+    window.end_test_button.invoke()
+    assert window.activity.get() == "Test anonsu hazırlanıyor…"
+    pump(window, lambda: window.activity.get() == "Test anonsu okundu.")
 
-    assert [text for text, _ in provider.calls] == ["Merhaba Ayşe Yılmaz."]
+    assert [text for text, _ in provider.calls] == [
+        "Merhaba Ayşe Yılmaz.",
+        "Güle güle Ayşe Yılmaz.",
+    ]
     assert app.settings.template == DEFAULT_TEMPLATE
+    assert app.settings.end_template == DEFAULT_END_TEMPLATE
     assert window.template.get() == "Merhaba {ad_soyad}."
 
 
@@ -853,6 +1663,29 @@ def test_dialog_shows_how_the_test_went(
     assert dialog.test_button.instate(["!disabled"])
 
 
+def test_return_in_the_dialog_presses_the_button_it_is_on_and_saves_elsewhere(
+    make_dialog: Callable[[], AnnouncementDialog],
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled = make_dialog()
+    cancelled.text.set("Lütfen salonu temiz tutunuz.")
+    focus_on(button(cancelled.window, "Vazgeç"), monkeypatch)
+
+    press(cancelled.window, "<Return>")
+
+    assert not cancelled.window.winfo_exists()
+    assert not app.settings.custom_announcements
+    dialog = make_dialog()
+    dialog.text.set("Lütfen salonu temiz tutunuz.")
+    focus_on(text_entry(dialog.window), monkeypatch)
+    press(dialog.window, "<Return>")
+    assert not dialog.window.winfo_exists()
+    assert app.settings.custom_announcements == (
+        CustomAnnouncement("Lütfen salonu temiz tutunuz.", datetime.time(12, 0)),
+    )
+
+
 @pytest.fixture
 def low_screen(monkeypatch: pytest.MonkeyPatch) -> None:
     """The screen of a small laptop, for a window that is opened after this."""
@@ -865,9 +1698,10 @@ def test_window_starts_where_all_of_it_is_on_a_low_screen(
 ) -> None:
     window.root.update_idletasks()
 
+    # What the window returns to from being maximized.
     size, left, top = window.root.geometry().split("+")
 
-    assert (size, left) == ("860x648", "82")  # in the middle, from side to side
+    assert (size, left) == ("944x648", "40")  # in the middle, from side to side
     # 80 pixels are room enough for the title bar and the taskbar of Windows.
     # macOS moves the window down a little, to below its menu bar.
     assert int(top) + 648 + 80 <= 768
@@ -890,6 +1724,94 @@ def test_wrapped_warnings_get_the_lines_they_need(
     assert last_line_in_view or window.warnings.yview() != (0.0, 1.0)
 
 
+def test_tables_give_way_in_height_no_further_than_the_buttons_beside_them(
+    window: MainWindow,
+) -> None:
+    if sys.platform != "darwin":
+        # Only macOS lays a window out while it is kept off the screen.
+        window.root.deiconify()
+    window.root.update_idletasks()
+    # Of the custom announcements, and of today's announcements.
+    beside = (master_of(window.add_button), master_of(window.instant_button))
+
+    def high_enough(buttons: tk.Misc) -> bool:
+        """Whether the first row of the box is as high as the buttons in it."""
+        minsize = int(master_of(buttons).grid_rowconfigure(0)["minsize"])
+        return minsize >= buttons.winfo_reqheight() > 1
+
+    pump(window, lambda: all(high_enough(buttons) for buttons in beside))
+
+
+def test_window_opens_maximized_and_stays_usable_where_it_cannot_be(
+    window: MainWindow,
+    alerts: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    states: list[str] = []
+    # Neither really happens, so that nothing comes up on the screen.
+    monkeypatch.setattr(window.root, "state", states.append)
+    monkeypatch.setattr(window.root, "mainloop", lambda n=0: None)
+
+    window.run()
+    assert states == ["zoomed"]
+
+    def refuse(state: str) -> None:
+        raise tk.TclError(f'bad argument "{state}"')
+
+    monkeypatch.setattr(window.root, "state", refuse)
+    with caplog.at_level(logging.ERROR):
+        window.maximize()
+
+    assert "Cannot maximize the window" in caplog.text
+    assert alerts == []
+
+
+@pytest.fixture
+def attributes(
+    window: MainWindow, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, object]:
+    """The window's attributes, kept here so that nothing comes up on the screen."""
+    kept: dict[str, object] = {"-fullscreen": 0}
+
+    def wm_attributes(name: str, *value: object) -> object:
+        if value:
+            kept[name] = value[0]
+            return ""
+        return kept[name]
+
+    monkeypatch.setattr(window.root, "attributes", wm_attributes)
+    return kept
+
+
+def test_full_screen_is_toggled_and_left_with_escape(
+    window: MainWindow, attributes: dict[str, object]
+) -> None:
+    window.leave_full_screen()
+    assert not attributes["-fullscreen"]
+    window.toggle_full_screen()
+    assert attributes["-fullscreen"]
+    window.toggle_full_screen()
+    assert not attributes["-fullscreen"]
+
+    press(window.root, "<F11>")
+    assert attributes["-fullscreen"]
+    press(window.root, "<Escape>")
+    assert not attributes["-fullscreen"]
+    press(window.root, "<Escape>")
+    assert not attributes["-fullscreen"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="these are macOS's own keys")
+def test_full_screen_is_toggled_with_the_keys_of_macos(
+    window: MainWindow, attributes: dict[str, object]
+) -> None:
+    press(window.root, "<Control-Command-f>")
+    assert attributes["-fullscreen"]
+    press(window.root, "<Control-Command-F>")  # with Shift held as well
+    assert not attributes["-fullscreen"]
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="Quit in the menu is macOS's")
 def test_quit_in_the_macos_menu_asks_first_too(
     window: MainWindow, monkeypatch: pytest.MonkeyPatch
@@ -906,3 +1828,468 @@ def test_quit_in_the_macos_menu_asks_first_too(
 
     assert len(questions) == 1
     assert not window.closed
+
+
+@pytest.fixture
+def make_change_dialog(
+    window: MainWindow, app: App, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Callable[[int], ChangeDialog]]:
+    """Open the editor of today's row with the index over the window; it is
+    closed after the test."""
+    monkeypatch.setattr(change_dialog, "_FOLLOW", 5)
+    dialogs: list[ChangeDialog] = []
+
+    def make(index: int) -> ChangeDialog:
+        row = app.rows()[index]
+        editing = app.editing(row)
+        assert editing is not None
+        dialog = ChangeDialog(window.root, app, row, editing)
+        dialog.window.withdraw()
+        dialogs.append(dialog)
+        return dialog
+
+    yield make
+    for dialog in dialogs:
+        if dialog.window.winfo_exists():
+            dialog.window.destroy()
+
+
+def labels(dialog: ChangeDialog) -> list[str]:
+    return [str(label.cget("text")) for label in widgets(dialog.window, ttk.Label)]
+
+
+def heading(dialog: ChangeDialog) -> str:
+    [found] = [text for text in labels(dialog) if "planlanan saat" in text]
+    return found
+
+
+def held(dialog: ChangeDialog) -> list[ttk.Widget]:
+    """What the operator fills in and presses, but for Vazgeç."""
+    spinboxes = widgets(dialog.window, ttk.Spinbox)
+    assert len(spinboxes) == 2
+    return [
+        *spinboxes,
+        text_entry(dialog.window),
+        dialog.test_button,
+        dialog.reset_button,
+        dialog.save_button,
+    ]
+
+
+def test_change_dialog_fills_in_the_plan_again_without_saving_it(
+    make_change_dialog: Callable[[int], ChangeDialog], app: App, schedule: Path
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for(app, lambda: not app.generating)
+    speech = app.make_speech(["Merhaba Ayşe Yılmaz."])
+    wait_for(app, lambda: speech.done)
+    app.edit(app.rows()[0], datetime.time(18, 30), "Merhaba Ayşe Yılmaz.")
+    changes = app.changes
+    dialog = make_change_dialog(1)  # after Mehmet Demir's, which is at 18:00
+    assert heading(dialog) == "Başlangıç anonsu · Ayşe Yılmaz · planlanan saat 18:00"
+    assert (dialog.hour.get(), dialog.minute.get()) == ("18", "30")
+    assert dialog.text.get() == "Merhaba Ayşe Yılmaz."
+    # Her end is not changed along with her start.
+    assert (
+        "Bu sporcunun 19:00 bitiş anonsu bu değişiklikten etkilenmez; "
+        "gerekirse onu da ayrıca düzenleyin."
+    ) in labels(dialog)
+    dialog.text.set("Selam {ad_soyad}.")
+
+    dialog.reset()
+
+    assert (dialog.hour.get(), dialog.minute.get()) == ("18", "00")
+    assert dialog.text.get() == welcome(AYSE)
+    assert app.changes == changes
+    assert dialog.window.winfo_exists()
+
+
+def test_change_dialog_of_an_end_shows_the_end_sentence_and_fills_it_in_again(
+    make_change_dialog: Callable[[int], ChangeDialog], app: App, schedule: Path
+) -> None:
+    app.choose_schedule(schedule)
+    app.set_templates(DEFAULT_TEMPLATE, "Güle güle, {ad_soyad}.")
+    wait_for(app, lambda: not app.generating)
+    dialog = make_change_dialog(3)
+    assert heading(dialog) == "Bitiş anonsu · Mehmet Demir · planlanan saat 19:00"
+    assert (dialog.hour.get(), dialog.minute.get()) == ("19", "00")
+    assert dialog.text.get() == "Güle güle, Mehmet Demir."
+    # Only the start of a session has an end to tell about.
+    assert not [text for text in labels(dialog) if "etkilenmez" in text]
+    dialog.minute.set("30")
+    dialog.text.set("Hoşça kalın, {ad_soyad}.")
+
+    dialog.reset()
+
+    assert (dialog.hour.get(), dialog.minute.get()) == ("19", "00")
+    assert dialog.text.get() == "Güle güle, Mehmet Demir."
+    assert not app.changes
+
+
+def test_change_dialog_saves_a_new_text_once_its_speech_is_made(
+    make_change_dialog: Callable[[int], ChangeDialog],
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    provider: FakeProvider,
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for(app, lambda: not app.generating)
+    dialog = make_change_dialog(0)
+    dialog.text.set("  Hoş geldiniz, {ad_soyad}.  ")
+
+    dialog.save()
+
+    assert dialog.test_status.get() == "Yeni metnin sesi hazırlanıyor…"
+    assert dialog.save_button.instate(["disabled"])
+    assert not app.changes  # not before the speech is there
+    pump(window, lambda: not dialog.window.winfo_exists())
+    # The placeholder typed in stands for the name of this athlete alone.
+    said = {text for text, _ in provider.calls}
+    assert "Hoş geldiniz, Ayşe Yılmaz." in said
+    assert "Hoş geldiniz, Mehmet Demir." not in said
+    [change] = app.changes
+    assert (change.kind, change.name, change.text) == (
+        Kind.START,
+        AYSE,
+        "Hoş geldiniz, Ayşe Yılmaz.",
+    )
+    window.show()
+    assert today(window) == [
+        (
+            "Pazartesi",
+            "18:00",
+            "Başlangıç",
+            "Hoş geldiniz, Ayşe Yılmaz.",
+            "Sıradaki (düzenlendi)",
+        ),
+        (*start_row(MEHMET), "Sıradaki"),
+        (*end_row(AYSE), "Bekliyor"),
+        (*end_row(MEHMET), "Bekliyor"),
+    ]
+
+
+def test_change_dialog_takes_a_sentence_without_the_placeholder(
+    make_change_dialog: Callable[[int], ChangeDialog],
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    alerts: list[str],
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for(app, lambda: not app.generating)
+    dialog = make_change_dialog(1)
+    dialog.text.set("Mehmet Bey, hoş geldiniz.")
+
+    dialog.save()
+
+    pump(window, lambda: not dialog.window.winfo_exists())
+    assert alerts == []
+    [change] = app.changes
+    assert (change.name, change.text) == (MEHMET, "Mehmet Bey, hoş geldiniz.")
+    window.show()
+    assert [values[3:] for values in today(window)[:2]] == [
+        (welcome(AYSE), "Sıradaki"),
+        ("Mehmet Bey, hoş geldiniz.", "Sıradaki (düzenlendi)"),
+    ]
+
+
+def test_change_dialog_saves_nothing_for_a_text_that_reads_as_planned(
+    make_change_dialog: Callable[[int], ChangeDialog],
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for(app, lambda: not app.generating)
+    dialog = make_change_dialog(0)
+    # With Ayşe Yılmaz's name in it, the template is her planned sentence.
+    dialog.text.set(DEFAULT_TEMPLATE)
+
+    dialog.save()
+
+    pump(window, lambda: not dialog.window.winfo_exists())
+    assert not app.changes
+    window.show()
+    assert today(window)[0] == (*start_row(AYSE), "Sıradaki")
+
+
+def test_change_dialog_rewords_a_custom_announcement_for_today_only(
+    make_change_dialog: Callable[[int], ChangeDialog],
+    window: MainWindow,
+    app: App,
+    provider: FakeProvider,
+) -> None:
+    app.save_announcement(WATER)
+    wait_for(app, lambda: not app.generating)
+    dialog = make_change_dialog(0)
+    assert heading(dialog) == "Özel anons · planlanan saat 19:00"
+    assert dialog.text.get() == WATER.text
+    dialog.text.set("  Bol su içiniz.  ")
+
+    dialog.save()
+
+    assert dialog.test_status.get() == "Yeni metnin sesi hazırlanıyor…"
+    pump(window, lambda: not dialog.window.winfo_exists())
+    assert "Bol su içiniz." in {text for text, _ in provider.calls}
+    [change] = app.changes
+    assert (change.kind, change.time, change.text) == (
+        Kind.CUSTOM,
+        None,
+        "Bol su içiniz.",
+    )
+    assert app.settings.custom_announcements == (WATER,)
+    window.show()
+    assert today(window) == [
+        ("Pazartesi", "19:00", "Özel", "Bol su içiniz.", "Sıradaki (düzenlendi)")
+    ]
+
+
+def test_change_dialog_stays_open_when_the_new_text_has_no_speech(
+    make_change_dialog: Callable[[int], ChangeDialog],
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    provider: FakeProvider,
+    alerts: list[str],
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for(app, lambda: not app.generating)
+    provider.offline = True
+    dialog = make_change_dialog(0)
+    dialog.text.set("Hoş geldiniz, {ad_soyad}.")
+
+    dialog.save()
+    pump(window, lambda: bool(alerts))
+
+    assert alerts == [
+        "Yeni metnin sesi oluşturulamadı. İnternet bağlantısını kontrol edin. "
+        "Saat, metin plana döndürülerek yine de değiştirilebilir."
+    ]
+    assert dialog.window.winfo_exists()
+    assert dialog.save_button.instate(["!disabled"])
+    assert dialog.test_status.get() == ""
+    assert not app.changes
+
+    # The time can still be changed, with the text of the plan.
+    dialog.reset()
+    dialog.minute.set("30")
+    dialog.save()
+
+    assert not dialog.window.winfo_exists()
+    [change] = app.changes
+    assert (change.time, change.text) == (datetime.time(18, 30), None)
+
+
+def test_change_dialog_holds_what_is_entered_while_the_new_texts_speech_is_made(
+    make_change_dialog: Callable[[int], ChangeDialog],
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    provider: FakeProvider,
+    alerts: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for(app, lambda: not app.generating)
+    released = threading.Event()
+    synthesize = provider.synthesize
+
+    def slow(text: str, voice: str, speed: float) -> bytes:
+        released.wait(5)
+        return synthesize(text, voice, speed)
+
+    monkeypatch.setattr(provider, "synthesize", slow)
+    dialog = make_change_dialog(0)
+    inputs = held(dialog)
+    assert all(widget.instate(["!disabled"]) for widget in inputs)
+    dialog.text.set("Hoş geldiniz, {ad_soyad}.")
+
+    try:
+        dialog.save()
+        window.root.update()
+        assert all(widget.instate(["disabled"]) for widget in inputs)
+        provider.offline = True  # so that the dialog stays open afterwards
+    finally:
+        released.set()
+    pump(window, lambda: bool(alerts))
+
+    assert dialog.window.winfo_exists()
+    assert all(widget.instate(["!disabled"]) for widget in inputs)
+    assert dialog.text.get() == "Hoş geldiniz, {ad_soyad}."
+    assert not app.changes
+
+
+def test_change_dialog_closes_once_its_row_can_no_longer_be_changed(
+    make_change_dialog: Callable[[int], ChangeDialog],
+    app: App,
+    schedule: Path,
+    clock: FakeClock,
+    alerts: list[str],
+) -> None:
+    app.choose_schedule(schedule)
+    dialog = make_change_dialog(0)
+    dialog.minute.set("30")
+    clock.now = at(17, 59, 59)  # too close to its minute for a change
+
+    dialog.save()
+
+    assert alerts == ["Bu anonsun saati geldi; artık değiştirilemez."]
+    assert not dialog.window.winfo_exists()
+    assert not app.changes
+
+
+@pytest.mark.parametrize(
+    ("hour", "text", "message"),
+    [
+        ("18", "   ", "Anons metni boş olamaz."),
+        ("07", welcome(AYSE), "Bu saat geçti. Şu andan sonraki bir saat seçin."),
+        ("24", welcome(AYSE), "Saat 00:00 ile 23:59 arasında olmalıdır."),
+    ],
+)
+def test_change_dialog_stays_open_until_what_is_entered_is_valid(
+    make_change_dialog: Callable[[int], ChangeDialog],
+    app: App,
+    schedule: Path,
+    alerts: list[str],
+    hour: str,
+    text: str,
+    message: str,
+) -> None:
+    app.choose_schedule(schedule)
+    dialog = make_change_dialog(0)
+    dialog.hour.set(hour)
+    dialog.text.set(text)
+
+    dialog.save()
+
+    assert alerts == [message]
+    assert dialog.window.winfo_exists()
+    assert not app.changes
+
+
+def test_change_dialog_tries_out_the_text_with_the_name_of_its_athlete(
+    make_change_dialog: Callable[[int], ChangeDialog],
+    app: App,
+    schedule: Path,
+    provider: FakeProvider,
+) -> None:
+    app.start()
+    app.choose_schedule(schedule)
+    wait_for(app, lambda: not app.generating)
+    dialog = make_change_dialog(1)
+    dialog.text.set("Merhaba {ad_soyad}.")
+    calls = len(provider.calls)
+
+    dialog.test()
+    wait_for(app, lambda: app.test_status is Status.PLAYED)
+
+    assert [text for text, _ in provider.calls[calls:]] == ["Merhaba Mehmet Demir."]
+    assert not app.changes
+    assert dialog.window.winfo_exists()
+
+
+def test_return_in_the_change_dialog_presses_the_button_it_is_on_and_saves_elsewhere(
+    make_change_dialog: Callable[[int], ChangeDialog],
+    app: App,
+    schedule: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app.choose_schedule(schedule)
+    cancelled = make_change_dialog(0)
+    cancelled.minute.set("30")
+    focus_on(button(cancelled.window, "Vazgeç"), monkeypatch)
+
+    press(cancelled.window, "<Return>")
+
+    assert not cancelled.window.winfo_exists()
+    assert not app.changes
+    dialog = make_change_dialog(0)
+    dialog.minute.set("30")
+    focus_on(dialog.reset_button, monkeypatch)
+    press(dialog.window, "<Return>")
+    assert dialog.window.winfo_exists()
+    assert dialog.minute.get() == "00"
+    assert not app.changes
+    dialog.minute.set("30")
+    focus_on(text_entry(dialog.window), monkeypatch)
+    press(dialog.window, "<Return>")
+    assert not dialog.window.winfo_exists()
+    [change] = app.changes
+    assert change.time == datetime.time(18, 30)
+
+
+@pytest.fixture
+def make_instant_dialog(
+    window: MainWindow, app: App
+) -> Iterator[Callable[[], InstantDialog]]:
+    """Open instant announcement dialogs over the window; they are closed
+    after the test."""
+    dialogs: list[InstantDialog] = []
+
+    def make() -> InstantDialog:
+        dialog = InstantDialog(window.root, app)
+        dialog.window.withdraw()
+        dialogs.append(dialog)
+        return dialog
+
+    yield make
+    for dialog in dialogs:
+        if dialog.window.winfo_exists():
+            dialog.window.destroy()
+
+
+def test_instant_dialog_has_the_text_read_and_closes(
+    make_instant_dialog: Callable[[], InstantDialog],
+    window: MainWindow,
+    app: App,
+    clock: FakeClock,
+) -> None:
+    app.start()
+    clock.now = at(9, 15)
+    dialog = make_instant_dialog()
+    dialog.text.set("  Salonu boşaltınız.  ")
+
+    dialog.read()
+
+    assert not dialog.window.winfo_exists()
+    assert [instant.text for instant in app.instants] == ["Salonu boşaltınız."]
+    window.show()
+    pump(window, lambda: statuses(window) == ["Okundu"])
+
+
+def test_instant_dialog_stays_open_without_a_text(
+    make_instant_dialog: Callable[[], InstantDialog], app: App, alerts: list[str]
+) -> None:
+    dialog = make_instant_dialog()
+    dialog.text.set("   ")
+
+    dialog.read()
+
+    assert alerts == ["Anons metni boş olamaz."]
+    assert dialog.window.winfo_exists()
+    assert app.instants == ()
+
+
+def test_return_in_the_instant_dialog_presses_the_button_it_is_on_and_reads_elsewhere(
+    make_instant_dialog: Callable[[], InstantDialog],
+    app: App,
+    clock: FakeClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app.start()
+    clock.now = at(9, 15)
+    cancelled = make_instant_dialog()
+    cancelled.text.set("Salonu boşaltınız.")
+    focus_on(button(cancelled.window, "Vazgeç"), monkeypatch)
+
+    press(cancelled.window, "<Return>")
+
+    assert not cancelled.window.winfo_exists()
+    assert not app.instants
+    dialog = make_instant_dialog()
+    dialog.text.set("Salonu boşaltınız.")
+    focus_on(text_entry(dialog.window), monkeypatch)
+    press(dialog.window, "<Return>")
+    assert not dialog.window.winfo_exists()
+    assert [instant.text for instant in app.instants] == ["Salonu boşaltınız."]

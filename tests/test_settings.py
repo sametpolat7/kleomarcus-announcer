@@ -13,7 +13,7 @@ from announcer.settings import (
     load_settings,
     save_settings,
 )
-from announcer.template import DEFAULT_TEMPLATE
+from announcer.template import DEFAULT_END_TEMPLATE, DEFAULT_TEMPLATE
 
 CLOSING = CustomAnnouncement("Salon 22:00'de kapanacaktır.", datetime.time(21, 45))
 CLEANING = CustomAnnouncement(
@@ -71,6 +71,8 @@ def test_saved_file_can_be_read_and_edited_by_hand(path: Path) -> None:
         "delay_minutes": 0,
         "schedule_path": None,
         "template": DEFAULT_TEMPLATE,
+        "end_template": DEFAULT_END_TEMPLATE,
+        "end_announcements": True,
         "custom_announcements": [
             {
                 "text": "Lütfen ekipmanları yerine bırakınız.",
@@ -130,6 +132,10 @@ def test_folder_in_place_of_the_file_is_an_error(path: Path) -> None:
         ("schedule_path", {"path": "a.xlsx"}),
         ("template", "Hoş geldiniz."),
         ("template", ["{ad_soyad}"]),
+        ("end_template", "Görüşmek üzere."),
+        ("end_template", 3),
+        ("end_announcements", "false"),
+        ("end_announcements", 0),
         ("custom_announcements", {"text": "Duyuru"}),
         ("speed", 0.85),
         ("speed", "1.1"),
@@ -146,6 +152,24 @@ def test_unusable_value_falls_back_to_its_default(
     write_json(path, {name: value})
 
     assert load_settings(path) == LoadedSettings(Settings(), dropped=0)
+
+
+def test_file_of_an_older_version_announces_the_end_with_the_default(
+    path: Path,
+) -> None:
+    write_json(path, {"template": "Hoş geldin {ad_soyad}."})
+
+    settings = load_settings(path).settings
+
+    assert settings.end_template == DEFAULT_END_TEMPLATE
+    assert settings.end_announcements is True
+
+
+def test_end_template_and_switch_are_kept(path: Path) -> None:
+    saved = Settings(end_template="Güle güle {ad_soyad}.", end_announcements=False)
+    save_settings(saved, path)
+
+    assert load_settings(path).settings == saved
 
 
 def test_speed_and_delay_may_be_written_as_any_number(path: Path) -> None:
