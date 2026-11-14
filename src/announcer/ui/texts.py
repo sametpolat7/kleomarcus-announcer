@@ -170,7 +170,6 @@ def last_loaded(moment: datetime.datetime | None) -> str:
 def last_announcement(last: LastAnnouncement | None) -> str:
     if last is None:
         return "Son anons: —"
-    # The names of each kind together, the kinds in the order they were read.
     said: dict[Kind, list[str]] = {}
     for kind, who in last.parts:
         said.setdefault(kind, []).append(who)

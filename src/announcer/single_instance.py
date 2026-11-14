@@ -15,12 +15,11 @@ MUTEX_NAME = "KleomarcusAnnouncerRunning"
 
 
 def claim(path: Path) -> IO[bytes] | None:
-    """Mark the app as running; return None if another copy has done so.
+    """Return None if another copy of the app holds the lock on ``path``.
 
-    The mark is a lock on the file at ``path``, which the system lets go of
-    when the app ends, however it ends. Keep the returned file open until
-    then. Raises ``OSError`` if the file cannot be created or locked at all,
-    which says nothing about another copy.
+    The system lets go of the lock when the app ends, however it ends. Keep the
+    returned file open until then. Raises ``OSError`` if the file cannot be
+    created or locked at all, which says nothing about another copy.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     file = path.open("a+b")

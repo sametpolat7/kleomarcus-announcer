@@ -64,7 +64,6 @@ def skipped(part: Part) -> Part:
 
 
 def said(slots: Iterable[Slot]) -> list[tuple[datetime.time, tuple[str, ...]]]:
-    """When each slot handed over is, and what it says."""
     return [(slot.time, slot.texts) for slot in slots]
 
 
@@ -84,9 +83,7 @@ def make_scheduler(
 
 
 def planned(*changes: Change, delay: int = 0, ends: bool = True) -> Timetable:
-    """Monday evening: Ayşe's session ends at seven, as Zeynep's begins, and a
-    minute later the athletes are reminded to drink water.
-    """
+    """Ayşe's session ends at seven, as Zeynep's begins."""
     return build_timetable(
         [
             AthleteEntry("Ayşe Yılmaz", 0, SIX_PM),
@@ -336,7 +333,7 @@ def test_part_added_to_a_minute_that_already_fired_is_handed_over_alone() -> Non
     clock.now = at(19, 0)
     scheduler.check()
 
-    scheduler.set_timetable(planned())  # the ends of sessions are announced now
+    scheduler.set_timetable(planned())
     for moment in every_second(at(19, 0, 10), at(19, 0, 59)):
         clock.now = moment
         scheduler.check()
@@ -473,8 +470,7 @@ def test_delay_changed_after_the_first_look_does_not_repeat_what_it_left_out(
 
 def test_part_moved_a_day_past_its_moment_is_announced_once() -> None:
     sunday_close = datetime.datetime.combine(SUNDAY, datetime.time(23, 55))
-    # With the delay, Sunday's 23:55 is read at 00:05 on Monday; the operator
-    # moves it to the end of Monday.
+    # With the delay, Sunday's 23:55 is read at 00:05 on Monday.
     timetable = build_timetable(
         [],
         [CustomAnnouncement("Salon kapandı.", sunday_close.time(), frozenset({6}))],
@@ -495,9 +491,6 @@ def test_part_moved_a_day_past_its_moment_is_announced_once() -> None:
 def two_at_seven(
     *changes: Change, names: Sequence[str] = ("Zeynep Kaya", "Mehmet Demir")
 ) -> Timetable:
-    """Monday evening: Zeynep's and Mehmet's sessions start at seven, in that
-    order in the schedule.
-    """
     return build_timetable(
         [AthleteEntry(name, 0, SEVEN_PM) for name in names],
         [],
@@ -536,7 +529,7 @@ def test_athlete_added_to_a_minute_that_already_fired_is_handed_over_alone() -> 
     clock.now = at(19, 0)
     scheduler.check()
 
-    scheduler.set_timetable(two_at_seven())  # Mehmet was added to the schedule
+    scheduler.set_timetable(two_at_seven())
     for moment in every_second(at(19, 0, 10), at(19, 0, 59)):
         clock.now = moment
         scheduler.check()
@@ -808,9 +801,6 @@ def test_delay_past_midnight_keeps_a_slot_from_being_announced_twice() -> None:
 
 
 def moved_to(time: datetime.time, delay: int) -> Timetable:
-    """Monday evening: Ayşe's session starts at six and Zeynep's at 18:26; the
-    operator moved the start of Ayşe's to ``time`` for the day.
-    """
     return build_timetable(
         [
             AthleteEntry("Ayşe Yılmaz", 0, SIX_PM),

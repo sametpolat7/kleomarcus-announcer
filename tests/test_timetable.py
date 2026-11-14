@@ -64,7 +64,6 @@ def edited(part: Part) -> Part:
 
 
 def moved(part: Part) -> Part:
-    """``part`` edited to a time of its own."""
     return dataclasses.replace(part, edited=True, moved=True)
 
 
@@ -809,7 +808,6 @@ def test_change_that_matches_no_part_leaves_its_day_as_the_week_has_it() -> None
             "Ayşe Yılmaz",
             skipped=True,
         ),
-        # The moment and kind of a part, but for an athlete who is not in it.
         Change(
             THIS_MONDAY,
             moment(THIS_MONDAY, SIX_PM),
@@ -817,9 +815,7 @@ def test_change_that_matches_no_part_leaves_its_day_as_the_week_has_it() -> None
             "Zeynep Kaya",
             skipped=True,
         ),
-        # Of an athlete's part, without the athlete's name.
         Change(THIS_MONDAY, moment(THIS_MONDAY, SIX_PM), Kind.START, skipped=True),
-        # Of a custom announcement, with a name.
         Change(
             THIS_MONDAY,
             moment(THIS_MONDAY, SEVEN_PM),

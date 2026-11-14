@@ -1,11 +1,6 @@
-"""Every module logs through ``logging.getLogger(__name__)``. This module only
-decides where the lines go and what they look like, for example::
-
-    2026-11-10 18:00:00 INFO    announcer.app: 18:00 announced: "Ayşe Yılmaz, ..."
-    2026-11-10 18:30:00 WARNING announcer.app: 18:30 skipped, no stored speech: ...
-
-The log file holds athlete names, so it stays on the computer, next to the app's
-other per-user files.
+"""Every module logs through ``logging.getLogger(__name__)``. The log file holds
+athlete names, so it stays on the computer, next to the app's other per-user
+files.
 """
 
 import logging

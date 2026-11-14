@@ -33,8 +33,7 @@ TIMETABLE = build_timetable(
 
 REMINDER = "Su içmeyi unutmayın."
 
-# A Monday evening with the ends of the sessions announced too: Ayşe and
-# Mehmet leave as Zeynep arrives, and the hall closes as she leaves.
+# Ayşe and Mehmet leave as Zeynep arrives, and the hall closes as she leaves.
 ZEYNEP_ON_MONDAY = AthleteEntry("Zeynep Kaya", 0, SEVEN_PM)
 CLOSING = CustomAnnouncement("Salon kapanıyor.", EIGHT_PM)
 

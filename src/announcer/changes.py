@@ -1,5 +1,5 @@
 """The operator's changes of a day are kept in a file of their own, so that a
-restart keeps them. Those of days that are over are let go of.
+restart keeps them.
 """
 
 import datetime
@@ -20,9 +20,8 @@ class ChangesFileError(Exception):
 
 
 def load_changes(path: Path, today: datetime.date) -> tuple[Change, ...]:
-    """Return the changes for ``today`` and later; a change that is unusable is
-    left out. Raises ``ChangesFileError`` if the file as a whole cannot be
-    read."""
+    """A change that is unusable is left out. Raises ``ChangesFileError`` if the
+    file as a whole cannot be read."""
     try:
         data = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:

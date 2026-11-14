@@ -1,10 +1,9 @@
 """A slot is one minute of a weekday, or of a date, and holds the parts that are
-announced in it after one chime: what is said for each athlete whose session
-starts or ends then, and for a custom announcement. A custom announcement may
-share its minute neither with the start of a session nor with another custom
-announcement; it follows the end of a session in the minute it shares with
-that. What the operator changes for a day may move a part to any minute of
-that day, where it joins what is already there.
+announced in it after one chime. A custom announcement may share its minute
+neither with the start of a session nor with another custom announcement; it
+follows the end of a session in the minute it shares with that. What the
+operator changes for a day may move a part to any minute of that day, where it
+joins what is already there.
 """
 
 import dataclasses
@@ -61,7 +60,7 @@ class Part:
 
 @dataclass(frozen=True)
 class Slot:
-    weekday: int  # 0 is Monday, as in ``date.weekday()``
+    weekday: int  # as in ``date.weekday()``
     time: datetime.time
     parts: tuple[Part, ...]  # in the order of ``Kind``
     speed: float = NORMAL_SPEED
@@ -105,9 +104,8 @@ def delayed(weekday: int, time: datetime.time, minutes: int) -> _Key:
 
 
 def set_for(date: datetime.date, slot: Slot, part: Part) -> datetime.datetime:
-    """Return the moment that the part of the slot of ``date`` was set for. A
-    change of the delay leaves it as it is, so it tells what a part was before
-    the change.
+    """A change of the delay leaves the returned moment as it is, so it tells
+    what a part was before the change.
     """
     due = datetime.datetime.combine(date, slot.time)
     return due - datetime.timedelta(minutes=part.delay)

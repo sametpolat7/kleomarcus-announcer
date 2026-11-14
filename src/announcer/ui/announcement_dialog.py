@@ -12,7 +12,7 @@ from announcer.ui.keys import bind_return
 _log = logging.getLogger(__name__)
 
 _NO_TEXT = "Anons metni boş olamaz."
-_FOLLOW = 250  # milliseconds between two looks at how a test is going
+_FOLLOW = 250  # milliseconds
 
 
 class AnnouncementDialog:
@@ -90,7 +90,7 @@ class AnnouncementDialog:
             box.grid(row=column // 4, column=column % 4, sticky="w", padx=(0, 12))
         self.show_days()
 
-        # How a test of the text went; empty until one is asked for here.
+        # Empty until a test is asked for here.
         self.test_status = tk.StringVar()
         self._tested = False
         ttk.Label(frame, textvariable=self.test_status, wraplength=520).grid(

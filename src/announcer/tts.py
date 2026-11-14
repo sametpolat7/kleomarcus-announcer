@@ -96,9 +96,8 @@ class AudioCache:
     def ensure_all(
         self, texts: Iterable[str], speed: float = NORMAL_SPEED
     ) -> tuple[str, ...]:
-        """Returns the texts that still have no speech, for example because there
-        is no network connection. Several sentences are generated at a time,
-        since each one takes a few seconds.
+        """Returns the texts that still have no speech. Several sentences are
+        generated at a time, since each one takes a few seconds.
         """
         wanted = tuple(dict.fromkeys(texts))
         todo: queue.SimpleQueue[str] = queue.SimpleQueue()

@@ -17,7 +17,7 @@ class Status(Enum):
     PASSED = "passed"  # its time went by without the app being there for it
     PREPARING = "preparing"  # its speech is being made, to be read at once
     QUEUED = "queued"  # due, and waiting for what is being read before it
-    PLAYING = "playing"  # sounding right now
+    PLAYING = "playing"
     PLAYED = "played"  # every text was heard
     PARTLY_PLAYED = "partly played"  # some texts were heard, the others skipped
     NO_SPEECH = "no speech"  # skipped: none of its texts has stored speech
@@ -116,8 +116,6 @@ _HEARD: dict[Heard, Status] = {
 
 
 def part_status(playback: Playback, index: int) -> Status:
-    """Return the status of the part whose text is at ``index`` of the texts
-    that were played together in ``playback``."""
     return _HEARD[playback.heard[index]]
 
 
@@ -128,13 +126,12 @@ def todays_rows(
     instants: Iterable[Instant] = (),
     playing: Collection[OutcomeKey] = (),
 ) -> tuple[Row, ...]:
-    """Each row says what is read. ``outcomes`` holds what is known about the
-    parts that came due, keyed by the moment they were set for, their kind and
-    ``who`` they are for, so an outcome is not taken for that of something
-    else that was put at the same time later, and stays with its part when
-    the delay or the template changes. The custom announcements that lost
-    today's slot to something else are listed too, so that the preview hides
-    nothing, and so are today's instant announcements. ``playing`` holds the
+    """``outcomes`` holds what is known about the parts that came due, keyed by
+    the moment they were set for, their kind and ``who`` they are for, so an
+    outcome is not taken for that of something else that was put at the same
+    time later, and stays with its part when the delay or the template
+    changes. The custom announcements that lost today's slot to something else
+    are listed too, so that the preview hides nothing. ``playing`` holds the
     outcome keys of what is queued or being read.
     """
     rows: list[Row] = []

@@ -20,9 +20,7 @@ SVG_PATH = Path(__file__).parent.parent / "docs" / "logo.svg"
 
 
 def pixels(png: bytes) -> tuple[bytes, bytes]:
-    """Return the header and the pixel data of a PNG image.
-
-    The compressed bytes differ between builds of zlib, so images are
+    """The compressed bytes differ between builds of zlib, so images are
     compared by what they hold.
     """
     chunks: dict[bytes, bytes] = {}
