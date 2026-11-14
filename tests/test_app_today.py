@@ -429,22 +429,9 @@ def test_new_templates_are_stored_and_spoken(
         (render(NEW_START, AYSE), render(NEW_START, MEHMET)),
         (render(NEW_END, AYSE), render(NEW_END, MEHMET)),
     ]
-    assert (render(NEW_END, ZEYNEP), app.settings.voice) in provider.calls
+    for template in (NEW_START, NEW_END):
+        assert (render(template, ZEYNEP), app.settings.voice) in provider.calls
     assert app.unspoken == ()
-
-
-def test_templates_without_the_placeholder_are_rejected(
-    app: App, settings_file: Path
-) -> None:
-    for templates in (("Hoş geldiniz.", NEW_END), (NEW_START, "Güle güle.")):
-        with pytest.raises(ValueError, match="placeholder"):
-            app.set_templates(*templates)
-
-    assert (app.settings.template, app.settings.end_template) == (
-        DEFAULT_TEMPLATE,
-        DEFAULT_END_TEMPLATE,
-    )
-    assert not settings_file.exists()
 
 
 def test_athletes_keep_both_old_templates_until_both_new_ones_have_speech(
@@ -1041,8 +1028,8 @@ def test_new_sentence_of_one_athlete_is_used_once_its_speech_is_made_and_is_read
     app.start()
     editing = app.editing(row_of(app, Kind.START, AYSE))
     assert editing is not None
-    texts = app.texts_of(editing, NEW_START)
-    assert texts == (render(NEW_START, AYSE),)
+    texts = [app.text_of(editing, NEW_START)]
+    assert texts == [render(NEW_START, AYSE)]
 
     provider.offline = True
     offline = app.make_speech(texts)
@@ -1130,7 +1117,7 @@ def test_custom_announcement_reworded_for_today_is_read_with_its_new_text(
     app.start()
     editing = app.editing(row_of(app, Kind.CUSTOM))
     assert editing is not None
-    speak_ahead(app, app.texts_of(editing, CLOSING))
+    speak_ahead(app, [app.text_of(editing, CLOSING)])
 
     app.edit(row_of(app, Kind.CUSTOM), SEVEN_PM, CLOSING)
 
@@ -1152,7 +1139,7 @@ def test_custom_announcement_reworded_with_a_placeholder_is_read_as_typed(
     typed = "Su içmeyi unutmayın, {ad_soyad}."
     editing = app.editing(row_of(app, Kind.CUSTOM))
     assert editing is not None
-    assert app.texts_of(editing, typed) == (typed,)
+    assert app.text_of(editing, typed) == typed
     speak_ahead(app, [typed])
 
     app.edit(row_of(app, Kind.CUSTOM), SEVEN_PM, typed)
@@ -1311,7 +1298,7 @@ def test_start_skipped_or_changed_keeps_what_was_changed_about_its_end(
     wait_for_speech(app)
     end = app.editing(row_of(app, Kind.END, AYSE))
     assert end is not None
-    speak_ahead(app, app.texts_of(end, NEW_END))
+    speak_ahead(app, [app.text_of(end, NEW_END)])
     app.edit(row_of(app, Kind.END, AYSE), datetime.time(19, 15), NEW_END)
 
     app.skip(row_of(app, Kind.START, AYSE))

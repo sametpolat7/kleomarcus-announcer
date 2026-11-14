@@ -133,7 +133,7 @@ class ChangeDialog:
         if not text:
             self._alert(texts.CHANGE_PROBLEMS[ChangeProblem.NO_TEXT])
             return
-        self._app.preview(self._app.texts_of(self._editing, text)[0])
+        self._app.preview(self._app.text_of(self._editing, text))
         if not self._tested:
             self._tested = True
             self._follow_test()
@@ -158,11 +158,9 @@ class ChangeDialog:
             self._alert("Saat 00:00 ile 23:59 arasında olmalıdır.")
             return
         text = self.text.get().strip()
-        said = self._app.texts_of(self._editing, text)[0]
+        said = self._app.text_of(self._editing, text)
         if text and said != self._editing.planned_text:
-            self._speech = self._app.make_speech(
-                self._app.texts_of(self._editing, text)
-            )
+            self._speech = self._app.make_speech([said])
             self.test_status.set(texts.SPEECH_PREPARING)
             self._hold(True)
             self._finish(time, text)

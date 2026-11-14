@@ -14,9 +14,8 @@ from announcer.scheduler import (
     untaken,
 )
 from announcer.timetable import Part, Slot, Timetable, build_timetable
-from support import FakeClock
+from support import MONDAY, FakeClock
 
-MONDAY = datetime.date(2026, 11, 9)
 SUNDAY = MONDAY - datetime.timedelta(days=1)
 TUESDAY = MONDAY + datetime.timedelta(days=1)
 SIX_PM = datetime.time(18, 0)

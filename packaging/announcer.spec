@@ -86,13 +86,10 @@ executable = EXE(
     exclude_binaries=True,
     name=APP_NAME,
     console=False,
-    upx=False,
     icon=icon,
     version=None if on_mac else windows_version_info(),
 )
-folder = COLLECT(
-    executable, analysis.binaries, analysis.datas, name=APP_NAME, upx=False
-)
+folder = COLLECT(executable, analysis.binaries, analysis.datas, name=APP_NAME)
 if on_mac:
     BUNDLE(
         folder,

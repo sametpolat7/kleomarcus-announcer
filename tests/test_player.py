@@ -39,11 +39,6 @@ def clock() -> FakeClock:
 
 
 @pytest.fixture
-def output() -> FakeOutput:
-    return FakeOutput()
-
-
-@pytest.fixture
 def outcomes() -> list[Playback]:
     return []
 

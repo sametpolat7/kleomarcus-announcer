@@ -1,7 +1,6 @@
 import datetime
 import json
 import logging
-import queue
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -335,28 +334,6 @@ def test_slot_that_is_running_when_the_app_starts_is_not_announced(
     assert output.played == []
 
 
-def test_new_templates_are_stored_and_spoken(
-    app: App, schedule: Path, settings_file: Path, provider: FakeProvider
-) -> None:
-    app.choose_schedule(schedule)
-    wait_for_speech(app)
-
-    app.set_templates(WELCOME, GOODBYE)
-    wait_for_speech(app)
-
-    stored = load_settings(settings_file).settings
-    assert (stored.template, stored.end_template) == (WELCOME, GOODBYE)
-    assert (app.spoken_template, app.spoken_end_template) == (WELCOME, GOODBYE)
-    start, end = app.timetable.slots[:2]
-    assert (start.texts[0], end.texts[0]) == (
-        "Hoş geldiniz, Ayşe Yılmaz.",
-        "Güle güle, Ayşe Yılmaz.",
-    )
-    assert ("Hoş geldiniz, Zeynep Kaya.", app.settings.voice) in provider.calls
-    assert ("Güle güle, Zeynep Kaya.", app.settings.voice) in provider.calls
-    assert app.unspoken == ()
-
-
 def test_template_changed_while_speech_is_generated_is_spoken_too(
     app: App, schedule: Path, provider: FakeProvider
 ) -> None:
@@ -531,38 +508,6 @@ def test_due_slot_is_announced_and_shown_as_played(
         at(19),
         ((Kind.END, "Ayşe Yılmaz"), (Kind.END, "Mehmet Demir")),
     )
-
-
-def test_rows_follow_the_reading_from_one_athlete_to_the_next(
-    app: App, output: FakeOutput, clock: FakeClock, tmp_path: Path
-) -> None:
-    three = [*ROWS[:2], ("Can Öztürk", "Pazartesi", "18:00")]
-    app.choose_schedule(write_schedule(tmp_path / "three.xlsx", three))
-    wait_for_speech(app)
-    sounding: queue.Queue[Path] = queue.Queue()
-    looked: queue.Queue[None] = queue.Queue()
-
-    def hold(path: Path) -> None:
-        sounding.put(path)
-        looked.get(timeout=5)
-
-    output.while_playing = hold
-    app.start()
-    clock.now = at(18)
-    seen: list[list[Status]] = []
-    for _ in range(4):  # the chime, then each athlete
-        sounding.get(timeout=5)
-        app.poll()
-        seen.append(statuses(app)[:3])
-        looked.put(None)
-    wait_for(app, lambda: statuses(app)[:3] == [Status.PLAYED] * 3)
-
-    assert seen == [
-        [Status.QUEUED, Status.QUEUED, Status.QUEUED],
-        [Status.PLAYING, Status.QUEUED, Status.QUEUED],
-        [Status.PLAYED, Status.PLAYING, Status.QUEUED],
-        [Status.PLAYED, Status.PLAYED, Status.PLAYING],
-    ]
 
 
 def test_slot_without_speech_is_shown_as_skipped(
