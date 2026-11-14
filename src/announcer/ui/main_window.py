@@ -1,6 +1,5 @@
 import datetime
 import logging
-import math
 import os
 import subprocess
 import sys
@@ -18,7 +17,7 @@ from announcer.models import DELAYS, SPEEDS, WEEKDAY_NAMES
 from announcer.scheduler import LATE
 from announcer.template import is_valid_template
 from announcer.today import BUSY, CHANGE_MARGIN, Row, Status
-from announcer.ui import texts
+from announcer.ui import texts, theme
 from announcer.ui.announcement_dialog import AnnouncementDialog
 from announcer.ui.change_dialog import ChangeDialog
 from announcer.ui.instant_dialog import InstantDialog
@@ -28,7 +27,7 @@ _log = logging.getLogger(__name__)
 _POLL = 250  # milliseconds
 _MINUTE = datetime.timedelta(minutes=1)
 _PAD = 12
-_GAP = 20  # pixels
+_EDGE = 16  # pixels
 
 _PROBLEMS = frozenset(
     {
@@ -44,18 +43,10 @@ _DONE = frozenset({Status.PLAYED, Status.PASSED, Status.STOPPED})
 _STRUCK = frozenset({Status.SKIPPING, Status.SKIPPED})  # not read on purpose
 _EDITED_OFTEN = (Status.WAITING, Status.NEXT, Status.PLAYING, Status.PLAYED)
 
-# Colours that read well on a light and on a dark window alike.
-_GREY = "#808080"
-_RED = "#c0392b"
-_BLUE = "#2e86de"
-# The warnings stand on a colour of their own, so their text has one too.
-_WARNING_BACKGROUND = "#fff3cd"
-_WARNING_TEXT = "#4d3b00"
 _WARNING_LINES = 3  # how many are shown before the rest has to be scrolled to
 _TEMPLATE_TITLE = "Anons Şablonları"
 _OPTIONS_TITLE = "Anons Ayarları"
 _TODAY_TITLE = "Bugünün Anonsları"
-_BUTTON_WIDTH = 10  # in characters
 _COLUMN_PADDING = 20  # pixels
 # Pixels of the column that takes up the slack: below the first, a table
 # leaves out the column it can do without; the column gets no narrower than
@@ -82,13 +73,6 @@ def _moment(now: datetime.datetime) -> tuple[datetime.datetime, bool, bool, bool
         now - minute > LATE - CHANGE_MARGIN,
         now >= minute + _MINUTE - CHANGE_MARGIN,
     )
-
-
-def _resized(base: font.Font, by: int) -> font.Font:
-    copy = base.copy()
-    size = int(copy.cget("size"))  # negative when it is in pixels
-    copy.configure(size=size + by if size > 0 else size - by)
-    return copy
 
 
 def open_file(path: Path) -> None:
@@ -147,6 +131,7 @@ class MainWindow:
         self.root = tk.Tk()
         self.root.title(APP_NAME)
         _set_icon(self.root)
+        theme.apply(self.root)
         # The window is maximized by ``run``. What it returns to when it is not
         # leaves room around it, and its bottom is never behind the taskbar.
         screen_width = self.root.winfo_screenwidth()
@@ -155,9 +140,9 @@ class MainWindow:
         x = max((screen_width - width) // 2, 0)
         y = max((screen_height - height) // 2 - 40, 0)
         self.root.geometry(f"{width}x{height}+{x}+{y}")
-        self.root.minsize(min(1000, width), min(680, height))
+        self.root.minsize(min(1060, width), min(680, height))
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
+        self.root.rowconfigure(2, weight=1)
         self.root.protocol("WM_DELETE_WINDOW", self.ask_to_close)
         self._on_mac = self.root.tk.call("tk", "windowingsystem") == "aqua"
         if self._on_mac:
@@ -170,6 +155,10 @@ class MainWindow:
         # windowed app does not have.
         self.root.report_callback_exception = self._report_error
 
+        # Kept on the window, as tkinter drops a font that nothing refers to.
+        self._bold = font.Font(
+            root=self.root, font=theme.describe(self.root, 0, "bold")
+        )
         self.schedule_path = tk.StringVar()
         self.loaded = tk.StringVar()
         self.today_title = tk.StringVar()
@@ -179,42 +168,18 @@ class MainWindow:
         self.end_template = tk.StringVar(value=app.settings.end_template)
         self.activity = tk.StringVar()
 
-        # Kept on the window, as tkinter drops a font that nothing refers to.
-        self._bold = font.nametofont("TkDefaultFont").copy()
-        self._bold.configure(weight="bold")
-        self._large = _resized(self._bold, 8)
-        self._title = _resized(self._bold, 2)
-        self._small = _resized(font.nametofont("TkDefaultFont"), -2)
-        self._struck = font.nametofont("TkDefaultFont").copy()
-        self._struck.configure(overstrike=True)
-        # One width for the buttons beside today's table and Dosya Seç…, from
-        # the longest of their labels in the font they have, so none is cut
-        # short on any system. Negative, so it is the least width in characters.
-        normal = font.nametofont("TkDefaultFont")
-        labels = (
-            "Tekrar Oku",
-            "Düzenle…",
-            texts.SKIP,
-            texts.UNSKIP,
-            "Anlık Anons…",
-            "Durdur",
-            "Dosya Seç…",
-        )
-        self._action_width = -math.ceil(
-            max(normal.measure(label) for label in labels) / normal.measure("0")
-        )
-
         # Today's announcements on the left, where the operator looks, with
         # whatever varies in height; what is rarely changed on the right.
-        frame = ttk.Frame(self.root, padding=_GAP)
-        frame.grid(sticky="nsew")
+        self._build_header().grid(row=0, sticky="ew")
+        tk.Frame(self.root, background=theme.BORDER, height=1).grid(row=1, sticky="ew")
+        frame = ttk.Frame(self.root, style="Window.TFrame", padding=_EDGE)
+        frame.grid(row=2, sticky="nsew")
         frame.columnconfigure(0, weight=5, uniform="column")
         frame.columnconfigure(1, weight=3, uniform="column")
-        frame.rowconfigure(1, weight=1)
-        self._build_header(frame).grid(row=0, column=0, columnspan=2, sticky="ew")
+        frame.rowconfigure(0, weight=1)
 
-        left = ttk.Frame(frame)
-        left.grid(row=1, column=0, sticky="nsew", pady=(_PAD, 0), padx=(0, _GAP // 2))
+        left = ttk.Frame(frame, style="Window.TFrame")
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, _PAD // 2))
         left.columnconfigure(0, weight=1)
         left.rowconfigure(1, weight=1)
         self.warning_box = self._build_warnings(left)
@@ -222,8 +187,8 @@ class MainWindow:
         self._build_today(left).grid(row=1, sticky="nsew")
         self._build_schedule(left).grid(row=2, sticky="ew", pady=(_PAD, 0))
 
-        right = ttk.Frame(frame)
-        right.grid(row=1, column=1, sticky="nsew", pady=(_PAD, 0), padx=(_GAP // 2, 0))
+        right = ttk.Frame(frame, style="Window.TFrame")
+        right.grid(row=0, column=1, sticky="nsew", padx=(_PAD // 2, 0))
         right.columnconfigure(0, weight=1)
         right.rowconfigure(1, weight=1)
         self._build_template(right).grid(row=0, sticky="ew")
@@ -231,7 +196,7 @@ class MainWindow:
         self._build_options(right).grid(row=2, sticky="ew", pady=(_PAD, 0))
 
         self._build_footer(frame).grid(
-            row=2, column=0, columnspan=2, sticky="ew", pady=(_PAD, 0)
+            row=1, column=0, columnspan=2, sticky="ew", pady=(_PAD, 0)
         )
 
         self.show()
@@ -281,6 +246,9 @@ class MainWindow:
         self._shown_at = _moment(now)
         path = app.settings.schedule_path
         self.schedule_path.set("" if path is None else str(path))
+        self.choose_button.configure(
+            style="Primary.TButton" if path is None else "TButton"
+        )
         self._schedule_entry.xview_moveto(1)
         self.loaded.set(texts.last_loaded(app.refreshed_at))
         self.today_title.set(texts.today_title(now))
@@ -295,45 +263,44 @@ class MainWindow:
         self._show_warnings()
         self._show_template_button()
 
-    def _build_header(self, parent: ttk.Frame) -> ttk.Frame:
-        header = ttk.Frame(parent)
+    def _build_header(self) -> ttk.Frame:
+        header = ttk.Frame(self.root, padding=(_EDGE, 10))
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, textvariable=self.today_title, font=self._large).grid(
+        ttk.Label(header, textvariable=self.today_title, style="Heading.TLabel").grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Label(header, textvariable=self.time, font=self._large).grid(
+        ttk.Label(header, textvariable=self.time, style="Heading.TLabel").grid(
             row=0, column=1, sticky="e"
         )
         return header
 
-    def _section(
-        self, parent: ttk.Frame, title: str
-    ) -> tuple[ttk.Frame, ttk.LabelFrame]:
-        section = ttk.Frame(parent)
-        section.columnconfigure(0, weight=1)
-        section.rowconfigure(1, weight=1)
-        ttk.Label(section, text=title, font=self._title).grid(
-            row=0, column=0, sticky="w", pady=(0, 4)
+    @staticmethod
+    def _card(
+        parent: ttk.Frame, title: str, note: tk.StringVar | None = None
+    ) -> tuple[tk.Frame, ttk.Frame]:
+        card = theme.card(parent)
+        card.columnconfigure(1 if note else 0, weight=1)
+        card.rowconfigure(1, weight=1)
+        ttk.Label(card, text=title, style="Title.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 8)
         )
-        box = ttk.LabelFrame(section, padding=10)
-        # A box keeps room for a name of its own; one of no size takes none.
-        box.configure(labelwidget=ttk.Frame(box))
-        box.grid(row=1, column=0, sticky="nsew")
-        return section, box
+        if note:
+            ttk.Label(card, textvariable=note, style="Note.TLabel").grid(
+                row=0, column=1, sticky="e", padx=(16, 0), pady=(0, 8)
+            )
+        body = ttk.Frame(card)
+        body.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        return card, body
 
-    def _note(self, parent: tk.Misc, text: str | tk.StringVar) -> ttk.Label:
-        note = ttk.Label(parent, font=self._small, foreground=_GREY)
-        if isinstance(text, str):
-            note.configure(text=text)
-        else:
-            note.configure(textvariable=text)
-        return note
-
-    def _build_schedule(self, parent: ttk.Frame) -> ttk.Frame:
-        section, box = self._section(parent, "Sporcu Listesi")
-        box.columnconfigure(0, weight=1)
+    def _build_schedule(self, parent: ttk.Frame) -> tk.Frame:
+        # There is no button to read the file again: saving it does that.
+        card, body = self._card(parent, "Sporcu Listesi", self.loaded)
+        body.columnconfigure(0, weight=1)
         self._schedule_entry = ttk.Entry(
-            box, textvariable=self.schedule_path, state="readonly"
+            body,
+            textvariable=self.schedule_path,
+            state="readonly",
+            style="Shown.TEntry",
         )
         self._schedule_entry.grid(row=0, column=0, sticky="ew")
         # The file's name is at the end of the path, so that end is kept in
@@ -341,27 +308,46 @@ class MainWindow:
         self._schedule_entry.bind(
             "<Configure>", lambda event: self._schedule_entry.xview_moveto(1)
         )
-        self.choose_button = ttk.Button(
-            box, text="Dosya Seç…", width=self._action_width, command=self.choose
-        )
+        self.choose_button = ttk.Button(body, text="Dosya Seç…", command=self.choose)
         self.choose_button.grid(row=0, column=1, padx=(8, 0))
-        # There is no button to read the file again: saving it does that.
-        self._note(box, self.loaded).grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(6, 0)
-        )
-        return section
+        return card
 
-    def _build_today(self, parent: ttk.Frame) -> ttk.Frame:
-        section, box = self._section(parent, _TODAY_TITLE)
-        box.columnconfigure(0, weight=1)
-        box.rowconfigure(0, weight=1)
+    def _build_today(self, parent: ttk.Frame) -> tk.Frame:
+        card, body = self._card(parent, _TODAY_TITLE, self.last_announcement)
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(1, weight=1)
+
+        actions = ttk.Frame(body)
+        actions.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        actions.columnconfigure(3, weight=1)
+        self.replay_button = ttk.Button(actions, text="Tekrar Oku", command=self.replay)
+        self.edit_row_button = ttk.Button(
+            actions, text="Düzenle…", command=self.edit_row
+        )
+        self.skip_button = ttk.Button(actions, text=texts.SKIP, command=self.skip)
+        self.stop_button = ttk.Button(
+            actions, text="Durdur", style="Danger.TButton", command=self.stop
+        )
+        self.instant_button = ttk.Button(
+            actions, text="Anlık Anons…", style="Primary.TButton", command=self.announce
+        )
+        # The first three act on the selected row; the last two do not, so
+        # they stand apart.
+        for column, button in enumerate(
+            (self.replay_button, self.edit_row_button, self.skip_button)
+        ):
+            button.grid(row=0, column=column, padx=(0, 8))
+        self.stop_button.grid(row=0, column=4, padx=(8, 0))
+        self.instant_button.grid(row=0, column=5, padx=(8, 0))
+
         # A rare status of an edited row may be cut short at its end.
         statuses = [
             *(texts.STATUS[status] for status in Status),
             *(f"{texts.STATUS[status]} {texts.EDITED}" for status in _EDITED_OFTEN),
         ]
         self.today = self._table(
-            box,
+            body,
+            row=1,
             height=8,
             columns={
                 "day": "Gün",
@@ -386,75 +372,57 @@ class MainWindow:
         # double click nor a key reads a row.
         self.today.bind("<Double-1>", self._on_double_click)
         self.today.bind("<Return>", lambda event: self.edit_row())
+        struck = theme.describe(self.root, 0, "overstrike")
         self.today.tag_configure(Status.NEXT.name, font=self._bold)
-        self.today.tag_configure(Status.PLAYING.name, font=self._bold, foreground=_BLUE)
+        self.today.tag_configure(
+            Status.PLAYING.name, font=self._bold, foreground=theme.BLUE
+        )
         for status in (Status.PREPARING, Status.QUEUED):
-            self.today.tag_configure(status.name, foreground=_BLUE)
+            self.today.tag_configure(status.name, foreground=theme.BLUE)
         for status in _DONE:
-            self.today.tag_configure(status.name, foreground=_GREY)
+            self.today.tag_configure(status.name, foreground=theme.MUTED)
         for status in _PROBLEMS:
-            self.today.tag_configure(status.name, foreground=_RED)
+            self.today.tag_configure(status.name, foreground=theme.RED)
         for status in _STRUCK:
-            self.today.tag_configure(status.name, foreground=_GREY, font=self._struck)
-        self.today.tag_configure(_NO_ROW, foreground=_GREY)
+            self.today.tag_configure(status.name, foreground=theme.MUTED, font=struck)
+        self.today.tag_configure(_NO_ROW, foreground=theme.MUTED)
+        return card
 
-        actions = ttk.Frame(box)
-        actions.grid(row=0, column=2, sticky="n", padx=(10, 0))
-        self.replay_button = ttk.Button(actions, text="Tekrar Oku", command=self.replay)
-        self.edit_row_button = ttk.Button(
-            actions, text="Düzenle…", command=self.edit_row
-        )
-        self.skip_button = ttk.Button(actions, text=texts.SKIP, command=self.skip)
-        self.instant_button = ttk.Button(
-            actions, text="Anlık Anons…", command=self.announce
-        )
-        self.stop_button = ttk.Button(actions, text="Durdur", command=self.stop)
-        # The first three act on the selected row; the last two do not, so
-        # they stand apart.
-        for row, button in enumerate(
-            (self.replay_button, self.edit_row_button, self.skip_button)
-        ):
-            button.configure(width=self._action_width)
-            button.grid(row=row, column=0, sticky="ew", pady=(0, 6))
-        ttk.Separator(actions).grid(row=3, column=0, sticky="ew", pady=(8, 14))
-        for row, button in enumerate((self.instant_button, self.stop_button), 4):
-            button.configure(width=self._action_width)
-            button.grid(row=row, column=0, sticky="ew", pady=(0, 6))
-        _keep_in_view(box, actions)
-        ttk.Label(box, textvariable=self.last_announcement).grid(
-            row=1, column=0, columnspan=3, sticky="w", pady=(8, 0)
-        )
-        return section
-
-    def _build_options(self, parent: ttk.Frame) -> ttk.Frame:
-        section, box = self._section(parent, _OPTIONS_TITLE)
-        box.columnconfigure(1, weight=1)
+    def _build_options(self, parent: ttk.Frame) -> tk.Frame:
+        card, body = self._card(parent, _OPTIONS_TITLE)
+        body.columnconfigure(1, weight=1)
         self.speed_box = self._choice(
-            box, 0, "Ses hızı", map(texts.speed, SPEEDS), self.choose_speed
+            body, 0, "Ses hızı", map(texts.speed, SPEEDS), self.choose_speed
         )
         self.delay_box = self._choice(
-            box, 1, "Gecikme süresi", map(texts.delay, DELAYS), self.choose_delay
+            body, 1, "Gecikme süresi", map(texts.delay, DELAYS), self.choose_delay
         )
         self.end_box = self._choice(
-            box,
+            body,
             2,
             "Bitiş anonsu",
             map(texts.switch, (True, False)),
             self.choose_end_announcements,
         )
-        return section
+        return card
 
     @staticmethod
     def _choice(
-        box: ttk.LabelFrame,
+        body: ttk.Frame,
         row: int,
         name: str,
         values: Iterable[str],
         command: Callable[[], None],
     ) -> ttk.Combobox:
-        gap = 6 if row else 0
-        ttk.Label(box, text=name).grid(row=row, column=0, sticky="w", pady=(gap, 0))
-        choice = ttk.Combobox(box, values=tuple(values), state="readonly", width=15)
+        gap = 8 if row else 0
+        ttk.Label(body, text=name).grid(row=row, column=0, sticky="w", pady=(gap, 0))
+        choice = ttk.Combobox(
+            body,
+            values=tuple(values),
+            state="readonly",
+            width=15,
+            cursor=theme.POINTER,
+        )
         choice.grid(row=row, column=1, sticky="e", padx=(12, 0), pady=(gap, 0))
 
         def chosen(event: object) -> None:
@@ -469,47 +437,57 @@ class MainWindow:
                 choice.bind(sequence, lambda event: "break")
         return choice
 
-    def _build_template(self, parent: ttk.Frame) -> ttk.Frame:
-        section, box = self._section(parent, _TEMPLATE_TITLE)
-        box.columnconfigure(1, weight=1)
+    def _build_template(self, parent: ttk.Frame) -> tk.Frame:
+        card, body = self._card(parent, _TEMPLATE_TITLE)
+        body.columnconfigure(1, weight=1)
         self.test_buttons: list[ttk.Button] = []
         for row, (name, variable) in enumerate(
             (("Başlangıç", self.template), ("Bitiş", self.end_template))
         ):
-            gap = (6 if row else 0, 0)
-            ttk.Label(box, text=name).grid(row=row, column=0, sticky="w", pady=gap)
-            entry = ttk.Entry(box, textvariable=variable)
-            entry.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=gap)
+            gap = (8 if row else 0, 0)
+            ttk.Label(body, text=name).grid(row=row, column=0, sticky="w", pady=gap)
+            entry = ttk.Entry(body, textvariable=variable)
+            entry.grid(row=row, column=1, sticky="ew", padx=(10, 0), pady=gap)
             entry.bind("<Return>", lambda event: self.save_template())
             variable.trace_add("write", lambda *args: self._show_template_button())
-            button = ttk.Button(
-                box, text="Test", width=_BUTTON_WIDTH, command=self._tester(variable)
-            )
-            button.grid(row=row, column=2, padx=(8, 0), pady=gap)
+            button = ttk.Button(body, text="Test", command=self._tester(variable))
+            button.grid(row=row, column=2, sticky="ew", padx=(8, 0), pady=gap)
             self.test_buttons.append(button)
         self.test_button, self.end_test_button = self.test_buttons
-        note = self._note(box, f"{texts.TEMPLATE_HINT} {texts.END_HINT}")
+        note = ttk.Label(
+            body, text=f"{texts.TEMPLATE_HINT} {texts.END_HINT}", style="Note.TLabel"
+        )
         note.grid(row=2, column=0, columnspan=2, sticky="new", pady=(8, 0))
         note.bind(
             "<Configure>", lambda event: note.configure(wraplength=max(event.width, 1))
         )
         self.save_template_button = ttk.Button(
-            box, text="Kaydet", width=_BUTTON_WIDTH, command=self.save_template
+            body, text="Kaydet", style="Primary.TButton", command=self.save_template
         )
         self.save_template_button.grid(
-            row=2, column=2, sticky="n", padx=(8, 0), pady=(8, 0)
+            row=2, column=2, sticky="new", padx=(8, 0), pady=(8, 0)
         )
-        return section
+        return card
 
     def _tester(self, template: tk.StringVar) -> Callable[[], None]:
         return lambda: self.test(template.get())
 
-    def _build_announcements(self, parent: ttk.Frame) -> ttk.Frame:
-        section, box = self._section(parent, "Özel Anonslar")
-        box.columnconfigure(0, weight=1)
-        box.rowconfigure(0, weight=1)
+    def _build_announcements(self, parent: ttk.Frame) -> tk.Frame:
+        card, body = self._card(parent, "Özel Anonslar")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        buttons = ttk.Frame(card)
+        buttons.grid(row=0, column=1, sticky="e", pady=(0, 8))
+        self.add_button = ttk.Button(buttons, text="Ekle…", command=self.add)
+        self.edit_button = ttk.Button(buttons, text="Düzenle…", command=self.edit)
+        self.delete_button = ttk.Button(buttons, text="Sil", command=self.delete)
+        for column, button in enumerate(
+            (self.add_button, self.edit_button, self.delete_button)
+        ):
+            button.grid(row=0, column=column, padx=(8, 0))
         self.announcements = self._table(
-            box,
+            body,
+            row=0,
             height=3,
             columns={"time": "Saat", "days": "Günler", "text": "Anons"},
             widths={
@@ -519,7 +497,7 @@ class MainWindow:
             },
             optional="days",
         )
-        self.announcements.tag_configure(_NO_ROW, foreground=_GREY)
+        self.announcements.tag_configure(_NO_ROW, foreground=theme.MUTED)
         self.announcements.bind(
             "<<TreeviewSelect>>", lambda event: self._show_buttons()
         )
@@ -527,28 +505,24 @@ class MainWindow:
         self.announcements.bind("<Return>", lambda event: self.edit())
         self.announcements.bind("<Delete>", lambda event: self.delete())
         self.announcements.bind("<BackSpace>", lambda event: self.delete())
-        buttons = ttk.Frame(box)
-        buttons.grid(row=0, column=2, sticky="n", padx=(8, 0))
-        self.add_button = ttk.Button(buttons, text="Ekle…", command=self.add)
-        self.edit_button = ttk.Button(buttons, text="Düzenle…", command=self.edit)
-        self.delete_button = ttk.Button(buttons, text="Sil", command=self.delete)
-        for row, button in enumerate(
-            (self.add_button, self.edit_button, self.delete_button)
-        ):
-            button.configure(width=_BUTTON_WIDTH)
-            button.grid(row=row, column=0, sticky="ew", pady=(0, 6))
-        _keep_in_view(box, buttons)
-        return section
+        return card
 
     def _build_warnings(self, parent: ttk.Frame) -> tk.Frame:
-        box = tk.Frame(parent, background=_WARNING_BACKGROUND, padx=10, pady=8)
+        box = tk.Frame(
+            parent,
+            background=theme.WARNING_BACKGROUND,
+            highlightbackground=theme.WARNING_BORDER,
+            highlightthickness=1,
+            padx=14,
+            pady=10,
+        )
         box.columnconfigure(0, weight=1)
         tk.Label(
             box,
             text="Uyarılar",
             font=self._bold,
-            background=_WARNING_BACKGROUND,
-            foreground=_WARNING_TEXT,
+            background=theme.WARNING_BACKGROUND,
+            foreground=theme.WARNING_TEXT,
         ).grid(row=0, column=0, sticky="w")
         self.warnings = tk.Text(
             box,
@@ -560,8 +534,8 @@ class MainWindow:
             highlightthickness=0,
             font="TkDefaultFont",
             cursor="arrow",
-            background=_WARNING_BACKGROUND,
-            foreground=_WARNING_TEXT,
+            background=theme.WARNING_BACKGROUND,
+            foreground=theme.WARNING_TEXT,
         )
         self.warnings.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         # A warning that is wider than the window takes more than one line.
@@ -574,15 +548,15 @@ class MainWindow:
         return box
 
     def _build_footer(self, parent: ttk.Frame) -> ttk.Frame:
-        footer = ttk.Frame(parent)
+        footer = ttk.Frame(parent, style="Window.TFrame")
         footer.columnconfigure(1, weight=1)
-        self._note(footer, texts.SLEEP_NOTICE).grid(row=0, column=0, sticky="w")
-        ttk.Label(footer, textvariable=self.activity).grid(
+        ttk.Label(footer, text=texts.SLEEP_NOTICE, style="Window.Note.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(footer, textvariable=self.activity, style="Window.TLabel").grid(
             row=0, column=1, sticky="e", padx=_PAD
         )
-        self.log_button = ttk.Button(
-            footer, text="Kayıtlar", width=_BUTTON_WIDTH, command=self.open_log
-        )
+        self.log_button = ttk.Button(footer, text="Kayıtlar", command=self.open_log)
         self.log_button.grid(row=0, column=2)
         return footer
 
@@ -592,7 +566,8 @@ class MainWindow:
 
     @staticmethod
     def _table(
-        parent: ttk.LabelFrame,
+        parent: ttk.Frame,
+        row: int,
         height: int,
         columns: dict[str, str],
         widths: dict[str, int],
@@ -603,8 +578,12 @@ class MainWindow:
         way in a narrow window; before it does, the ``optional`` column is
         left out.
         """
+        frame = tk.Frame(parent, highlightbackground=theme.BORDER, highlightthickness=1)
+        frame.grid(row=row, column=0, sticky="nsew")
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
         table = ttk.Treeview(
-            parent,
+            frame,
             columns=tuple(columns),
             show="headings",
             height=height,
@@ -629,9 +608,17 @@ class MainWindow:
 
         table.bind("<Configure>", fit, add=True)
         table.grid(row=0, column=0, sticky="nsew")
-        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=table.yview)
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=table.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
-        table.configure(yscrollcommand=scrollbar.set)
+
+        def scrolled(first: float, last: float) -> None:
+            scrollbar.set(first, last)
+            if float(first) <= 0 and float(last) >= 1:
+                scrollbar.grid_remove()
+            else:
+                scrollbar.grid()
+
+        table.configure(yscrollcommand=scrolled)
         return table
 
     def _show_today(self, now: datetime.datetime) -> None:
@@ -1000,16 +987,6 @@ class MainWindow:
         self._alert(
             APP_NAME, "Beklenmeyen bir hata oluştu. Ayrıntılar kayıt dosyasındadır."
         )
-
-
-def _keep_in_view(box: ttk.LabelFrame, buttons: ttk.Frame) -> None:
-    """Let the table in the first row of ``box`` give way in height, but not so
-    far that one of the ``buttons`` beside it goes. Their height is known once
-    they are laid out."""
-    buttons.bind(
-        "<Configure>",
-        lambda event: box.rowconfigure(0, minsize=buttons.winfo_reqheight()),
-    )
 
 
 def _same(row: Row, other: Row) -> bool:

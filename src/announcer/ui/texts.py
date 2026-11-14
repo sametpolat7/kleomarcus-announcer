@@ -44,6 +44,7 @@ UNSKIP = "Atlamayı Geri Al"
 EDITED = "(düzenlendi)"
 TIME_NOT_DELAYED = "Burada seçilen saate gecikme süresi eklenmez."
 SPEECH_PREPARING = "Yeni metnin sesi hazırlanıyor…"
+INVALID_TIME = "Saat 00:00 ile 23:59 arasında olmalıdır."
 CANNOT_SAVE = "Değişiklik kaydedilemedi. Ayrıntılar kayıt dosyasındadır."
 
 STATUS: dict[Status, str] = {
