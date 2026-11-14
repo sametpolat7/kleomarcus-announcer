@@ -555,7 +555,7 @@ class App:
         ``ChangeError`` if the row's time has come and ``OSError`` if it cannot be
         saved; nothing changes then.
         """
-        key = self._changeable(row, skipping=True)
+        key = self._skippable(row)
         keys = [key]
         end = self._end_of(row)
         if end is not None:
@@ -598,12 +598,9 @@ class App:
         if time != editing.time and datetime.datetime.combine(now.date(), time) <= now:
             raise ChangeError(ChangeProblem.PAST)
         # What is said, as typed in a placeholder may still stand for the name.
-        text = self.texts_of(editing, text)[0]
+        text = self.text_of(editing, text)
         reworded = text != editing.planned_text
-        if reworded and not all(
-            self._cache.find(said, self.spoken_speed) is not None
-            for said in self.texts_of(editing, text)
-        ):
+        if reworded and self._cache.find(text, self.spoken_speed) is None:
             raise ChangeError(ChangeProblem.NO_SPEECH)
         self._save_changes(
             [
@@ -623,8 +620,8 @@ class App:
         self._rebuild()
 
     @staticmethod
-    def texts_of(editing: Editing, text: str) -> tuple[str, ...]:
-        return (said(text, editing.name),)
+    def text_of(editing: Editing, text: str) -> str:
+        return said(text, editing.name)
 
     def poll(self) -> bool:
         """Returns whether anything changed."""
@@ -662,13 +659,9 @@ class App:
                         if self._outcomes.get(key) is Status.PLAYING:
                             self._outcomes[key] = Status.PLAYED
                     self._outcomes[group.parts[index][0]] = Status.PLAYING
-                case _Speaking():
-                    pass
                 case _Started(tag=_Test() as test):
                     self._sounding = test
                     self.test_status = Status.PLAYING
-                case _Started():
-                    pass
                 case Playback(tag=_Group() as group):
                     self._played(group, event)
                 case Playback(tag=tag):
@@ -815,14 +808,14 @@ class App:
     def _change_or_new(self, key: PartId) -> Change:
         return self._change(key) or Change(self._clock().date(), *key)
 
-    def _changeable(self, row: Row, skipping: bool) -> PartId:
-        """Raises ``ChangeError`` if the row can no longer be skipped, or edited."""
+    def _skippable(self, row: Row) -> PartId:
+        """Raises ``ChangeError`` if the row can no longer be skipped."""
         key = row.key
         current = {other.key: other for other in self.rows()}.get(key)
         if (
             not isinstance(key, tuple)
             or current is None
-            or not (current.skippable if skipping else current.editable)
+            or not current.skippable
             or self._planned(key) is None
         ):
             raise ChangeError(ChangeProblem.GONE)

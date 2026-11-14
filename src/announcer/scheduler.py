@@ -88,10 +88,6 @@ def _slots_from(
         date += _DAY
 
 
-def _delay(timetable: Timetable) -> datetime.timedelta:
-    return datetime.timedelta(minutes=timetable.delay)
-
-
 class Scheduler:
     """``on_due`` and ``on_missed`` are called on the scheduler's thread, so they
     should only hand the slot over, for example by putting it on a queue. A
@@ -152,7 +148,7 @@ class Scheduler:
         now = self._clock()
         before, self._checked_at = self._checked_at, now
         timetable = self._timetable  # the same one for the whole look
-        delay = _delay(timetable)
+        delay = datetime.timedelta(minutes=timetable.delay)
         shorter_by, self._delay = self._delay - delay, delay
         minute = now.replace(second=0, microsecond=0)
         # A part dealt with that long ago is not due again: neither the delay
