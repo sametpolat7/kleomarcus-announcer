@@ -1840,30 +1840,32 @@ def test_choice_drops_its_list_at_one_click_and_keeps_its_text_when_it_is_closed
     window: MainWindow, app: App
 ) -> None:
     window.root.deiconify()
-    window.root.update()
     box = window.delay_box
     popdown = str(box.tk.call("ttk::combobox::PopdownWindow", box))
+    choices = f"{popdown}.f.l"
 
-    def dropped() -> bool:
+    def dropped_after(*event: str) -> bool:
+        """Windows tells of a change of focus a moment after it happened."""
+        box.tk.call("event", "generate", *event)
+        over = time.monotonic() + 0.5
+        pump(window, lambda: time.monotonic() > over)
         return bool(box.tk.call("winfo", "ismapped", popdown))
 
-    def click() -> None:
-        box.event_generate("<Button-1>", x=5, y=5)
-        pump(window, lambda: dropped() and box.instate(["pressed"]))
-
-    click()
-    box.tk.call("event", "generate", popdown, "<Button-1>")
-    pump(window, lambda: not dropped())
+    click = (str(box), "<Button-1>", "-x", "5", "-y", "5")
+    assert dropped_after(*click)
+    assert not dropped_after(popdown, "<Button-1>")
     assert box.get() == "Yok"
+    assert box.instate(["!pressed"])
 
-    click()
-    choices = f"{popdown}.f.l"
+    assert dropped_after(*click)
     box.tk.call(choices, "selection", "clear", 0, "end")
     box.tk.call(choices, "selection", "set", 2)
-    box.tk.call("event", "generate", choices, "<ButtonRelease-1>")
-    pump(window, lambda: not dropped())
+    assert not dropped_after(choices, "<ButtonRelease-1>")
     assert box.get() == "2 dk"
     assert app.settings.delay == 2
+    assert box.instate(["!pressed"])
+
+    assert dropped_after(*click)
 
 
 def test_choosing_a_schedule_stands_out_until_one_is_chosen(
