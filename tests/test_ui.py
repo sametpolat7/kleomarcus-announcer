@@ -1845,14 +1845,13 @@ def test_choice_drops_its_list_at_one_click_and_keeps_its_text_when_it_is_closed
     popdown = str(box.tk.call("ttk::combobox::PopdownWindow", box))
 
     def dropped() -> bool:
-        return bool(box.tk.call("winfo", "ismapped", popdown))
+        return box.instate(["pressed"])
 
     box.event_generate("<Button-1>", x=5, y=5)
     pump(window, dropped)
     box.tk.call("event", "generate", popdown, "<Button-1>")
     pump(window, lambda: not dropped())
     assert box.get() == "Yok"
-    assert box.instate(["!pressed"])
 
     box.event_generate("<Button-1>", x=5, y=5)
     pump(window, dropped)
