@@ -370,12 +370,20 @@ class App:
         _log.info("Speed changed to %s", speed)
         self._generate()
 
-    def set_delay(self, minutes: int) -> None:
+    def set_start_delay(self, minutes: int) -> None:
         """Raises ``ValueError`` if the delay is not one of ``DELAYS`` and
         ``OSError`` if it cannot be saved; nothing changes then.
         """
-        self._save(dataclasses.replace(self.settings, delay=minutes))
-        _log.info("Delay changed to %d minute(s)", minutes)
+        self._save(dataclasses.replace(self.settings, start_delay=minutes))
+        _log.info("Delay of the starts changed to %d minute(s)", minutes)
+        self._build()
+
+    def set_end_delay(self, minutes: int) -> None:
+        """Raises ``ValueError`` if the delay is not one of ``DELAYS`` and
+        ``OSError`` if it cannot be saved; nothing changes then.
+        """
+        self._save(dataclasses.replace(self.settings, end_delay=minutes))
+        _log.info("Delay of the ends changed to %d minute(s)", minutes)
         self._build()
 
     def save_announcement(
@@ -795,7 +803,7 @@ class App:
         if change is not None and change.time is not None:
             due = datetime.datetime.combine(today, change.time)
         else:
-            due = key[0] + datetime.timedelta(minutes=self.settings.delay)
+            due = key[0] + datetime.timedelta(minutes=self.settings.end_delay)
         return (key, due) if due.date() == today else None
 
     def _change(self, key: PartId) -> Change | None:
@@ -1000,7 +1008,8 @@ class App:
             self.settings.custom_announcements,
             template,
             speed,
-            self.settings.delay,
+            self.settings.start_delay,
+            self.settings.end_delay,
             end_template if self.settings.end_announcements else None,
             self.changes,
         )

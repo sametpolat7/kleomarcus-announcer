@@ -3,7 +3,7 @@ running when the slot's minute began, at most half a minute late, and once per
 date. A slot whose minute began while the app was closed is not caught up on.
 Neither is one that the app could not announce in time although it ran,
 because the computer was asleep; that one is reported as missed, so the app
-can show it. A change of the delay neither repeats a slot nor drops one: what
+can show it. A change of a delay neither repeats a slot nor drops one: what
 a shorter delay puts behind the clock is announced at once. Each part of a
 slot is dealt with once, so a slot is handed over with only the parts that
 are still to be announced, and none that the operator skipped.
@@ -13,8 +13,9 @@ import dataclasses
 import datetime
 import logging
 import threading
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 
+from announcer.models import Kind
 from announcer.timetable import PartId, Slot, Timetable, part_id
 
 _log = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ _DAY = datetime.timedelta(days=1)
 # How long into its minute a slot may still be announced. A second or two is
 # normal; more happens when the computer is very busy or wakes from a sleep.
 LATE = datetime.timedelta(seconds=30)
+_DELAYED = (Kind.START, Kind.END)
 
 
 def due_slot(
@@ -63,17 +65,25 @@ def missed_slots(
 
 
 def brought_forward(
-    timetable: Timetable, before: datetime.datetime, by: datetime.timedelta
+    timetable: Timetable,
+    before: datetime.datetime,
+    by: Mapping[Kind, datetime.timedelta],
 ) -> list[tuple[datetime.date, Slot]]:
-    """Return the slots that a delay made shorter ``by`` that much has moved
-    from after ``before`` to that moment or earlier. Each slot comes with its
-    date, the oldest first, and with only the parts that the delay moves: one
-    that the operator put at a time of its own stays there.
+    """Return the slots that the delay of a kind, made shorter ``by`` that
+    much, has moved from after ``before`` to that moment or earlier. Each slot
+    comes with its date, the oldest first, and with only the parts that the
+    delay moved: one that the operator put at a time of its own stays there.
     """
+    none = datetime.timedelta()
+    first = before - max(by.values(), default=none)
     found = []
-    for due, slot in _slots_from(timetable, (before - by).date(), before.date()):
-        parts = tuple(part for part in slot.parts if not part.moved)
-        if before - by < due <= before and parts:
+    for due, slot in _slots_from(timetable, first.date(), before.date()):
+        parts = tuple(
+            part
+            for part in slot.parts
+            if not part.moved and before - by.get(part.kind, none) < due <= before
+        )
+        if parts:
             found.append((due.date(), dataclasses.replace(slot, parts=parts)))
     return found
 
@@ -112,7 +122,8 @@ class Scheduler:
         self._clock = clock
         self._interval = interval  # seconds between two looks at the clock
         self._checked_at: datetime.datetime | None = None
-        self._delay = datetime.timedelta()  # of the timetable at the last look
+        # Of the timetable at the last look.
+        self._delays = dict.fromkeys(_DELAYED, datetime.timedelta())
         # The parts dealt with, each with when that was.
         self._fired: dict[PartId, datetime.datetime] = {}
         self._stopped = threading.Event()
@@ -148,10 +159,14 @@ class Scheduler:
         now = self._clock()
         before, self._checked_at = self._checked_at, now
         timetable = self._timetable  # the same one for the whole look
-        delay = datetime.timedelta(minutes=timetable.delay)
-        shorter_by, self._delay = self._delay - delay, delay
+        delays = {
+            kind: datetime.timedelta(minutes=timetable.delay_of(kind))
+            for kind in _DELAYED
+        }
+        shorter_by = {kind: self._delays[kind] - delays[kind] for kind in _DELAYED}
+        self._delays = delays
         minute = now.replace(second=0, microsecond=0)
-        # A part dealt with that long ago is not due again: neither the delay
+        # A part dealt with that long ago is not due again: neither a delay
         # nor a change of the day moves it that far once it was due.
         self._fired = {
             fired: when for fired, when in self._fired.items() if now - when < _DAY

@@ -75,9 +75,10 @@ class Timetable:
     slots: tuple[Slot, ...] = ()  # of the week, ordered by weekday, then time
     # Each with the weekday and the time that its announcement was set for.
     conflicts: tuple[Conflict, ...] = ()
-    # The delay that the week's slots were built with; a part that the
+    # The delays that the week's slots were built with; a part that the
     # operator moved for a day has a delay of its own.
-    delay: int = 0
+    start_delay: int = 0
+    end_delay: int = 0
     # The slots of the days that the operator changed, in place of the week's.
     days: tuple[tuple[datetime.date, tuple[Slot, ...]], ...] = ()
 
@@ -92,6 +93,11 @@ class Timetable:
             if slot.time == time:
                 return slot
         return None
+
+    def delay_of(self, kind: Kind) -> int:
+        if kind is Kind.START:
+            return self.start_delay
+        return self.end_delay if kind is Kind.END else 0
 
     def all_slots(self) -> tuple[Slot, ...]:
         """Those of the week and those of the changed days, for what they say."""
@@ -142,7 +148,8 @@ def build_timetable(
     custom_announcements: Iterable[CustomAnnouncement],
     template: str,
     speed: float = NORMAL_SPEED,
-    delay: int = 0,
+    start_delay: int = 0,
+    end_delay: int = 0,
     end_template: str | None = None,
     changes: Iterable[Change] = (),
 ) -> Timetable:
@@ -150,8 +157,10 @@ def build_timetable(
     ``end_template``, at its end too. A custom announcement is left out on the
     weekdays where a session starts in its minute or a custom announcement
     earlier in the list has that minute, and each such case is reported as a
-    conflict. The delay moves everything alike, so it changes nothing about
-    that. ``changes`` make the days that they are for differ from the week.
+    conflict. The delays move the starts and the ends only and change nothing
+    about that: a start or an end that a delay puts in the minute of a custom
+    announcement is read with it. ``changes`` make the days that they are for
+    differ from the week.
     """
     entries = tuple(entries)
     listed: dict[tuple[_Key, Kind], tuple[str, ...]] = {
@@ -163,7 +172,8 @@ def build_timetable(
     for (key, kind), names in listed.items():
         used = end_template if kind is Kind.END else template
         assert used is not None
-        parts.setdefault(key, []).extend(
+        delay = end_delay if kind is Kind.END else start_delay
+        parts.setdefault(delayed(*key, delay), []).extend(
             Part(kind, render(used, name), name, delay) for name in names
         )
 
@@ -175,14 +185,13 @@ def build_timetable(
         taken = {conflict.weekday for conflict in found}
         for weekday in announcement.weekdays - taken:
             key = (weekday, announcement.time)
-            custom = Part(Kind.CUSTOM, announcement.text, delay=delay)
-            parts.setdefault(key, []).append(custom)
+            parts.setdefault(key, []).append(Part(Kind.CUSTOM, announcement.text))
             holders[key] = SlotHolder.CUSTOM_ANNOUNCEMENT
 
     slots = tuple(
         sorted(
             (
-                Slot(*delayed(*key, delay), _ordered(key_parts), speed)
+                Slot(*key, _ordered(key_parts), speed)
                 for key, key_parts in parts.items()
             ),
             key=lambda slot: (slot.weekday, slot.time),
@@ -195,7 +204,7 @@ def build_timetable(
         (day, _day(day, slots, day_changes, speed))
         for day, day_changes in sorted(by_day.items())
     )
-    return Timetable(slots, tuple(conflicts), delay, days)
+    return Timetable(slots, tuple(conflicts), start_delay, end_delay, days)
 
 
 def _starts(entries: Iterable[AthleteEntry]) -> dict[_Key, tuple[str, ...]]:

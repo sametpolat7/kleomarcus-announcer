@@ -35,11 +35,13 @@ def test_template_without_the_placeholder_is_rejected() -> None:
         Settings(template="Antrenmanınız başlamıştır.")
 
 
-def test_speed_and_delay_that_are_not_offered_are_rejected() -> None:
+def test_speed_and_delays_that_are_not_offered_are_rejected() -> None:
     with pytest.raises(ValueError, match="speed"):
         Settings(speed=1.5)
     with pytest.raises(ValueError, match="delay"):
-        Settings(delay=4)
+        Settings(start_delay=4)
+    with pytest.raises(ValueError, match="delay"):
+        Settings(end_delay=4)
 
 
 def test_missing_file_gives_the_defaults(path: Path) -> None:
@@ -53,7 +55,8 @@ def test_round_trip(path: Path) -> None:
         template="Sayın {ad_soyad}, dersiniz başlıyor.",
         custom_announcements=(CLOSING, CLEANING),
         speed=0.9,
-        delay=2,
+        start_delay=2,
+        end_delay=5,
     )
 
     save_settings(settings, path)
@@ -68,7 +71,8 @@ def test_saved_file_can_be_read_and_edited_by_hand(path: Path) -> None:
     assert json.loads(text) == {
         "voice": DEFAULT_VOICE,
         "speed": 1.0,
-        "delay_minutes": 0,
+        "start_delay_minutes": 0,
+        "end_delay_minutes": 0,
         "schedule_path": None,
         "template": DEFAULT_TEMPLATE,
         "end_template": DEFAULT_END_TEMPLATE,
@@ -131,10 +135,13 @@ def test_folder_in_place_of_the_file_is_an_error(path: Path) -> None:
         ("speed", 0.85),
         ("speed", "1.1"),
         ("speed", True),
+        ("start_delay_minutes", 4),
+        ("start_delay_minutes", -1),
+        ("start_delay_minutes", "2"),
+        ("start_delay_minutes", True),
+        ("end_delay_minutes", 4),
+        ("end_delay_minutes", None),
         ("delay_minutes", 4),
-        ("delay_minutes", -1),
-        ("delay_minutes", "2"),
-        ("delay_minutes", True),
     ],
 )
 def test_unusable_value_falls_back_to_its_default(
@@ -164,12 +171,30 @@ def test_end_template_and_switch_are_kept(path: Path) -> None:
 
 
 def test_speed_and_delay_may_be_written_as_any_number(path: Path) -> None:
-    write_json(path, {"speed": 1, "delay_minutes": 5.0})
+    write_json(path, {"speed": 1, "start_delay_minutes": 5.0})
 
     settings = load_settings(path).settings
 
-    assert (settings.speed, settings.delay) == (1.0, 5)
-    assert (type(settings.speed), type(settings.delay)) == (float, int)
+    assert (settings.speed, settings.start_delay) == (1.0, 5)
+    assert (type(settings.speed), type(settings.start_delay)) == (float, int)
+
+
+def test_single_delay_of_an_older_version_is_kept_for_the_starts_and_the_ends(
+    path: Path,
+) -> None:
+    write_json(path, {"delay_minutes": 5})
+
+    settings = load_settings(path).settings
+
+    assert (settings.start_delay, settings.end_delay) == (5, 5)
+
+
+def test_delay_of_its_own_beats_the_single_one_of_an_older_version(path: Path) -> None:
+    write_json(path, {"delay_minutes": 5, "end_delay_minutes": 0})
+
+    settings = load_settings(path).settings
+
+    assert (settings.start_delay, settings.end_delay) == (5, 0)
 
 
 @pytest.mark.parametrize(

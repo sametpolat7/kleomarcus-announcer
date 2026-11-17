@@ -20,7 +20,8 @@ from announcer.today import (
 )
 from support import MONDAY, at
 
-SIX_PM, SEVEN_PM, EIGHT_PM = datetime.time(18), datetime.time(19), datetime.time(20)
+SIX_PM, SEVEN_PM = datetime.time(18), datetime.time(19)
+FIVE_TO_SEVEN, TEN_TO_EIGHT = datetime.time(18, 55), datetime.time(19, 50)
 DAY = datetime.timedelta(days=1)
 
 AYSE = AthleteEntry("Ayşe Yılmaz", 0, SIX_PM)
@@ -34,8 +35,8 @@ TIMETABLE = build_timetable(
 REMINDER = "Su içmeyi unutmayın."
 
 # Ayşe and Mehmet leave as Zeynep arrives, and the hall closes as she leaves.
-ZEYNEP_ON_MONDAY = AthleteEntry("Zeynep Kaya", 0, SEVEN_PM)
-CLOSING = CustomAnnouncement("Salon kapanıyor.", EIGHT_PM)
+ZEYNEP_ON_MONDAY = AthleteEntry("Zeynep Kaya", 0, FIVE_TO_SEVEN)
+CLOSING = CustomAnnouncement("Salon kapanıyor.", TEN_TO_EIGHT)
 
 
 def hello(athlete: AthleteEntry) -> str:
@@ -46,12 +47,15 @@ def goodbye(athlete: AthleteEntry) -> str:
     return f"{athlete.name}, görüşmek üzere."
 
 
-def evening(changes: Iterable[Change] = (), delay: int = 0) -> Timetable:
+def evening(
+    changes: Iterable[Change] = (), start_delay: int = 0, end_delay: int = 0
+) -> Timetable:
     return build_timetable(
         [AYSE, MEHMET, ZEYNEP_ON_MONDAY],
         [CLOSING],
         "{ad_soyad}, hoş geldiniz.",
-        delay=delay,
+        start_delay=start_delay,
+        end_delay=end_delay,
         end_template="{ad_soyad}, görüşmek üzere.",
         changes=changes,
     )
@@ -121,20 +125,20 @@ def test_each_athlete_of_a_minute_is_a_row_of_its_own_with_its_kind() -> None:
     assert listed(rows) == [
         (SIX_PM, Kind.START, hello(AYSE), Status.NEXT),
         (SIX_PM, Kind.START, hello(MEHMET), Status.NEXT),
-        (SEVEN_PM, Kind.END, goodbye(AYSE), Status.WAITING),
-        (SEVEN_PM, Kind.END, goodbye(MEHMET), Status.WAITING),
-        (SEVEN_PM, Kind.START, hello(ZEYNEP), Status.WAITING),
-        (EIGHT_PM, Kind.END, goodbye(ZEYNEP), Status.WAITING),
-        (EIGHT_PM, Kind.CUSTOM, "Salon kapanıyor.", Status.WAITING),
+        (FIVE_TO_SEVEN, Kind.END, goodbye(AYSE), Status.WAITING),
+        (FIVE_TO_SEVEN, Kind.END, goodbye(MEHMET), Status.WAITING),
+        (FIVE_TO_SEVEN, Kind.START, hello(ZEYNEP), Status.WAITING),
+        (TEN_TO_EIGHT, Kind.END, goodbye(ZEYNEP), Status.WAITING),
+        (TEN_TO_EIGHT, Kind.CUSTOM, "Salon kapanıyor.", Status.WAITING),
     ]
     assert [row.key for row in rows] == [
         (at(18), Kind.START, AYSE.name),
         (at(18), Kind.START, MEHMET.name),
-        (at(19), Kind.END, AYSE.name),
-        (at(19), Kind.END, MEHMET.name),
-        (at(19), Kind.START, ZEYNEP.name),
-        (at(20), Kind.END, ZEYNEP.name),
-        (at(20), Kind.CUSTOM, ""),
+        (at(18, 55), Kind.END, AYSE.name),
+        (at(18, 55), Kind.END, MEHMET.name),
+        (at(18, 55), Kind.START, ZEYNEP.name),
+        (at(19, 50), Kind.END, ZEYNEP.name),
+        (at(19, 50), Kind.CUSTOM, ""),
     ]
 
 
@@ -157,30 +161,78 @@ def test_athletes_of_a_minute_are_listed_in_the_order_of_the_schedule() -> None:
 
 
 def test_athlete_moved_into_a_later_minute_is_read_before_those_set_for_it() -> None:
-    moved = Change(MONDAY, at(18), Kind.START, AYSE.name, time=SEVEN_PM)
+    moved = Change(MONDAY, at(18), Kind.START, AYSE.name, time=FIVE_TO_SEVEN)
 
     rows = todays_rows(evening([moved]), at(8), {})
 
     assert [(row.time, row.kind, row.text) for row in rows[:5]] == [
         (SIX_PM, Kind.START, hello(MEHMET)),
-        (SEVEN_PM, Kind.END, goodbye(AYSE)),
-        (SEVEN_PM, Kind.END, goodbye(MEHMET)),
-        (SEVEN_PM, Kind.START, hello(AYSE)),
-        (SEVEN_PM, Kind.START, hello(ZEYNEP)),
+        (FIVE_TO_SEVEN, Kind.END, goodbye(AYSE)),
+        (FIVE_TO_SEVEN, Kind.END, goodbye(MEHMET)),
+        (FIVE_TO_SEVEN, Kind.START, hello(AYSE)),
+        (FIVE_TO_SEVEN, Kind.START, hello(ZEYNEP)),
     ]
     assert rows[3].key == (at(18), Kind.START, AYSE.name)
 
 
-def test_end_of_a_session_is_listed_an_hour_after_its_start_with_the_delay() -> None:
-    rows = todays_rows(evening(delay=1), at(8), {})
+def test_end_of_a_session_is_listed_55_minutes_after_its_start_with_its_delay() -> None:
+    rows = todays_rows(evening(end_delay=1), at(8), {})
 
-    assert [(row.time, row.kind) for row in rows[:4]] == [
-        (datetime.time(18, 1), Kind.START),
-        (datetime.time(18, 1), Kind.START),
-        (datetime.time(19, 1), Kind.END),
-        (datetime.time(19, 1), Kind.END),
+    assert [(row.time, row.kind) for row in rows] == [
+        (SIX_PM, Kind.START),
+        (SIX_PM, Kind.START),
+        (FIVE_TO_SEVEN, Kind.START),
+        (datetime.time(18, 56), Kind.END),
+        (datetime.time(18, 56), Kind.END),
+        (TEN_TO_EIGHT, Kind.CUSTOM),
+        (datetime.time(19, 51), Kind.END),
     ]
-    assert rows[2].key == (at(19), Kind.END, AYSE.name)
+    assert rows[3].key == (at(18, 55), Kind.END, AYSE.name)
+
+
+def test_start_delay_moves_only_the_starts_of_sessions() -> None:
+    rows = todays_rows(evening(start_delay=5), at(8), {})
+
+    assert [(row.time, row.kind) for row in rows] == [
+        (datetime.time(18, 5), Kind.START),
+        (datetime.time(18, 5), Kind.START),
+        (FIVE_TO_SEVEN, Kind.END),
+        (FIVE_TO_SEVEN, Kind.END),
+        (SEVEN_PM, Kind.START),
+        (TEN_TO_EIGHT, Kind.END),
+        (TEN_TO_EIGHT, Kind.CUSTOM),
+    ]
+    assert rows[0].key == (at(18), Kind.START, AYSE.name)
+
+
+def test_start_or_end_delayed_into_a_custom_announcements_minute_shares_it() -> None:
+    reminders = [
+        CustomAnnouncement(REMINDER, datetime.time(18, 5)),
+        CustomAnnouncement("Salon kapanıyor.", SEVEN_PM),
+    ]
+    timetable = build_timetable(
+        [AYSE],
+        reminders,
+        "{ad_soyad}, hoş geldiniz.",
+        start_delay=5,
+        end_delay=5,
+        end_template="{ad_soyad}, görüşmek üzere.",
+    )
+
+    rows = todays_rows(timetable, at(8), {})
+
+    assert listed(rows) == [
+        (datetime.time(18, 5), Kind.START, hello(AYSE), Status.NEXT),
+        (datetime.time(18, 5), Kind.CUSTOM, REMINDER, Status.NEXT),
+        (SEVEN_PM, Kind.END, goodbye(AYSE), Status.WAITING),
+        (SEVEN_PM, Kind.CUSTOM, "Salon kapanıyor.", Status.WAITING),
+    ]
+    assert [row.key for row in rows] == [
+        (at(18), Kind.START, AYSE.name),
+        (at(18, 5), Kind.CUSTOM, ""),
+        (at(18, 55), Kind.END, AYSE.name),
+        (at(19), Kind.CUSTOM, ""),
+    ]
 
 
 def test_every_part_of_the_first_minute_to_come_is_next() -> None:
@@ -205,7 +257,7 @@ def test_every_part_of_the_first_minute_to_come_is_next() -> None:
 
 
 def test_athlete_with_back_to_back_sessions_is_listed_at_an_end_and_a_start() -> None:
-    again = AthleteEntry("Ayşe Yılmaz", 0, SEVEN_PM)
+    again = AthleteEntry("Ayşe Yılmaz", 0, FIVE_TO_SEVEN)
     timetable = build_timetable(
         [AYSE, again],
         [],
@@ -217,12 +269,12 @@ def test_athlete_with_back_to_back_sessions_is_listed_at_an_end_and_a_start() ->
 
     assert listed(rows) == [
         (SIX_PM, Kind.START, hello(AYSE), Status.PASSED),
-        (SEVEN_PM, Kind.END, goodbye(AYSE), Status.NEXT),
-        (SEVEN_PM, Kind.START, hello(AYSE), Status.NEXT),
-        (EIGHT_PM, Kind.END, goodbye(AYSE), Status.WAITING),
+        (FIVE_TO_SEVEN, Kind.END, goodbye(AYSE), Status.NEXT),
+        (FIVE_TO_SEVEN, Kind.START, hello(AYSE), Status.NEXT),
+        (TEN_TO_EIGHT, Kind.END, goodbye(AYSE), Status.WAITING),
     ]
-    assert rows[1].key == (at(19), Kind.END, AYSE.name)
-    assert rows[2].key == (at(19), Kind.START, AYSE.name)
+    assert rows[1].key == (at(18, 55), Kind.END, AYSE.name)
+    assert rows[2].key == (at(18, 55), Kind.START, AYSE.name)
 
 
 def test_only_the_first_slot_to_come_is_next() -> None:
@@ -257,10 +309,10 @@ def test_skipped_part_is_skipping_until_its_time_goes_by_and_never_next() -> Non
 
 def test_skipped_part_leaves_next_to_the_rest_of_its_minute_or_the_next_one() -> None:
     goodbyes = [
-        Change(MONDAY, at(19), Kind.END, name, skipped=True)
+        Change(MONDAY, at(18, 55), Kind.END, name, skipped=True)
         for name in (AYSE.name, MEHMET.name)
     ]
-    welcome = Change(MONDAY, at(19), Kind.START, ZEYNEP.name, skipped=True)
+    welcome = Change(MONDAY, at(18, 55), Kind.START, ZEYNEP.name, skipped=True)
 
     assert statuses(at(18, 30), timetable=evening(goodbyes[:1])) == [
         Status.PASSED,
@@ -284,7 +336,7 @@ def test_skipped_part_leaves_next_to_the_rest_of_its_minute_or_the_next_one() ->
 
 def test_skip_or_edit_of_one_athlete_leaves_the_others_of_the_minute_alone() -> None:
     skip = Change(MONDAY, at(18), Kind.START, AYSE.name, skipped=True)
-    edit = Change(MONDAY, at(19), Kind.END, MEHMET.name, text="Yarın görüşürüz.")
+    edit = Change(MONDAY, at(18, 55), Kind.END, MEHMET.name, text="Yarın görüşürüz.")
 
     rows = todays_rows(evening([skip, edit]), at(8), {})
 
@@ -294,9 +346,9 @@ def test_skip_or_edit_of_one_athlete_leaves_the_others_of_the_minute_alone() -> 
     ] == [
         (SIX_PM, hello(AYSE), Status.SKIPPING, False, True, True),
         (SIX_PM, hello(MEHMET), Status.NEXT, False, True, True),
-        (SEVEN_PM, goodbye(AYSE), Status.WAITING, False, True, True),
-        (SEVEN_PM, "Yarın görüşürüz.", Status.WAITING, True, True, True),
-        (SEVEN_PM, hello(ZEYNEP), Status.WAITING, False, True, True),
+        (FIVE_TO_SEVEN, goodbye(AYSE), Status.WAITING, False, True, True),
+        (FIVE_TO_SEVEN, "Yarın görüşürüz.", Status.WAITING, True, True, True),
+        (FIVE_TO_SEVEN, hello(ZEYNEP), Status.WAITING, False, True, True),
     ]
 
 
@@ -334,21 +386,22 @@ def test_rows_can_be_changed_and_skipped_until_shortly_before_their_minute() -> 
 
 def test_passed_known_and_conflicting_rows_can_neither_be_changed_nor_skipped() -> None:
     reminder = CustomAnnouncement("Salon kapanıyor.", SIX_PM)
-    # The delay went up after the reminder was queued, so its minute is ahead.
-    timetable = build_timetable([AYSE], [reminder, WATER], "{ad_soyad}", delay=10)
+    later = AthleteEntry("Zeynep Kaya", 0, SEVEN_PM)
+    # The start delay went up after Zeynep was queued, so her minute is ahead.
+    timetable = build_timetable([AYSE, later], [reminder], "{ad_soyad}", start_delay=10)
     outcomes: dict[OutcomeKey, Status] = {
-        (at(19), Kind.CUSTOM, REMINDER): Status.QUEUED,
+        (at(19), Kind.START, later.name): Status.QUEUED,
     }
 
     rows = todays_rows(timetable, at(19, 0, 1), outcomes)
 
     assert listed(rows) == [
+        (SIX_PM, Kind.CUSTOM, "Salon kapanıyor.", Status.CONFLICT),
         (datetime.time(18, 10), Kind.START, "Ayşe Yılmaz", Status.PASSED),
-        (datetime.time(18, 10), Kind.CUSTOM, "Salon kapanıyor.", Status.CONFLICT),
-        (datetime.time(19, 10), Kind.CUSTOM, REMINDER, Status.QUEUED),
+        (datetime.time(19, 10), Kind.START, "Zeynep Kaya", Status.QUEUED),
     ]
     assert [(row.editable, row.skippable) for row in rows] == [(False, False)] * 3
-    assert rows[1].key is None
+    assert rows[0].key is None
     unknown = todays_rows(timetable, at(19, 0, 1), {})[2]
     assert (unknown.status, unknown.editable, unknown.skippable) == (
         Status.NEXT,
@@ -370,7 +423,7 @@ def test_passed_known_and_conflicting_rows_can_neither_be_changed_nor_skipped() 
         Status.STOPPED,
     ],
 )
-def test_row_with_an_outcome_is_fixed_though_the_delay_put_its_minute_ahead(
+def test_row_with_an_outcome_is_fixed_though_the_start_delay_put_its_minute_ahead(
     outcome: Status,
 ) -> None:
     known: dict[OutcomeKey, Status] = {
@@ -379,7 +432,7 @@ def test_row_with_an_outcome_is_fixed_though_the_delay_put_its_minute_ahead(
     }
     skip = Change(MONDAY, at(18), Kind.START, AYSE.name, skipped=True)
 
-    for timetable in (evening(delay=10), evening([skip], delay=10)):
+    for timetable in (evening(start_delay=10), evening([skip], start_delay=10)):
         rows = todays_rows(timetable, at(18, 5), known)
 
         assert [
@@ -388,9 +441,9 @@ def test_row_with_an_outcome_is_fixed_though_the_delay_put_its_minute_ahead(
         ] == [
             (datetime.time(18, 10), Kind.START, outcome, False, False),
             (datetime.time(18, 10), Kind.START, outcome, False, False),
-            (datetime.time(19, 10), Kind.END, Status.NEXT, True, True),
-            (datetime.time(19, 10), Kind.END, Status.NEXT, True, True),
-            (datetime.time(19, 10), Kind.START, Status.NEXT, True, True),
+            (FIVE_TO_SEVEN, Kind.END, Status.NEXT, True, True),
+            (FIVE_TO_SEVEN, Kind.END, Status.NEXT, True, True),
+            (datetime.time(19, 5), Kind.START, Status.WAITING, True, True),
         ]
 
 
@@ -429,9 +482,11 @@ def test_row_tells_whether_the_operator_changed_it_for_today() -> None:
     timetable = evening(
         [
             Change(MONDAY, at(18), Kind.START, AYSE.name, time=datetime.time(18, 5)),
-            Change(MONDAY, at(19), Kind.END, MEHMET.name, text="Yarın görüşürüz."),
-            Change(MONDAY, at(20), Kind.CUSTOM, skipped=True),
-            Change(MONDAY + DAY, at(19) + DAY, Kind.START, ZEYNEP.name, skipped=True),
+            Change(MONDAY, at(18, 55), Kind.END, MEHMET.name, text="Yarın görüşürüz."),
+            Change(MONDAY, at(19, 50), Kind.CUSTOM, skipped=True),
+            Change(
+                MONDAY + DAY, at(18, 55) + DAY, Kind.START, ZEYNEP.name, skipped=True
+            ),
         ]
     )
 
@@ -440,11 +495,11 @@ def test_row_tells_whether_the_operator_changed_it_for_today() -> None:
     assert [(row.time, row.kind, row.text, row.edited) for row in rows] == [
         (SIX_PM, Kind.START, hello(MEHMET), False),
         (datetime.time(18, 5), Kind.START, hello(AYSE), True),
-        (SEVEN_PM, Kind.END, goodbye(AYSE), False),
-        (SEVEN_PM, Kind.END, "Yarın görüşürüz.", True),
-        (SEVEN_PM, Kind.START, hello(ZEYNEP), False),
-        (EIGHT_PM, Kind.END, goodbye(ZEYNEP), False),
-        (EIGHT_PM, Kind.CUSTOM, "Salon kapanıyor.", False),
+        (FIVE_TO_SEVEN, Kind.END, goodbye(AYSE), False),
+        (FIVE_TO_SEVEN, Kind.END, "Yarın görüşürüz.", True),
+        (FIVE_TO_SEVEN, Kind.START, hello(ZEYNEP), False),
+        (TEN_TO_EIGHT, Kind.END, goodbye(ZEYNEP), False),
+        (TEN_TO_EIGHT, Kind.CUSTOM, "Salon kapanıyor.", False),
     ]
     assert rows[1].key == (at(18), Kind.START, AYSE.name)
     assert rows[6].status is Status.SKIPPING
@@ -546,7 +601,7 @@ def test_custom_announcement_that_lost_todays_slot_is_listed_after_the_winner() 
 
 
 def test_custom_announcement_in_a_minute_where_sessions_only_end_is_kept() -> None:
-    reminder = CustomAnnouncement("Salon kapanıyor.", SEVEN_PM, frozenset({0}))
+    reminder = CustomAnnouncement("Salon kapanıyor.", FIVE_TO_SEVEN, frozenset({0}))
     timetable = build_timetable(
         [AYSE, MEHMET],
         [reminder],
@@ -555,48 +610,48 @@ def test_custom_announcement_in_a_minute_where_sessions_only_end_is_kept() -> No
     )
 
     assert listed(todays_rows(timetable, at(18, 30), {}))[2:] == [
-        (SEVEN_PM, Kind.END, goodbye(AYSE), Status.NEXT),
-        (SEVEN_PM, Kind.END, goodbye(MEHMET), Status.NEXT),
-        (SEVEN_PM, Kind.CUSTOM, "Salon kapanıyor.", Status.NEXT),
+        (FIVE_TO_SEVEN, Kind.END, goodbye(AYSE), Status.NEXT),
+        (FIVE_TO_SEVEN, Kind.END, goodbye(MEHMET), Status.NEXT),
+        (FIVE_TO_SEVEN, Kind.CUSTOM, "Salon kapanıyor.", Status.NEXT),
     ]
 
 
 def test_rows_show_when_a_delayed_announcement_is_made() -> None:
     reminder = CustomAnnouncement("Salon kapanıyor.", SIX_PM, frozenset({0}))
-    late = CustomAnnouncement("Salon kapandı.", datetime.time(23, 58), frozenset({6}))
-    timetable = build_timetable([AYSE], [reminder, late], "{ad_soyad}", delay=3)
-    three_past = datetime.time(18, 3)
+    late = AthleteEntry("Mehmet Demir", 6, datetime.time(23, 58))
+    timetable = build_timetable([AYSE, late], [reminder], "{ad_soyad}", start_delay=3)
 
     rows = todays_rows(timetable, at(18, 2), {})
     assert listed(rows) == [
         # From Sunday night, and the scheduler was not there for it.
-        (datetime.time(0, 1), Kind.CUSTOM, "Salon kapandı.", Status.PASSED),
-        (three_past, Kind.START, "Ayşe Yılmaz", Status.NEXT),
-        (three_past, Kind.CUSTOM, "Salon kapanıyor.", Status.CONFLICT),
+        (datetime.time(0, 1), Kind.START, "Mehmet Demir", Status.PASSED),
+        (SIX_PM, Kind.CUSTOM, "Salon kapanıyor.", Status.CONFLICT),
+        (datetime.time(18, 3), Kind.START, "Ayşe Yılmaz", Status.NEXT),
     ]
-    assert rows[0].key == (at(23, 58) - DAY, Kind.CUSTOM, "")
+    assert rows[0].key == (at(23, 58) - DAY, Kind.START, "Mehmet Demir")
     # An outcome goes by the moment that its part was set for.
     outcomes: dict[OutcomeKey, Status] = {
         (at(18), Kind.START, "Ayşe Yılmaz"): Status.PLAYED
     }
-    assert todays_rows(timetable, at(18, 4), outcomes)[1].status is Status.PLAYED
-    at_another_delay = build_timetable([AYSE], [], "{ad_soyad}", delay=10)
+    assert todays_rows(timetable, at(18, 4), outcomes)[2].status is Status.PLAYED
+    at_another_delay = build_timetable([AYSE], [], "{ad_soyad}", start_delay=10)
     assert listed(todays_rows(at_another_delay, at(18, 4), outcomes)) == [
         (datetime.time(18, 10), Kind.START, "Ayşe Yılmaz", Status.PLAYED),
     ]
 
 
-def test_what_lost_its_slot_on_the_day_before_midnight_is_listed_after_it() -> None:
+def test_what_lost_a_slot_stays_on_its_day_when_the_winner_is_delayed_past_it() -> None:
     late = AthleteEntry("Ayşe Yılmaz", 6, datetime.time(23, 58))
     reminder = CustomAnnouncement("Salon kapandı.", late.time, frozenset({6}))
-    timetable = build_timetable([late], [reminder], "{ad_soyad}", delay=5)
+    timetable = build_timetable([late], [reminder], "{ad_soyad}", start_delay=5)
 
-    assert [row.status for row in todays_rows(timetable, at(0, 0), {})] == [
-        Status.NEXT,
-        Status.CONFLICT,
+    assert listed(todays_rows(timetable, at(0, 0), {})) == [
+        (datetime.time(0, 3), Kind.START, "Ayşe Yılmaz", Status.NEXT),
     ]
     sunday = at(8) + 6 * DAY
-    assert todays_rows(timetable, sunday, {}) == ()
+    assert listed(todays_rows(timetable, sunday, {})) == [
+        (late.time, Kind.CUSTOM, "Salon kapandı.", Status.CONFLICT),
+    ]
 
 
 def test_instant_announcements_of_today_are_listed_when_they_were_asked_for() -> None:
@@ -663,22 +718,22 @@ def test_row_whose_minute_is_still_being_read_cannot_be_replayed(
 
 
 def test_rows_of_what_is_queued_or_being_read_are_in_their_group() -> None:
-    instant = Instant(at(19, 59, 50), "Salon on dakika sonra kapanacak.")
+    instant = Instant(at(19, 49, 50), "Salon on dakika sonra kapanacak.")
     earlier = Instant(at(19, 30), "Salon temizleniyor.")
     playing = {
-        (at(20), Kind.END, ZEYNEP_ON_MONDAY.name),
-        (at(20), Kind.CUSTOM, "Salon kapanıyor."),
+        (at(19, 50), Kind.END, ZEYNEP_ON_MONDAY.name),
+        (at(19, 50), Kind.CUSTOM, "Salon kapanıyor."),
         instant.key,
     }
     outcomes: dict[OutcomeKey, Status] = {
         (at(18), Kind.START, AYSE.name): Status.PLAYED,
-        (at(20), Kind.END, ZEYNEP_ON_MONDAY.name): Status.PLAYED,
-        (at(20), Kind.CUSTOM, "Salon kapanıyor."): Status.PLAYING,
+        (at(19, 50), Kind.END, ZEYNEP_ON_MONDAY.name): Status.PLAYED,
+        (at(19, 50), Kind.CUSTOM, "Salon kapanıyor."): Status.PLAYING,
         instant.key: Status.QUEUED,
         earlier.key: Status.PLAYED,
     }
 
-    rows = todays_rows(evening(), at(20, 0, 5), outcomes, [earlier, instant], playing)
+    rows = todays_rows(evening(), at(19, 50, 5), outcomes, [earlier, instant], playing)
 
     assert [
         (row.kind, row.text, row.status, row.in_group, row.replayable) for row in rows

@@ -34,7 +34,10 @@ class Settings:
     end_announcements: bool = True
     custom_announcements: tuple[CustomAnnouncement, ...] = ()
     speed: float = NORMAL_SPEED
-    delay: int = 0  # minutes that every announcement is made after its time
+    # Minutes that the start and the end of a session are announced after
+    # their time.
+    start_delay: int = 0
+    end_delay: int = 0
 
     def __post_init__(self) -> None:
         if not (
@@ -43,8 +46,8 @@ class Settings:
             raise ValueError(f"A template has no {PLACEHOLDER} placeholder")
         if self.speed not in SPEEDS:
             raise ValueError(f"The speed must be one of {SPEEDS}")
-        if self.delay not in DELAYS:
-            raise ValueError(f"The delay must be one of {DELAYS}")
+        if self.start_delay not in DELAYS or self.end_delay not in DELAYS:
+            raise ValueError(f"A delay must be one of {DELAYS}")
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,7 @@ def load_settings(path: Path) -> LoadedSettings:
         else []
     )
     usable = tuple(item for item in found if item is not None)
+    single_delay = data.get("delay_minutes")
     settings = Settings(
         voice=voice or DEFAULT_VOICE,
         schedule_path=Path(schedule_path) if schedule_path else None,
@@ -104,7 +108,8 @@ def load_settings(path: Path) -> LoadedSettings:
         ),
         custom_announcements=usable,
         speed=_one_of(SPEEDS, data.get("speed"), NORMAL_SPEED),
-        delay=_one_of(DELAYS, data.get("delay_minutes"), 0),
+        start_delay=_one_of(DELAYS, data.get("start_delay_minutes", single_delay), 0),
+        end_delay=_one_of(DELAYS, data.get("end_delay_minutes", single_delay), 0),
     )
     return LoadedSettings(settings, dropped=len(found) - len(usable))
 
@@ -114,7 +119,8 @@ def save_settings(settings: Settings, path: Path) -> None:
     data = {
         "voice": settings.voice,
         "speed": settings.speed,
-        "delay_minutes": settings.delay,
+        "start_delay_minutes": settings.start_delay,
+        "end_delay_minutes": settings.end_delay,
         "schedule_path": (
             None if settings.schedule_path is None else str(settings.schedule_path)
         ),
