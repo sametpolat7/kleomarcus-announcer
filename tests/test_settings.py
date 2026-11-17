@@ -197,6 +197,14 @@ def test_delay_of_its_own_beats_the_single_one_of_an_older_version(path: Path) -
     assert (settings.start_delay, settings.end_delay) == (5, 0)
 
 
+def test_unusable_delay_of_its_own_falls_back_to_the_single_one(path: Path) -> None:
+    write_json(path, {"delay_minutes": 5, "start_delay_minutes": 4})
+
+    settings = load_settings(path).settings
+
+    assert (settings.start_delay, settings.end_delay) == (5, 5)
+
+
 @pytest.mark.parametrize(
     "stored",
     [
