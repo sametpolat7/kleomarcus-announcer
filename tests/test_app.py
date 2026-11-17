@@ -10,6 +10,7 @@ import pytest
 
 from announcer import VERSION
 from announcer.app import TEST_NAME, App, backup_copy
+from announcer.changes import load_changes
 from announcer.chime import CHIME_PATH
 from announcer.loader import ScheduleFileError, UnreadableFileError
 from announcer.models import CustomAnnouncement, Kind
@@ -1521,6 +1522,64 @@ def test_clear_that_cannot_delete_a_file_is_raised_and_keeps_the_settings(
     wait_for_speech(app)
     assert app.unspoken == ()
     assert stored_speech(tmp_path) == speech
+
+
+def test_clear_that_fails_after_the_settings_file_is_gone_writes_it_again(
+    app: App,
+    schedule: Path,
+    settings_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app.choose_schedule(schedule)
+    app.save_announcement(WATER)
+    wait_for_speech(app)
+    app.skip(app.rows()[0])
+    settings, changes = app.settings, app.changes
+    unlink = Path.unlink
+
+    def held(path: Path, missing_ok: bool = False) -> None:
+        if path == app.changes_file:
+            raise PermissionError("held by another program")
+        unlink(path, missing_ok=missing_ok)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", held)
+        with pytest.raises(OSError):
+            app.clear()
+
+    assert (app.settings, app.changes) == (settings, changes)
+    assert load_settings(settings_file).settings == settings
+    assert load_changes(app.changes_file, MONDAY) == changes
+    wait_for_speech(app)
+
+
+def test_clear_stores_no_speech_of_what_was_waiting_to_be_read_at_once(
+    app: App,
+    provider: FakeProvider,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    synthesize = provider.synthesize
+    asked, cleared = threading.Event(), threading.Event()
+
+    def answer_late(text: str, voice: str, speed: float) -> bytes:
+        asked.set()
+        cleared.wait(5)
+        return synthesize(text, voice, speed)
+
+    monkeypatch.setattr(provider, "synthesize", answer_late)
+    app.announce("Birinci duyuru.")
+    app.announce("İkinci duyuru.")
+    assert asked.wait(5)
+
+    app.clear()
+    cleared.set()
+
+    request = app.make_speech(["Üçüncü duyuru."])
+    wait_for(app, lambda: request.done)
+    assert [text for text, _ in provider.calls] == ["Birinci duyuru.", "Üçüncü duyuru."]
+    assert len(stored_speech(tmp_path)) == 1
+    assert app.rows() == ()
 
 
 def test_app_announces_as_usual_once_a_schedule_is_chosen_after_a_clear(

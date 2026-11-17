@@ -3,6 +3,7 @@ thread. The background threads never touch that state: they put what happened
 on a queue, and ``poll`` takes it in on the main thread.
 """
 
+import contextlib
 import dataclasses
 import datetime
 import itertools
@@ -265,7 +266,9 @@ class App:
         self._sounding: _Group | _Test | None = None  # what ``cut`` would cut
         # Instant announcements and tests whose speech is being made.
         self._preparing: set[Instant | _Test] = set()
-        self._wanted: queue.SimpleQueue[_Wanted] = queue.SimpleQueue()
+        self._wanted: queue.SimpleQueue[tuple[_Wanted, AudioCache]] = (
+            queue.SimpleQueue()
+        )
         self._speaking = False  # the thread that makes that speech runs
         self._numbers = itertools.count(1)
         self._cleared_before = 0
@@ -431,6 +434,10 @@ class App:
                 file.unlink(missing_ok=True)
                 backup_copy(file).unlink(missing_ok=True)
         except OSError:
+            with contextlib.suppress(OSError):
+                save_settings(self.settings, self.settings_file)
+            with contextlib.suppress(OSError):
+                save_changes(self.changes, self.changes_file)
             self._rebuild()
             raise
         self.settings = Settings()
@@ -792,7 +799,7 @@ class App:
         order."""
         if not isinstance(wanted[0], SpeechRequest):
             self._preparing.add(wanted[0])
-        self._wanted.put(wanted)
+        self._wanted.put((wanted, self._cache))
         if not self._speaking:
             self._speaking = True
             threading.Thread(target=self._speak, name="speech now", daemon=True).start()
@@ -800,7 +807,7 @@ class App:
     def _speak(self) -> None:
         """Runs on a thread, for as long as the app does."""
         while True:
-            wanted = self._wanted.get()
+            wanted, cache = self._wanted.get()
             if isinstance(wanted[0], SpeechRequest):
                 request, speeds = wanted
                 texts = request.texts
@@ -809,7 +816,7 @@ class App:
                 texts, speeds = (text,), (speed,)
             spoken = False
             try:
-                spoken = not any(self._cache.ensure_all(texts, at) for at in speeds)
+                spoken = not any(cache.ensure_all(texts, at) for at in speeds)
             except Exception:
                 _log.exception("Generating speech to be read at once failed")
             self._events.put(_Spoken(wanted, spoken))
@@ -884,6 +891,7 @@ class App:
             if not (
                 change.kind is Kind.CUSTOM
                 and change.set_for.time() == announcement.time
+                and change.set_for.weekday() in announcement.weekdays
                 and change.name == announcement.text
             )
         ]

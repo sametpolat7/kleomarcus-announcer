@@ -173,6 +173,18 @@ def test_clear_removes_every_stored_speech_so_that_it_is_generated_again(
     ]
 
 
+def test_clear_leaves_a_folder_among_the_stored_speech_alone(
+    tmp_path: Path, cache: AudioCache
+) -> None:
+    cache.ensure(HELLO)
+    folder = tmp_path / "audio" / "yedek"
+    folder.mkdir()
+
+    cache.clear()
+
+    assert list((tmp_path / "audio").iterdir()) == [folder]
+
+
 def test_clear_does_nothing_when_no_speech_was_ever_stored(
     tmp_path: Path, cache: AudioCache
 ) -> None:

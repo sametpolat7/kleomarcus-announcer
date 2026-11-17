@@ -89,7 +89,8 @@ class AudioCache:
     def clear(self) -> None:
         if self._directory.is_dir():
             for path in self._directory.iterdir():
-                path.unlink(missing_ok=True)
+                if path.is_file():
+                    path.unlink(missing_ok=True)
 
     def ensure(self, text: str, speed: float = NORMAL_SPEED) -> Path:
         """Raises ``TtsError`` if the speech cannot be generated or stored."""
