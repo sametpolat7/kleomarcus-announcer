@@ -9,7 +9,6 @@ from announcer.loader import (
     WrongFileTypeError,
 )
 from announcer.models import ALL_WEEKDAYS, DELAYS, SPEEDS, CustomAnnouncement, Kind
-from announcer.timetable import Conflict, SlotHolder
 from announcer.today import Row, Status
 from announcer.ui import texts
 from support import ROWS, FakeClock, FakeProvider, at, wait_for, write_schedule
@@ -70,10 +69,14 @@ def test_edit_of_a_start_says_that_the_athletes_end_stays() -> None:
 
 
 def test_status_of_a_row_says_when_the_operator_edited_it() -> None:
-    planned = Row(datetime.time(18, 0), Kind.START, WELCOME, Status.NEXT)
-    edited = Row(datetime.time(18, 5), Kind.START, WELCOME, Status.NEXT, edited=True)
+    start = (at(18), Kind.START, "Ayşe Yılmaz")
+    end = (at(19), Kind.END, "Ayşe Yılmaz")
+    planned = Row(datetime.time(18, 0), Kind.START, WELCOME, Status.NEXT, start)
+    edited = Row(
+        datetime.time(18, 5), Kind.START, WELCOME, Status.NEXT, start, edited=True
+    )
     skipping = Row(
-        datetime.time(19, 0), Kind.END, GOODBYE, Status.SKIPPING, edited=True
+        datetime.time(19, 0), Kind.END, GOODBYE, Status.SKIPPING, end, edited=True
     )
 
     assert texts.status(planned) == "Sıradaki"
@@ -192,19 +195,6 @@ def test_schedule_error() -> None:
     assert "yüklenemez" in texts.schedule_error(WrongFileTypeError("a text file"))
 
 
-def test_conflict_alert_names_each_day_and_what_holds_it() -> None:
-    conflicts = (
-        Conflict(WATER, 0, SlotHolder.ATHLETES),
-        Conflict(WATER, 2, SlotHolder.CUSTOM_ANNOUNCEMENT),
-    )
-
-    assert texts.conflict_alert(conflicts) == (
-        "Bu saat dolu olduğu için anons kaydedilemedi:\n"
-        "• Pazartesi 19:00: sporcu anonsu var\n"
-        "• Çarşamba 19:00: başka bir özel anons var"
-    )
-
-
 def test_warnings_cover_everything_that_went_wrong(
     app: App, schedule: Path, provider: FakeProvider
 ) -> None:
@@ -220,8 +210,6 @@ def test_warnings_cover_everything_that_went_wrong(
 
     assert texts.warnings(app) == [
         "Sporcu listesinde 6. satır atlandı: ad soyad boş, gün tanınmadı.",
-        "“Su içmeyi unutmayın.” özel anonsu Pazartesi 19:00 için atlanıyor: "
-        "aynı saatte sporcu anonsu var.",
         "9 anonsun sesi oluşturulamadı. İnternet bağlantısını kontrol edin; "
         "birkaç dakikada bir yeniden denenir.",
     ]

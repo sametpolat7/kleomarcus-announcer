@@ -4,13 +4,10 @@ import datetime
 from announcer.models import AthleteEntry, Change, CustomAnnouncement, Kind
 from announcer.template import DEFAULT_END_TEMPLATE
 from announcer.timetable import (
-    Conflict,
     Part,
     Slot,
-    SlotHolder,
     build_timetable,
     delayed,
-    find_conflicts,
     part_id,
     set_for,
 )
@@ -56,19 +53,19 @@ def goodbye(name: str, delay: int = 0) -> Part:
 
 
 def said(text: str, delay: int = 0) -> Part:
-    return Part(Kind.CUSTOM, text, delay=delay)
+    return Part(Kind.CUSTOM, text, delay=delay, custom_text=text)
 
 
 def skipped(part: Part) -> Part:
     return dataclasses.replace(part, skipped=True)
 
 
-def edited(part: Part) -> Part:
-    return dataclasses.replace(part, edited=True)
-
-
 def moved(part: Part) -> Part:
     return dataclasses.replace(part, edited=True, moved=True)
+
+
+def saying(part: Part, text: str) -> Part:
+    return dataclasses.replace(part, text=text, edited=True)
 
 
 def moment(date: datetime.date, time: datetime.time) -> datetime.datetime:
@@ -86,7 +83,6 @@ def test_athletes_who_start_together_have_a_part_each_in_file_order() -> None:
         "Mehmet Demir, hoş geldiniz.",
         "Ayşe Yılmaz, hoş geldiniz.",
     )
-    assert timetable.conflicts == ()
     slot = timetable.slots[0]
     assert [part_id(THIS_MONDAY, slot, part) for part in slot.parts] == [
         (moment(THIS_MONDAY, SIX_PM), Kind.START, "Mehmet Demir"),
@@ -136,7 +132,6 @@ def test_custom_announcement_gets_a_slot_on_each_of_its_weekdays() -> None:
         Slot(MONDAY, SEVEN_PM, (said("Su içmeyi unutmayın."),)),
         Slot(WEDNESDAY, SEVEN_PM, (said("Su içmeyi unutmayın."),)),
     )
-    assert timetable.conflicts == ()
 
 
 def test_custom_announcement_text_is_not_treated_as_a_template() -> None:
@@ -151,100 +146,70 @@ def test_custom_announcement_text_is_not_treated_as_a_template() -> None:
     assert part_id(THIS_MONDAY, slot, slot.parts[0]) == (
         moment(THIS_MONDAY, SEVEN_PM),
         Kind.CUSTOM,
-        "",
+        "{ad_soyad} yazan duyuru",
     )
 
 
-def test_athletes_win_a_slot_that_a_custom_announcement_also_wants() -> None:
+def test_custom_announcement_in_the_minute_of_a_start_is_read_after_it() -> None:
     reminder = custom("Su içmeyi unutmayın.", SIX_PM, MONDAY, TUESDAY)
 
     timetable = build_timetable([AYSE, ZEYNEP], [reminder], TEMPLATE)
 
     assert timetable.slots == (
-        Slot(MONDAY, SIX_PM, (welcome("Ayşe Yılmaz"),)),
+        Slot(MONDAY, SIX_PM, (welcome("Ayşe Yılmaz"), said("Su içmeyi unutmayın."))),
         Slot(TUESDAY, SIX_PM, (said("Su içmeyi unutmayın."),)),
         Slot(TUESDAY, SEVEN_PM, (welcome("Zeynep Kaya"),)),
     )
-    assert timetable.conflicts == (Conflict(reminder, MONDAY, SlotHolder.ATHLETES),)
 
 
-def test_earlier_custom_announcement_wins_over_a_later_one() -> None:
-    first = custom("Birinci", SEVEN_PM, MONDAY, TUESDAY)
-    second = custom("İkinci", SEVEN_PM, TUESDAY, WEDNESDAY)
+def test_custom_announcements_of_one_minute_are_read_in_the_order_given() -> None:
+    first = custom("Birinci", SEVEN_PM, TUESDAY, WEDNESDAY)
+    second = custom("İkinci", SEVEN_PM, MONDAY, TUESDAY)
 
     timetable = build_timetable([], [first, second], TEMPLATE)
 
     assert timetable.slots == (
-        Slot(MONDAY, SEVEN_PM, (said("Birinci"),)),
-        Slot(TUESDAY, SEVEN_PM, (said("Birinci"),)),
-        Slot(WEDNESDAY, SEVEN_PM, (said("İkinci"),)),
+        Slot(MONDAY, SEVEN_PM, (said("İkinci"),)),
+        Slot(TUESDAY, SEVEN_PM, (said("Birinci"), said("İkinci"))),
+        Slot(WEDNESDAY, SEVEN_PM, (said("Birinci"),)),
     )
-    assert timetable.conflicts == (
-        Conflict(second, TUESDAY, SlotHolder.CUSTOM_ANNOUNCEMENT),
+    assert build_timetable([], [second, first], TEMPLATE).slots[1].texts == (
+        "İkinci",
+        "Birinci",
     )
+    slot = timetable.slots[1]
+    assert [part_id(THIS_TUESDAY, slot, part) for part in slot.parts] == [
+        (moment(THIS_TUESDAY, SEVEN_PM), Kind.CUSTOM, "Birinci"),
+        (moment(THIS_TUESDAY, SEVEN_PM), Kind.CUSTOM, "İkinci"),
+    ]
 
 
-def test_conflicts_are_listed_per_announcement_then_weekday() -> None:
-    first = custom("Birinci", SIX_PM)
-    second = custom("İkinci", SIX_PM, TUESDAY, MONDAY)
+def test_custom_announcement_repeated_within_a_minute_is_said_once() -> None:
+    reminder = custom("Su içmeyi unutmayın.", SEVEN_PM, MONDAY, TUESDAY)
+    again = custom("Su içmeyi unutmayın.", SEVEN_PM, MONDAY)
+    later = custom("Su içmeyi unutmayın.", EIGHT_PM, MONDAY)
 
-    timetable = build_timetable([AYSE], [first, second], TEMPLATE)
+    timetable = build_timetable([], [reminder, again, later], TEMPLATE)
 
-    assert timetable.conflicts == (
-        Conflict(first, MONDAY, SlotHolder.ATHLETES),
-        Conflict(second, MONDAY, SlotHolder.ATHLETES),
-        Conflict(second, TUESDAY, SlotHolder.CUSTOM_ANNOUNCEMENT),
-    )
-
-
-def test_no_conflicts_for_a_free_slot() -> None:
-    candidate = custom("Yeni", datetime.time(18, 1), MONDAY, WEDNESDAY)
-    other = custom("Eski", SIX_PM, WEDNESDAY)
-
-    assert find_conflicts(candidate, [AYSE, ZEYNEP], [other]) == ()
-
-
-def test_every_day_conflicts_with_any_weekday_at_the_same_time() -> None:
-    candidate = custom("Yeni", SIX_PM)
-    other = custom("Eski", SIX_PM, SUNDAY)
-
-    assert find_conflicts(candidate, [AYSE], [other]) == (
-        Conflict(candidate, MONDAY, SlotHolder.ATHLETES),
-        Conflict(candidate, SUNDAY, SlotHolder.CUSTOM_ANNOUNCEMENT),
+    assert timetable.slots == (
+        Slot(MONDAY, SEVEN_PM, (said("Su içmeyi unutmayın."),)),
+        Slot(MONDAY, EIGHT_PM, (said("Su içmeyi unutmayın."),)),
+        Slot(TUESDAY, SEVEN_PM, (said("Su içmeyi unutmayın."),)),
     )
 
 
-def test_slot_held_by_both_is_reported_as_held_by_athletes() -> None:
-    candidate = custom("Yeni", SIX_PM, MONDAY)
-    other = custom("Eski", SIX_PM, MONDAY)
-
-    assert find_conflicts(candidate, [AYSE], [other]) == (
-        Conflict(candidate, MONDAY, SlotHolder.ATHLETES),
-    )
-
-
-def test_find_conflicts_ignores_the_end_of_a_session() -> None:
-    candidate = custom("Yeni", FIVE_TO_SEVEN, MONDAY)
-
-    assert find_conflicts(candidate, [AYSE], []) == ()
-    assert find_conflicts(candidate, [AYSE, CAN], []) == (
-        Conflict(candidate, MONDAY, SlotHolder.ATHLETES),
-    )
-
-
-def test_start_delay_moves_the_starts_and_keeps_what_was_in_conflict() -> None:
+def test_start_delay_moves_a_start_out_of_the_minute_of_a_custom_announcement() -> None:
     reminder = custom("Su içmeyi unutmayın.", SIX_PM, MONDAY, TUESDAY)
 
     timetable = build_timetable([AYSE, ZEYNEP], [reminder], TEMPLATE, start_delay=2)
 
     late_six, late_seven = datetime.time(18, 2), datetime.time(19, 2)
     assert timetable.slots == (
+        Slot(MONDAY, SIX_PM, (said("Su içmeyi unutmayın."),)),
         Slot(MONDAY, late_six, (welcome("Ayşe Yılmaz", delay=2),)),
         Slot(TUESDAY, SIX_PM, (said("Su içmeyi unutmayın."),)),
         Slot(TUESDAY, late_seven, (welcome("Zeynep Kaya", delay=2),)),
     )
-    # A conflict names the time that the announcement was set for.
-    assert timetable.conflicts == (Conflict(reminder, MONDAY, SlotHolder.ATHLETES),)
     assert timetable.start_delay == 2
     assert timetable.end_delay == 0
 
@@ -410,7 +375,6 @@ def test_part_that_a_delay_puts_in_the_minute_of_a_custom_one_is_read_with_it() 
             (goodbye("Ayşe Yılmaz", delay=2), said("Havlunuzu unutmayın.")),
         ),
     )
-    assert timetable.conflicts == ()
 
 
 def test_end_delay_past_midnight_moves_an_end_to_the_next_day() -> None:
@@ -511,17 +475,13 @@ def test_custom_announcement_where_sessions_only_end_is_read_after_the_end() -> 
         Slot(
             MONDAY,
             FIVE_TO_SEVEN,
-            (goodbye("Ayşe Yılmaz"), said("Su içmeyi unutmayın.")),
+            (goodbye("Ayşe Yılmaz"), said("Su içmeyi unutmayın."), said("İkinci")),
         ),
         Slot(TUESDAY, FIVE_TO_SEVEN, (said("Su içmeyi unutmayın."),)),
     )
-    # The end holds no minute, but the custom announcement it is read with does.
-    assert timetable.conflicts == (
-        Conflict(second, MONDAY, SlotHolder.CUSTOM_ANNOUNCEMENT),
-    )
 
 
-def test_custom_announcement_at_a_start_conflicts_though_sessions_also_end() -> None:
+def test_custom_announcement_where_sessions_end_and_start_is_read_last() -> None:
     reminder = custom("Su içmeyi unutmayın.", FIVE_TO_SEVEN, MONDAY)
 
     timetable = build_timetable(
@@ -529,9 +489,10 @@ def test_custom_announcement_at_a_start_conflicts_though_sessions_also_end() -> 
     )
 
     assert timetable.slot_at(THIS_MONDAY, FIVE_TO_SEVEN) == Slot(
-        MONDAY, FIVE_TO_SEVEN, (goodbye("Ayşe Yılmaz"), welcome("Can Öz"))
+        MONDAY,
+        FIVE_TO_SEVEN,
+        (goodbye("Ayşe Yılmaz"), welcome("Can Öz"), said("Su içmeyi unutmayın.")),
     )
-    assert timetable.conflicts == (Conflict(reminder, MONDAY, SlotHolder.ATHLETES),)
 
 
 def test_skipped_part_is_marked_on_its_day_only() -> None:
@@ -637,6 +598,7 @@ def test_moved_part_joins_the_minute_it_is_moved_to_in_the_order_of_kinds() -> N
         THIS_MONDAY,
         moment(THIS_MONDAY, half_past),
         Kind.CUSTOM,
+        "Su içmeyi unutmayın.",
         time=datetime.time(18, 57),
     )
 
@@ -664,7 +626,7 @@ def test_moved_part_joins_the_minute_it_is_moved_to_in_the_order_of_kinds() -> N
     assert part_id(THIS_MONDAY, slot, moved_part) == (
         moment(THIS_MONDAY, half_past),
         Kind.CUSTOM,
-        "",
+        "Su içmeyi unutmayın.",
     )
 
 
@@ -817,16 +779,69 @@ def test_reworded_custom_announcement_says_the_new_text_that_day() -> None:
         THIS_MONDAY,
         moment(THIS_MONDAY, SEVEN_PM),
         Kind.CUSTOM,
+        "Su içmeyi unutmayın.",
         text="Salon bugün erken kapanıyor.",
     )
 
     timetable = build_timetable([], [reminder], TEMPLATE, changes=[reword])
 
-    assert timetable.slots_on(THIS_MONDAY) == (
-        Slot(MONDAY, SEVEN_PM, (edited(said("Salon bugün erken kapanıyor.")),)),
-    )
+    reworded = saying(said("Su içmeyi unutmayın."), "Salon bugün erken kapanıyor.")
+    assert timetable.slots_on(THIS_MONDAY) == (Slot(MONDAY, SEVEN_PM, (reworded,)),)
     assert timetable.slots_on(NEXT_MONDAY) == (
         Slot(MONDAY, SEVEN_PM, (said("Su içmeyi unutmayın."),)),
+    )
+
+
+def test_custom_announcement_reworded_and_moved_for_a_day_keeps_its_id() -> None:
+    reminder = custom("Su içmeyi unutmayın.", SEVEN_PM, MONDAY)
+    reword = Change(
+        THIS_MONDAY,
+        moment(THIS_MONDAY, SEVEN_PM),
+        Kind.CUSTOM,
+        "Su içmeyi unutmayın.",
+        time=EIGHT_PM,
+        text="Salon bugün erken kapanıyor.",
+    )
+
+    timetable = build_timetable([], [reminder], TEMPLATE, changes=[reword])
+
+    (slot,) = timetable.slots_on(THIS_MONDAY)
+    assert slot.texts == ("Salon bugün erken kapanıyor.",)
+    assert part_id(THIS_MONDAY, slot, slot.parts[0]) == (
+        moment(THIS_MONDAY, SEVEN_PM),
+        Kind.CUSTOM,
+        "Su içmeyi unutmayın.",
+    )
+    week = timetable.slots[0]
+    assert part_id(THIS_MONDAY, week, week.parts[0]) == part_id(
+        THIS_MONDAY, slot, slot.parts[0]
+    )
+
+
+def test_change_for_a_custom_announcement_leaves_another_of_its_minute_alone() -> None:
+    announcements = [
+        custom("Birinci", SEVEN_PM, MONDAY),
+        custom("İkinci", SEVEN_PM, MONDAY),
+    ]
+    first, second = (
+        Change(THIS_MONDAY, moment(THIS_MONDAY, SEVEN_PM), Kind.CUSTOM, name)
+        for name in ("Birinci", "İkinci")
+    )
+
+    def monday(change: Change) -> tuple[Slot, ...]:
+        timetable = build_timetable([], announcements, TEMPLATE, changes=[change])
+        assert timetable.slots_on(NEXT_MONDAY) == timetable.slots
+        return timetable.slots_on(THIS_MONDAY)
+
+    assert monday(dataclasses.replace(first, skipped=True)) == (
+        Slot(MONDAY, SEVEN_PM, (skipped(said("Birinci")), said("İkinci"))),
+    )
+    assert monday(dataclasses.replace(second, text="Yeni")) == (
+        Slot(MONDAY, SEVEN_PM, (said("Birinci"), saying(said("İkinci"), "Yeni"))),
+    )
+    assert monday(dataclasses.replace(first, time=EIGHT_PM)) == (
+        Slot(MONDAY, SEVEN_PM, (said("İkinci"),)),
+        Slot(MONDAY, EIGHT_PM, (moved(said("Birinci", delay=60)),)),
     )
 
 
@@ -836,14 +851,14 @@ def test_reworded_custom_announcement_is_said_as_it_is_written() -> None:
         THIS_MONDAY,
         moment(THIS_MONDAY, SEVEN_PM),
         Kind.CUSTOM,
+        "Su içmeyi unutmayın.",
         text="{ad_soyad} yazan duyuru",
     )
 
     timetable = build_timetable([], [reminder], TEMPLATE, changes=[reword])
 
-    assert timetable.slots_on(THIS_MONDAY) == (
-        Slot(MONDAY, SEVEN_PM, (edited(said("{ad_soyad} yazan duyuru")),)),
-    )
+    reworded = saying(said("Su içmeyi unutmayın."), "{ad_soyad} yazan duyuru")
+    assert timetable.slots_on(THIS_MONDAY) == (Slot(MONDAY, SEVEN_PM, (reworded,)),)
 
 
 def test_changes_for_one_day_leave_the_week_and_the_other_days_alone() -> None:
@@ -910,6 +925,9 @@ def test_change_that_matches_no_part_leaves_its_day_as_the_week_has_it() -> None
             Kind.CUSTOM,
             "Ayşe Yılmaz",
             skipped=True,
+        ),
+        Change(
+            THIS_MONDAY, moment(THIS_MONDAY, FIVE_TO_SEVEN), Kind.CUSTOM, skipped=True
         ),
     ]
 

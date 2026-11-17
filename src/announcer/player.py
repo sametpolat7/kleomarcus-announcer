@@ -23,8 +23,8 @@ import pygame
 _log = logging.getLogger(__name__)
 
 # When a group of texts was queued, the texts, what the caller tagged it with,
-# and the speed of the speech to play.
-type _Queued = tuple[float, tuple[str, ...], Hashable | None, float]
+# the speed of the speech to play, and how often the player was silenced then.
+type _Queued = tuple[float, tuple[str, ...], Hashable | None, float, int]
 
 _NOTHING = object()  # what is being played while nothing is
 
@@ -141,6 +141,7 @@ class Player:
         self._stopped = threading.Event()
         self._cut = threading.Event()  # the group that is sounding is to end
         self._sounding: object = _NOTHING  # the tag of that group
+        self._silenced = 0
         self._sounding_lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, name="player", daemon=True)
 
@@ -150,7 +151,7 @@ class Player:
         tag: Hashable | None = None,
         speed: float = NORMAL_SPEED,
     ) -> None:
-        self._queue.put((self._clock(), tuple(texts), tag, speed))
+        self._queue.put((self._clock(), tuple(texts), tag, speed, self._silenced))
 
     def cut(self, tag: Hashable | None) -> None:
         """Safe to call from any thread. Cut off the group with ``tag`` if it is
@@ -161,6 +162,11 @@ class Player:
         with self._sounding_lock:
             if self._sounding is not _NOTHING and self._sounding == tag:
                 self._cut.set()
+
+    def silence(self) -> None:
+        with self._sounding_lock:
+            self._silenced += 1
+            self._cut.set()
 
     def start(self) -> None:
         self._thread.start()
@@ -180,7 +186,7 @@ class Player:
     ) -> None:
         """Returns when ``texts`` are announced and the outcome is reported."""
         self._looked_at = self._clock()
-        self._announce(tuple(texts), tag, speed, skip=False)
+        self._announce(tuple(texts), tag, speed, False, self._silenced)
 
     def _announce(
         self,
@@ -188,9 +194,10 @@ class Player:
         tag: Hashable | None,
         speed: float,
         skip: bool,
+        silenced: int,
     ) -> None:
         """With ``skip`` nothing is played, because the texts are already late."""
-        if self._stopped.is_set():
+        if self._stopped.is_set() or silenced != self._silenced:
             return
         spoken: list[tuple[int, str, Path]] = []  # with its place among ``texts``
         heard = [Heard.YES] * len(texts)
@@ -211,6 +218,8 @@ class Player:
         if spoken and not skip:
             files = [self._chime, *(path for _, _, path in spoken)]
             with self._sounding_lock:
+                if silenced != self._silenced:
+                    return
                 self._sounding = tag
                 self._cut.clear()
             self._on_started(tag)
@@ -301,11 +310,11 @@ class Player:
                 self._looked_at = self._clock()
             if item is None or self._stopped.is_set():
                 break
-            queued_at, texts, tag, speed = item
+            queued_at, texts, tag, speed, silenced = item
             try:
                 self._slept()  # a sleep between two announcements counts too
                 skip = queued_at < self._asleep_until
-                self._announce(texts, tag, speed, skip)
+                self._announce(texts, tag, speed, skip, silenced)
             except Exception:
                 # One failed announcement must not silence every later one.
                 _log.exception("Announcing failed")

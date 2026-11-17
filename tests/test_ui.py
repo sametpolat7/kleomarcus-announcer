@@ -1388,6 +1388,126 @@ def test_delete_asks_first(
     assert window.delete_button.instate(["disabled"])
 
 
+def test_clear_button_stands_in_the_footer_left_of_the_log_button(
+    window: MainWindow,
+) -> None:
+    clear, log = window.clear_button.grid_info(), window.log_button.grid_info()
+
+    assert window.clear_button.cget("text") == "Tüm Veriyi Temizle"
+    assert clear["in"] is log["in"]
+    assert clear["row"] == log["row"]
+    assert clear["column"] < log["column"]
+
+
+def test_clearing_asks_first_and_an_answer_of_no_changes_nothing(
+    window: MainWindow, app: App, schedule: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    choose(window, schedule, monkeypatch)
+    app.save_announcement(WATER)
+    window.show()
+    window.template.set("Merhaba {ad_soyad}.")
+    select(window, "1")
+    shown = today(window), announcements(window)
+    asked: list[tuple[str, str, object]] = []
+
+    def askyesno(title: str, message: str, **options: object) -> bool:
+        asked.append((title, message, options["default"]))
+        return False
+
+    monkeypatch.setattr(messagebox, "askyesno", askyesno)
+    monkeypatch.setattr(app, "clear", lambda: pytest.fail("cleared"))
+
+    window.clear_button.invoke()
+
+    assert asked == [
+        (
+            "Tüm Veriyi Temizle",
+            "Özel anonslar, anons şablonları, anons ayarları, bugün yapılan "
+            "değişiklikler ve hazırlanmış ses dosyaları silinir; sporcu listesi "
+            "seçimi kaldırılır. Excel dosyası silinmez.\n\n"
+            "Bu işlem geri alınamaz. Tüm veri temizlensin mi?",
+            "no",
+        )
+    ]
+    assert (today(window), announcements(window)) == shown
+    assert window.schedule_path.get() == str(schedule)
+    assert window.template.get() == "Merhaba {ad_soyad}."
+    assert window.today.selection() == ("1",)
+
+
+def test_clearing_brings_the_window_back_to_how_it_first_started(
+    window: MainWindow, app: App, schedule: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    choose(window, schedule, monkeypatch)
+    app.save_announcement(WATER)
+    window.template.set("Hoş geldiniz, {ad_soyad}.")
+    window.end_template.set("Güle güle, {ad_soyad}.")
+    window.save_template_button.invoke()
+    boxes = (
+        window.speed_box,
+        window.start_delay_box,
+        window.end_delay_box,
+        window.end_box,
+    )
+    for box, label in zip(boxes, ("0.9×", "2 dk", "5 dk", "Kapalı"), strict=True):
+        pick(box, label)
+    window.template.set("Merhaba {ad_soyad}.")
+    window.end_template.set("Hoşça kalın {ad_soyad}.")
+    select(window, "1")
+    window.announcements.selection_set("0")
+    pump(window, lambda: window.activity.get() == "")
+    assert (len(today(window)), len(announcements(window))) == (3, 1)
+    monkeypatch.setattr(messagebox, "askyesno", lambda title, message, **options: True)
+
+    window.clear_button.invoke()
+
+    assert today(window) == [("", "", "", "Bugün için anons yok.", "")]
+    assert announcements(window) == [("", "", "Özel anons yok.")]
+    assert (window.template.get(), window.end_template.get()) == (
+        DEFAULT_TEMPLATE,
+        DEFAULT_END_TEMPLATE,
+    )
+    assert window.save_template_button.instate(["disabled"])
+    assert [box.get() for box in boxes] == ["1.0× (Normal)", "Yok", "Yok", "Açık"]
+    assert window.schedule_path.get() == ""
+    assert window.loaded.get() == "Son Yüklenme Tarihi: —"
+    assert warnings(window).startswith("• Sporcu listesi seçilmedi.")
+    assert str(window.choose_button.cget("style")) == "Primary.TButton"
+    assert window.today.selection() == ()
+    assert window.announcements.selection() == ()
+
+
+def test_data_that_cannot_be_cleared_gives_an_alert_and_stays_as_it_was(
+    window: MainWindow,
+    app: App,
+    schedule: Path,
+    alerts: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    choose(window, schedule, monkeypatch)
+    app.save_announcement(WATER)
+    pick(window.start_delay_box, "2 dk")
+    shown = today(window), announcements(window)
+
+    def fail() -> None:
+        raise OSError("a file is in use")
+
+    monkeypatch.setattr(app, "clear", fail)
+    monkeypatch.setattr(messagebox, "askyesno", lambda title, message, **options: True)
+
+    with caplog.at_level(logging.ERROR):
+        window.clear_button.invoke()
+
+    assert alerts == ["Veriler temizlenemedi. Ayrıntılar kayıt dosyasındadır."]
+    assert "Cannot clear the data" in caplog.text
+    assert len(shown[0]) == 5
+    assert (today(window), announcements(window)) == shown
+    assert window.schedule_path.get() == str(schedule)
+    assert window.start_delay_box.get() == "2 dk"
+    assert str(window.choose_button.cget("style")) == "TButton"
+
+
 def test_second_copy_only_says_that_the_app_is_running(
     window: MainWindow, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1569,26 +1689,37 @@ def test_dialog_stays_open_until_what_is_entered_is_valid(
     assert dialog.window.winfo_exists()
 
 
-def test_dialog_blocks_an_announcement_whose_slot_is_taken(
+def test_dialog_saves_an_announcement_for_the_minute_of_a_start_or_of_another_one(
     make_dialog: Callable[[], AnnouncementDialog],
+    window: MainWindow,
     app: App,
     schedule: Path,
     alerts: list[str],
 ) -> None:
     app.choose_schedule(schedule)
-    dialog = make_dialog()
-    dialog.text.set("Salon kapanıyor.")
-    dialog.hour.set("18")
-    dialog.minute.set("00")
 
-    dialog.save()
+    for text in ("Salon kapanıyor.", "Su içmeyi unutmayın."):
+        dialog = make_dialog()
+        dialog.text.set(text)
+        dialog.hour.set("18")
+        dialog.minute.set("00")
 
-    assert alerts == [
-        "Bu saat dolu olduğu için anons kaydedilemedi:\n"
-        "• Pazartesi 18:00: sporcu anonsu var"
+        dialog.save()
+
+        assert not dialog.window.winfo_exists()
+
+    assert alerts == []
+    assert app.settings.custom_announcements == (
+        CustomAnnouncement("Salon kapanıyor.", datetime.time(18, 0)),
+        CustomAnnouncement("Su içmeyi unutmayın.", datetime.time(18, 0)),
+    )
+    window.show()
+    assert today(window)[:4] == [
+        (*start_row(AYSE), "Sıradaki"),
+        (*start_row(MEHMET), "Sıradaki"),
+        ("Pazartesi", "18:00", "Özel", "Salon kapanıyor.", "Sıradaki"),
+        ("Pazartesi", "18:00", "Özel", "Su içmeyi unutmayın.", "Sıradaki"),
     ]
-    assert app.settings.custom_announcements == ()
-    assert dialog.window.winfo_exists()
 
 
 def test_dialog_shows_the_announcement_it_changes(
@@ -1859,13 +1990,15 @@ def test_window_and_dialogs_stay_light_where_the_system_is_dark(
 
 
 def test_pointer_is_a_hand_over_what_can_be_pressed(window: MainWindow) -> None:
-    pressable, disabled = window.instant_button, window.replay_button
+    pressable = (window.instant_button, window.clear_button)
+    disabled = window.replay_button
     assert disabled.instate(["disabled"])
 
-    for button in (pressable, disabled):
+    for button in (*pressable, disabled):
         button.event_generate("<Motion>", x=2, y=2)
 
-    assert str(pressable.cget("cursor")) == theme.POINTER
+    for button in pressable:
+        assert str(button.cget("cursor")) == theme.POINTER
     assert not str(disabled.cget("cursor"))
     for box in (
         window.speed_box,

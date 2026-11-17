@@ -1,16 +1,13 @@
 """A slot is one minute of a weekday, or of a date, and holds the parts that are
-announced in it after one chime. A custom announcement may share its minute
-neither with the start of a session nor with another custom announcement; it
-follows the end of a session in the minute it shares with that. What the
-operator changes for a day may move a part to any minute of that day, where it
-joins what is already there.
+announced in it after one chime: the ends of sessions, then the starts, then
+the custom announcements. What the operator changes for a day may move a part
+to any minute of that day, where it joins what is already there.
 """
 
 import dataclasses
 import datetime
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
-from enum import Enum
 
 from announcer.models import (
     NORMAL_SPEED,
@@ -24,23 +21,12 @@ from announcer.template import render
 
 type _Key = tuple[int, datetime.time]  # weekday and time of a slot
 # Which part of a day it is: the moment that it was set for, before the delay,
-# its kind and the athlete's name, empty for a custom announcement. Neither a
-# delay nor a changed template or schedule changes it.
+# its kind and the athlete's name or, for a custom announcement, its text in
+# the settings. Neither a delay nor a changed template or schedule changes it,
+# nor what the operator has it say for a day.
 type PartId = tuple[datetime.datetime, Kind, str]
 
 _SESSION_MINUTES = int(SESSION.total_seconds()) // 60
-
-
-class SlotHolder(Enum):
-    ATHLETES = "athletes"
-    CUSTOM_ANNOUNCEMENT = "custom announcement"
-
-
-@dataclass(frozen=True)
-class Conflict:
-    announcement: CustomAnnouncement
-    weekday: int
-    holder: SlotHolder
 
 
 @dataclass(frozen=True)
@@ -56,6 +42,7 @@ class Part:
     skipped: bool = False  # by the operator, for the day
     edited: bool = False  # by the operator, for the day
     moved: bool = False  # to a time of its own, so the delay no longer moves it
+    custom_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -73,8 +60,6 @@ class Slot:
 @dataclass(frozen=True)
 class Timetable:
     slots: tuple[Slot, ...] = ()  # of the week, ordered by weekday, then time
-    # Each with the weekday and the time that its announcement was set for.
-    conflicts: tuple[Conflict, ...] = ()
     # The delays that the week's slots were built with; a part that the
     # operator moved for a day has a delay of its own.
     start_delay: int = 0
@@ -118,7 +103,7 @@ def set_for(date: datetime.date, slot: Slot, part: Part) -> datetime.datetime:
 
 
 def part_id(date: datetime.date, slot: Slot, part: Part) -> PartId:
-    return set_for(date, slot, part), part.kind, part.name
+    return set_for(date, slot, part), part.kind, part.name or part.custom_text
 
 
 def said(text: str, name: str) -> str:
@@ -126,21 +111,6 @@ def said(text: str, name: str) -> str:
     in which a placeholder still stands for the name, or for a custom
     announcement, whose text is said as it is written."""
     return render(text, name) if name else text
-
-
-def find_conflicts(
-    announcement: CustomAnnouncement,
-    entries: Iterable[AthleteEntry],
-    others: Iterable[CustomAnnouncement],
-) -> tuple[Conflict, ...]:
-    """When an existing announcement is being edited, leave its stored version
-    out of ``others``.
-    """
-    holders = dict.fromkeys(_starts(entries), SlotHolder.ATHLETES)
-    for other in others:
-        for weekday in other.weekdays:
-            holders.setdefault((weekday, other.time), SlotHolder.CUSTOM_ANNOUNCEMENT)
-    return _conflicts(announcement, holders)
 
 
 def build_timetable(
@@ -154,13 +124,10 @@ def build_timetable(
     changes: Iterable[Change] = (),
 ) -> Timetable:
     """Athletes are announced at the start of their session and, with an
-    ``end_template``, at its end too. A custom announcement is left out on the
-    weekdays where a session starts in its minute or a custom announcement
-    earlier in the list has that minute, and each such case is reported as a
-    conflict. The delays move the starts and the ends only and change nothing
-    about that: a start or an end that a delay puts in the minute of a custom
-    announcement is read with it. ``changes`` make the days that they are for
-    differ from the week.
+    ``end_template``, at its end too. The delays move the starts and the ends
+    only; a custom announcement is read at the time it is set for, with
+    whatever else is in that minute. ``changes`` make the days that they are
+    for differ from the week.
     """
     entries = tuple(entries)
     listed: dict[tuple[_Key, Kind], tuple[str, ...]] = {
@@ -177,16 +144,12 @@ def build_timetable(
             Part(kind, render(used, name), name, delay) for name in names
         )
 
-    holders = {key: SlotHolder.ATHLETES for (key, kind) in listed if kind is Kind.START}
-    conflicts: list[Conflict] = []
     for announcement in custom_announcements:
-        found = _conflicts(announcement, holders)
-        conflicts.extend(found)
-        taken = {conflict.weekday for conflict in found}
-        for weekday in announcement.weekdays - taken:
-            key = (weekday, announcement.time)
-            parts.setdefault(key, []).append(Part(Kind.CUSTOM, announcement.text))
-            holders[key] = SlotHolder.CUSTOM_ANNOUNCEMENT
+        custom = Part(Kind.CUSTOM, announcement.text, custom_text=announcement.text)
+        for weekday in announcement.weekdays:
+            in_minute = parts.setdefault((weekday, announcement.time), [])
+            if custom not in in_minute:
+                in_minute.append(custom)
 
     slots = tuple(
         sorted(
@@ -204,7 +167,7 @@ def build_timetable(
         (day, _day(day, slots, day_changes, speed))
         for day, day_changes in sorted(by_day.items())
     )
-    return Timetable(slots, tuple(conflicts), start_delay, end_delay, days)
+    return Timetable(slots, start_delay, end_delay, days)
 
 
 def _starts(entries: Iterable[AthleteEntry]) -> dict[_Key, tuple[str, ...]]:
@@ -247,7 +210,7 @@ def _day(
             continue
         for part in slot.parts:
             moment = set_for(day, slot, part)
-            change = wanted.get((moment, part.kind, part.name))
+            change = wanted.get(part_id(day, slot, part))
             time = slot.time
             if change is not None:
                 part = _changed(part, change, moment)
@@ -273,14 +236,4 @@ def _changed(part: Part, change: Change, moment: datetime.datetime) -> Part:
         skipped=change.skipped,
         edited=change.edited,
         moved=change.time is not None,
-    )
-
-
-def _conflicts(
-    announcement: CustomAnnouncement, holders: Mapping[_Key, SlotHolder]
-) -> tuple[Conflict, ...]:
-    return tuple(
-        Conflict(announcement, weekday, holders[weekday, announcement.time])
-        for weekday in sorted(announcement.weekdays)
-        if (weekday, announcement.time) in holders
     )

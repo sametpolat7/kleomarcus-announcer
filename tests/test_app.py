@@ -1,6 +1,7 @@
 import datetime
 import json
 import logging
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -8,13 +9,12 @@ from pathlib import Path
 import pytest
 
 from announcer import VERSION
-from announcer.app import TEST_NAME, App, SlotTakenError, backup_copy
+from announcer.app import TEST_NAME, App, backup_copy
 from announcer.chime import CHIME_PATH
 from announcer.loader import ScheduleFileError, UnreadableFileError
 from announcer.models import CustomAnnouncement, Kind
 from announcer.settings import Settings, load_settings, save_settings
 from announcer.template import DEFAULT_END_TEMPLATE, DEFAULT_TEMPLATE, render
-from announcer.timetable import SlotHolder
 from announcer.today import Row, Status
 from support import (
     MONDAY,
@@ -41,7 +41,7 @@ READ_AT_SIX = [Status.PLAYED, Status.PLAYED, Status.NEXT, Status.NEXT]
 
 def whom(row: Row) -> str:
     """The athlete that a row is for, or what a custom announcement says."""
-    return row.key[2] if isinstance(row.key, tuple) and row.key[2] else row.text
+    return row.key[2] if isinstance(row.key, tuple) else row.text
 
 
 def starts(app: App) -> list[str]:
@@ -367,7 +367,7 @@ def test_custom_announcement_is_added_and_stored(
     app.save_announcement(WATER)
 
     assert load_settings(settings_file).settings.custom_announcements == (WATER,)
-    # The end of a session does not take its minute.
+    # It follows the end of a session in the minute it shares with that.
     assert [(row.time, row.kind, row.text) for row in app.rows()] == [
         (SIX_PM, Kind.START, started("Ayşe Yılmaz")),
         (SIX_PM, Kind.START, started("Mehmet Demir")),
@@ -377,25 +377,43 @@ def test_custom_announcement_is_added_and_stored(
     ]
 
 
-def test_custom_announcement_cannot_share_a_slot(app: App, schedule: Path) -> None:
+def test_custom_announcement_shares_its_minute_with_a_start_and_with_another_one(
+    app: App, schedule: Path, output: FakeOutput, clock: FakeClock
+) -> None:
     app.choose_schedule(schedule)
     app.save_announcement(WATER)
+    welcome = CustomAnnouncement("Hoş geldiniz.", SIX_PM, frozenset({0, 3}))
+    closing = CustomAnnouncement("Salon kapanıyor.", FIVE_TO_SEVEN)
 
-    with pytest.raises(SlotTakenError) as with_athletes:
-        app.save_announcement(
-            CustomAnnouncement("Salon kapanıyor.", SIX_PM, frozenset({0, 3}))
-        )
-    with pytest.raises(SlotTakenError) as with_another:
-        app.save_announcement(
-            CustomAnnouncement("Salon kapanıyor.", FIVE_TO_SEVEN, frozenset({6}))
-        )
+    app.save_announcement(welcome)
+    app.save_announcement(closing)
 
-    assert [
-        (conflict.weekday, conflict.holder)
-        for error in (with_athletes, with_another)
-        for conflict in error.value.conflicts
-    ] == [(0, SlotHolder.ATHLETES), (6, SlotHolder.CUSTOM_ANNOUNCEMENT)]
-    assert app.settings.custom_announcements == (WATER,)
+    assert app.settings.custom_announcements == (WATER, welcome, closing)
+    assert [(row.time, row.kind, whom(row)) for row in app.rows()] == [
+        (SIX_PM, Kind.START, "Ayşe Yılmaz"),
+        (SIX_PM, Kind.START, "Mehmet Demir"),
+        (SIX_PM, Kind.CUSTOM, "Hoş geldiniz."),
+        (FIVE_TO_SEVEN, Kind.END, "Ayşe Yılmaz"),
+        (FIVE_TO_SEVEN, Kind.END, "Mehmet Demir"),
+        (FIVE_TO_SEVEN, Kind.CUSTOM, "Su içmeyi unutmayın."),
+        (FIVE_TO_SEVEN, Kind.CUSTOM, "Salon kapanıyor."),
+    ]
+    wait_for_speech(app)
+    app.start()
+    clock.now = at(18)
+    wait_for(app, lambda: statuses(app)[:3] == [Status.PLAYED] * 3)
+
+    last = app.last_announcement
+    assert last is not None
+    assert (last.due, last.parts) == (
+        at(18),
+        (
+            (Kind.START, "Ayşe Yılmaz"),
+            (Kind.START, "Mehmet Demir"),
+            (Kind.CUSTOM, "Hoş geldiniz."),
+        ),
+    )
+    assert len(output.played) == 4
 
 
 def test_custom_announcement_is_changed_in_place(app: App) -> None:
@@ -407,10 +425,15 @@ def test_custom_announcement_is_changed_in_place(app: App) -> None:
     app.save_announcement(changed, replacing=0)
 
     assert app.settings.custom_announcements == (changed, closing)
-    with pytest.raises(SlotTakenError):
-        app.save_announcement(
-            CustomAnnouncement("Bol su için.", closing.time), replacing=0
-        )
+
+    moved = CustomAnnouncement("Bol su için.", closing.time)
+    app.save_announcement(moved, replacing=0)
+
+    assert app.settings.custom_announcements == (moved, closing)
+    assert [(row.time, row.text) for row in app.rows()] == [
+        (closing.time, "Bol su için."),
+        (closing.time, "Salon kapanıyor."),
+    ]
 
 
 def test_custom_announcement_is_deleted(app: App, settings_file: Path) -> None:
@@ -425,7 +448,7 @@ def test_custom_announcement_is_deleted(app: App, settings_file: Path) -> None:
     assert [row.text for row in app.rows()] == ["Salon kapanıyor."]
 
 
-def test_athletes_win_a_slot_when_a_reload_creates_a_conflict(
+def test_custom_announcement_is_read_after_a_start_that_a_reload_puts_in_its_minute(
     app: App, schedule: Path
 ) -> None:
     app.choose_schedule(schedule)
@@ -440,11 +463,17 @@ def test_athletes_win_a_slot_when_a_reload_creates_a_conflict(
         (Kind.END, "Ayşe Yılmaz", Status.WAITING),
         (Kind.END, "Mehmet Demir", Status.WAITING),
         (Kind.START, "Elif Şahin", Status.WAITING),
-        (Kind.CUSTOM, "Su içmeyi unutmayın.", Status.CONFLICT),
+        (Kind.CUSTOM, "Su içmeyi unutmayın.", Status.WAITING),
         (Kind.END, "Elif Şahin", Status.WAITING),
     ]
-    assert len(app.timetable.conflicts) == 1
-    # The announcement still plays on the other days.
+    slot = app.timetable.slot_at(MONDAY, FIVE_TO_SEVEN)
+    assert slot is not None
+    assert slot.texts == (
+        ended("Ayşe Yılmaz"),
+        ended("Mehmet Demir"),
+        started("Elif Şahin"),
+        "Su içmeyi unutmayın.",
+    )
     assert app.settings.custom_announcements == (WATER,)
 
 
@@ -924,7 +953,6 @@ def test_end_that_a_delay_puts_in_the_minute_of_a_custom_announcement_is_read_wi
         (SEVEN_PM, Kind.END),
         (SEVEN_PM, Kind.CUSTOM),
     ]
-    assert app.timetable.conflicts == ()
     app.start()
     clock.now = at(19)
     wait_for(app, lambda: statuses(app)[-1] is Status.PLAYED)
@@ -942,23 +970,26 @@ def test_end_that_a_delay_puts_in_the_minute_of_a_custom_announcement_is_read_wi
     assert len(output.played) == 4
 
 
-def test_delay_does_not_change_which_times_are_taken(app: App, schedule: Path) -> None:
+def test_delay_takes_the_starts_out_of_the_minute_of_a_custom_announcement_and_into_one(
+    app: App, schedule: Path
+) -> None:
     app.choose_schedule(schedule)
     app.set_start_delay(2)
     app.set_end_delay(2)
 
-    with pytest.raises(SlotTakenError):
-        app.save_announcement(CustomAnnouncement("Hoş geldiniz.", SIX_PM))
-    app.save_announcement(CustomAnnouncement("Hoş geldiniz.", datetime.time(18, 2)))
+    app.save_announcement(CustomAnnouncement("Hoş geldiniz.", SIX_PM))
+    app.save_announcement(
+        CustomAnnouncement("Isınmaya başlayın.", datetime.time(18, 2))
+    )
 
-    assert [(row.time, row.kind) for row in app.rows()] == [
-        (datetime.time(18, 2), Kind.START),
-        (datetime.time(18, 2), Kind.START),
-        (datetime.time(18, 2), Kind.CUSTOM),
-        (datetime.time(18, 57), Kind.END),
-        (datetime.time(18, 57), Kind.END),
+    assert [(row.time, row.kind, whom(row)) for row in app.rows()] == [
+        (SIX_PM, Kind.CUSTOM, "Hoş geldiniz."),
+        (datetime.time(18, 2), Kind.START, "Ayşe Yılmaz"),
+        (datetime.time(18, 2), Kind.START, "Mehmet Demir"),
+        (datetime.time(18, 2), Kind.CUSTOM, "Isınmaya başlayın."),
+        (datetime.time(18, 57), Kind.END, "Ayşe Yılmaz"),
+        (datetime.time(18, 57), Kind.END, "Mehmet Demir"),
     ]
-    assert app.timetable.conflicts == ()
 
 
 def test_change_of_the_delays_keeps_what_is_known_and_repeats_nothing(
@@ -1075,6 +1106,31 @@ def test_row_is_announced_again_on_request(
         Status.PLAYED,
     )
     assert f'18:00 asked for again: "{started("Mehmet Demir")}"\n' in caplog.text
+
+
+def test_one_of_two_custom_announcements_of_a_minute_is_announced_again_by_itself(
+    app: App, output: FakeOutput, clock: FakeClock
+) -> None:
+    app.save_announcement(WATER)
+    app.save_announcement(CustomAnnouncement("Salon kapanıyor.", FIVE_TO_SEVEN))
+    wait_for_speech(app)
+    app.start()
+    clock.now = at(18, 55)
+    wait_for(app, lambda: statuses(app) == [Status.PLAYED] * 2)
+    chime, _, closing = output.played
+    clock.now = at(18, 57)
+
+    assert app.replay(app.rows()[1])
+
+    assert statuses(app) == [Status.PLAYED, Status.QUEUED]
+    wait_for(app, lambda: statuses(app) == [Status.PLAYED] * 2)
+    assert output.played[3:] == [chime, closing]
+    last = app.last_announcement
+    assert last is not None
+    assert (last.due, last.parts) == (
+        at(18, 55),
+        ((Kind.CUSTOM, "Salon kapanıyor."),),
+    )
 
 
 def test_row_whose_time_went_by_can_be_announced_afterwards(
@@ -1236,3 +1292,259 @@ def test_actions_and_outcomes_are_logged_with_their_cause(
     assert "Speed changed to 0.9" in caplog.text
     assert "Delay of the starts changed to 3 minute(s)" in caplog.text
     assert "Delay of the ends changed to 5 minute(s)" in caplog.text
+
+
+def test_clear_puts_the_app_back_to_how_it_is_at_a_first_start(
+    make_app: Callable[[], App], schedule: Path, settings_file: Path, clock: FakeClock
+) -> None:
+    settings_file.parent.mkdir(parents=True)
+    stored = {
+        "custom_announcements": [{"text": "Duyuru", "time": "25:00", "weekdays": [0]}]
+    }
+    settings_file.write_text(json.dumps(stored), encoding="utf-8")
+    settings_file.with_name("changes.json").write_text("{ not json", encoding="utf-8")
+    write_schedule(schedule, [*ROWS, ("Can Öztürk", "Pazartesi", "25:00")])
+    app = make_app()
+    app.choose_schedule(schedule)
+    app.save_announcement(WATER)
+    app.set_templates(WELCOME, GOODBYE)
+    app.set_speed(0.9)
+    wait_for_speech(app)
+    app.start()
+    clock.now = at(18)
+    wait_for(app, lambda: app.last_announcement is not None)
+    assert (
+        app.dropped_announcements,
+        app.settings_backed_up,
+        app.changes_unreadable,
+        app.changes_backed_up,
+        len(app.skipped_rows),
+    ) == (1, True, True, True, 1)
+
+    app.clear()
+
+    assert app.settings == Settings()
+    assert (app.spoken_template, app.spoken_end_template, app.spoken_speed) == (
+        DEFAULT_TEMPLATE,
+        DEFAULT_END_TEMPLATE,
+        1.0,
+    )
+    assert (app.rows(), app.timetable.slots) == ((), ())
+    assert (
+        app.dropped_announcements,
+        app.settings_backed_up,
+        app.changes_unreadable,
+        app.changes_backed_up,
+        app.skipped_rows,
+    ) == (0, False, False, False, ())
+    assert (app.schedule_error, app.refreshed_at) == (None, None)
+    assert app.last_announcement is None
+    assert (app.generating, app.unspoken) == (False, ())
+
+
+def test_clear_deletes_the_settings_the_changes_their_copies_and_the_stored_speech(
+    make_app: Callable[[], App], schedule: Path, settings_file: Path, tmp_path: Path
+) -> None:
+    settings_file.parent.mkdir(parents=True)
+    settings_file.write_text("{ not json", encoding="utf-8")
+    changes_file = settings_file.with_name("changes.json")
+    changes_file.write_text("{ not json", encoding="utf-8")
+    app = make_app()
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    files = [
+        settings_file,
+        backup_copy(settings_file),
+        changes_file,
+        backup_copy(changes_file),
+    ]
+    assert all(file.exists() for file in files)
+    assert len(stored_speech(tmp_path)) == 6
+
+    app.clear()
+
+    assert not any(file.exists() for file in files)
+    assert stored_speech(tmp_path) == set()
+    assert schedule.exists()
+    app.stop()
+    again = make_app()
+    again.start()
+    assert (again.settings, again.rows(), again.refreshed_at) == (Settings(), (), None)
+    assert not (again.settings_unreadable or again.settings_backed_up)
+    assert not (again.changes_unreadable or again.changes_backed_up)
+    assert not again.generating
+
+
+def test_clear_cuts_off_what_is_sounding_and_what_is_queued_behind_it_is_never_heard(
+    app: App, schedule: Path, output: FakeOutput, clock: FakeClock
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    app.start()
+    output.endless = True
+    clock.now = at(18)
+    wait_for(app, lambda: app.sounding)
+    clock.now = at(18, 55)
+    wait_for(app, lambda: statuses(app)[2:] == [Status.QUEUED] * 2)
+
+    app.clear()
+
+    assert not app.sounding
+    output.endless = False
+    app.preview("Deneme anonsu.")
+    wait_for(app, lambda: app.test_status is Status.PLAYED)
+    assert output.played[:2] == [CHIME_PATH] * 2
+    assert len(output.played) == 3
+    assert app.last_announcement is None
+    assert app.rows() == ()
+
+
+def test_slot_that_came_due_just_before_a_clear_is_not_taken_in_after_it(
+    app: App, schedule: Path, output: FakeOutput, clock: FakeClock
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    app.start()
+    output.endless = True
+    clock.now = at(18)
+    latest = time.monotonic() + 5
+    while not output.played and time.monotonic() < latest:
+        time.sleep(0.005)
+    assert output.played
+
+    app.clear()
+
+    output.endless = False
+    app.choose_schedule(schedule)
+    app.preview("Deneme anonsu.")
+    wait_for(app, lambda: app.test_status is Status.PLAYED)
+    assert statuses(app)[:2] == [Status.NEXT] * 2
+    assert (app.sounding, app.last_announcement) == (False, None)
+
+
+def test_clear_straight_after_a_schedule_is_chosen_stores_none_of_its_speech(
+    app: App, schedule: Path, tmp_path: Path
+) -> None:
+    app.choose_schedule(schedule)
+
+    app.clear()
+
+    wait_for_speech(app)
+    assert not (tmp_path / "audio").exists()
+    assert (app.unspoken, app.rows()) == ((), ())
+
+
+def test_clear_while_speech_is_generated_stores_none_of_it_and_leaves_nothing_unspoken(
+    app: App,
+    provider: FakeProvider,
+    clock: FakeClock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app.save_announcement(WATER)
+    wait_for_speech(app)
+    synthesize = provider.synthesize
+    asked, cleared = threading.Event(), threading.Event()
+
+    def answer_late(text: str, voice: str, speed: float) -> bytes:
+        asked.set()
+        cleared.wait(5)
+        return synthesize(text, voice, speed)
+
+    monkeypatch.setattr(provider, "synthesize", answer_late)
+    app.save_announcement(CustomAnnouncement("Salon kapanıyor.", SEVEN_PM))
+    assert app.generating
+    assert asked.wait(5)
+
+    app.clear()
+    cleared.set()
+    wait_for_speech(app)
+
+    assert app.unspoken == ()
+    assert stored_speech(tmp_path) == set()
+    answered = len(provider.calls)
+    clock.now += datetime.timedelta(minutes=5)
+    assert not app.poll()
+    assert (app.generating, len(provider.calls)) == (False, answered)
+
+
+def test_clear_waits_for_the_audio_output_to_let_go_of_the_stored_speech(
+    app: App, schedule: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    unlink = Path.unlink
+    held = [True]
+
+    def let_go_late(path: Path, missing_ok: bool = False) -> None:
+        if held and path.parent == tmp_path / "audio":
+            held.clear()
+            raise PermissionError("still open in the audio output")
+        unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", let_go_late)
+
+    app.clear()
+
+    assert not held
+    assert stored_speech(tmp_path) == set()
+    assert app.settings == Settings()
+
+
+def test_clear_that_cannot_delete_a_file_is_raised_and_keeps_the_settings(
+    app: App,
+    schedule: Path,
+    settings_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app.choose_schedule(schedule)
+    app.save_announcement(WATER)
+    wait_for_speech(app)
+    settings, speech = app.settings, stored_speech(tmp_path)
+    unlink = Path.unlink
+
+    def held(path: Path, missing_ok: bool = False) -> None:
+        if path == settings_file:
+            raise PermissionError("held by another program")
+        unlink(path, missing_ok=missing_ok)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", held)
+        with pytest.raises(OSError):
+            app.clear()
+
+    assert app.settings == settings
+    assert load_settings(settings_file).settings == settings
+    assert len(app.rows()) == 5
+    assert app.generating
+    wait_for_speech(app)
+    assert app.unspoken == ()
+    assert stored_speech(tmp_path) == speech
+
+
+def test_app_announces_as_usual_once_a_schedule_is_chosen_after_a_clear(
+    app: App,
+    schedule: Path,
+    provider: FakeProvider,
+    output: FakeOutput,
+    clock: FakeClock,
+) -> None:
+    app.choose_schedule(schedule)
+    wait_for_speech(app)
+    app.start()
+    app.clear()
+    asked = len(provider.calls)
+
+    app.choose_schedule(schedule)
+
+    assert app.generating
+    wait_for_speech(app)
+    assert (app.unspoken, len(provider.calls)) == ((), asked + 6)
+    assert statuses(app) == UPCOMING
+    clock.now = at(18, 0, 1)
+    wait_for(app, lambda: statuses(app) == READ_AT_SIX)
+    assert len(output.played) == 3
+    last = app.last_announcement
+    assert last is not None
+    assert (last.due, last.status) == (at(18), Status.PLAYED)

@@ -6,7 +6,7 @@ from enum import Enum
 from announcer.models import Kind
 from announcer.player import Heard, Playback
 from announcer.scheduler import LATE
-from announcer.timetable import Part, PartId, Timetable, set_for
+from announcer.timetable import Part, PartId, Timetable, part_id, set_for
 
 
 class Status(Enum):
@@ -23,13 +23,11 @@ class Status(Enum):
     NO_SPEECH = "no speech"  # skipped: none of its texts has stored speech
     ASLEEP = "asleep"  # skipped: the computer was asleep at its time
     NO_OUTPUT = "no output"  # the audio output could not play it, or not all
-    CONFLICT = "conflict"  # skipped today: its slot belongs to something else
     SKIPPING = "skipping"  # the operator skipped it, and its time has not come
     SKIPPED = "skipped"  # the operator skipped it, and its time went by
     STOPPED = "stopped"  # the operator cut it off before it was heard in full
 
 
-# A conflict is among them because it has no slot whose speech could be played.
 _NOT_REPLAYABLE = frozenset(
     {
         Status.WAITING,
@@ -37,7 +35,6 @@ _NOT_REPLAYABLE = frozenset(
         Status.PREPARING,
         Status.QUEUED,
         Status.PLAYING,
-        Status.CONFLICT,
         Status.SKIPPING,
     }
 )
@@ -71,9 +68,7 @@ class Row:
     kind: Kind
     text: str  # what is read
     status: Status
-    # Which part of the day it is, or which instant announcement; None for a
-    # custom announcement that lost its slot.
-    key: PartId | Instant | None = None
+    key: PartId | Instant  # which part of the day, or which instant announcement
     edited: bool = False  # by the operator, for today
     # Whether it can still be changed, or skipped or no longer skipped.
     editable: bool = False
@@ -130,9 +125,8 @@ def todays_rows(
     the moment they were set for, their kind and ``who`` they are for, so an
     outcome is not taken for that of something else that was put at the same
     time later, and stays with its part when the delay or the template
-    changes. The custom announcements that lost today's slot to something else
-    are listed too, so that the preview hides nothing. ``playing`` holds the
-    outcome keys of what is queued or being read.
+    changes. ``playing`` holds the outcome keys of what is queued or being
+    read.
     """
     rows: list[Row] = []
     upcoming: datetime.time | None = None  # the first minute with something to say
@@ -161,18 +155,12 @@ def todays_rows(
                     part.kind,
                     part.text,
                     status,
-                    (moment, part.kind, part.name),
+                    part_id(now.date(), slot, part),
                     part.edited,
                     editable,
                     skippable,
                     (moment, part.kind, who(part)) in playing,
                 )
-            )
-    for conflict in timetable.conflicts:
-        announcement = conflict.announcement
-        if conflict.weekday == now.weekday():
-            rows.append(
-                Row(announcement.time, Kind.CUSTOM, announcement.text, Status.CONFLICT)
             )
     for instant in instants:
         if instant.asked_at.date() == now.date():
@@ -187,6 +175,4 @@ def todays_rows(
                     in_group=instant.key in playing,
                 )
             )
-    # The sort is stable, so a skipped announcement follows the slot that won,
-    # unless a delay moved that to a later minute.
     return tuple(sorted(rows, key=lambda row: row.time))

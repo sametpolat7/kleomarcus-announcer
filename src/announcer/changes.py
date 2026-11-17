@@ -74,7 +74,7 @@ def _change(value: object) -> Change | None:
             and isinstance(name, str)
             and (text is None or isinstance(text, str))
             and kind in (Kind.START, Kind.END, Kind.CUSTOM)
-            and bool(name) == (kind is not Kind.CUSTOM)
+            and name
         ):
             return None
         return Change(

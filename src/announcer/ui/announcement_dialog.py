@@ -3,7 +3,7 @@ import logging
 import tkinter as tk
 from tkinter import ttk
 
-from announcer.app import App, ChangeProblem, SlotTakenError
+from announcer.app import App, ChangeProblem
 from announcer.models import ALL_WEEKDAYS, WEEKDAY_NAMES, CustomAnnouncement
 from announcer.today import BUSY
 from announcer.ui import texts
@@ -119,8 +119,6 @@ class AnnouncementDialog(Dialog):
             return
         try:
             self._app.save_announcement(announcement, self._index)
-        except SlotTakenError as error:
-            self.alert(texts.conflict_alert(error.conflicts))
         except OSError:
             _log.exception("Cannot save the custom announcement")
             self.alert(texts.CANNOT_SAVE)
