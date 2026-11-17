@@ -1677,6 +1677,21 @@ def test_only_the_custom_announcement_given_a_new_text_or_deleted_loses_todays_c
     assert heard(output) == [CHIME, doors.text]
 
 
+def test_deleting_the_same_custom_announcement_of_other_days_keeps_todays_change(
+    app: App,
+) -> None:
+    app.save_announcement(CustomAnnouncement(WATER.text, SEVEN_PM, frozenset({0, 1})))
+    app.save_announcement(CustomAnnouncement(WATER.text, SEVEN_PM, frozenset({5, 6})))
+    app.skip(row_of(app, Kind.CUSTOM))
+
+    app.delete_announcement(1)
+
+    assert app.changes == (
+        Change(MONDAY, at(19), Kind.CUSTOM, WATER.text, skipped=True),
+    )
+    assert statuses(app) == [Status.SKIPPING]
+
+
 def test_custom_announcement_given_other_days_keeps_todays_change(app: App) -> None:
     app.save_announcement(WATER)
     app.skip(row_of(app, Kind.CUSTOM))
