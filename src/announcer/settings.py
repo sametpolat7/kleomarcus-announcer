@@ -89,7 +89,7 @@ def load_settings(path: Path) -> LoadedSettings:
         else []
     )
     usable = tuple(item for item in found if item is not None)
-    single_delay = data.get("delay_minutes")
+    single_delay = _one_of(DELAYS, data.get("delay_minutes"), 0)
     settings = Settings(
         voice=voice or DEFAULT_VOICE,
         schedule_path=Path(schedule_path) if schedule_path else None,
@@ -108,8 +108,8 @@ def load_settings(path: Path) -> LoadedSettings:
         ),
         custom_announcements=usable,
         speed=_one_of(SPEEDS, data.get("speed"), NORMAL_SPEED),
-        start_delay=_one_of(DELAYS, data.get("start_delay_minutes", single_delay), 0),
-        end_delay=_one_of(DELAYS, data.get("end_delay_minutes", single_delay), 0),
+        start_delay=_one_of(DELAYS, data.get("start_delay_minutes"), single_delay),
+        end_delay=_one_of(DELAYS, data.get("end_delay_minutes"), single_delay),
     )
     return LoadedSettings(settings, dropped=len(found) - len(usable))
 
