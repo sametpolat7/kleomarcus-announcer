@@ -35,7 +35,8 @@ from support import (
     write_schedule,
 )
 
-SIX_PM, SEVEN_PM, EIGHT_PM = (datetime.time(hour) for hour in (18, 19, 20))
+SIX_PM, SEVEN_PM = (datetime.time(hour) for hour in (18, 19))
+FIVE_TO_SEVEN = datetime.time(18, 55)
 DAY = datetime.timedelta(days=1)
 TUESDAY = MONDAY + DAY
 # The athletes of ``ROWS``, in its order.
@@ -164,26 +165,27 @@ def statuses_while_sounding(
     return seen
 
 
-def test_end_of_a_session_is_announced_an_hour_after_its_start_with_its_template(
+def test_end_of_a_session_is_announced_55_minutes_after_its_start_with_its_template(
     app: App, schedule: Path, output: FakeOutput, clock: FakeClock
 ) -> None:
     app.choose_schedule(schedule)
-    app.set_delay(1)
+    app.set_start_delay(1)
+    app.set_end_delay(1)
     wait_for_speech(app)
 
     assert [(row.time, row.kind, row.text) for row in app.rows()] == [
         (datetime.time(18, 1), Kind.START, start_text(AYSE)),
         (datetime.time(18, 1), Kind.START, start_text(MEHMET)),
-        (datetime.time(19, 1), Kind.END, end_text(AYSE)),
-        (datetime.time(19, 1), Kind.END, end_text(MEHMET)),
+        (datetime.time(18, 56), Kind.END, end_text(AYSE)),
+        (datetime.time(18, 56), Kind.END, end_text(MEHMET)),
     ]
     app.start()
     clock.now = at(18, 1)
     wait_for(app, lambda: statuses(app) == [Status.PLAYED] * 2 + [Status.NEXT] * 2)
-    clock.now = at(19)
+    clock.now = at(18, 55)
     let_time_pass(app)
     assert len(output.played) == 3
-    clock.now = at(19, 1)
+    clock.now = at(18, 56)
     wait_for(app, lambda: statuses(app) == [Status.PLAYED] * 4)
 
     assert heard(output) == [
@@ -195,7 +197,7 @@ def test_end_of_a_session_is_announced_an_hour_after_its_start_with_its_template
         end_text(MEHMET),
     ]
     assert app.last_announcement == LastAnnouncement(
-        at(19, 1), ((Kind.END, AYSE), (Kind.END, MEHMET)), Status.PLAYED
+        at(18, 56), ((Kind.END, AYSE), (Kind.END, MEHMET)), Status.PLAYED
     )
 
 
@@ -204,24 +206,24 @@ def test_end_and_start_in_the_same_minute_follow_one_chime_the_end_first(
 ) -> None:
     evening = [
         (AYSE, "Pazartesi", "18:00"),
-        (AYSE, "Pazartesi", "19:00"),  # back to back
-        (MEHMET, "Pazartesi", "19:00"),
+        (AYSE, "Pazartesi", "18:55"),  # back to back
+        (MEHMET, "Pazartesi", "18:55"),
     ]
     app.choose_schedule(write_schedule(tmp_path / "evening.xlsx", evening))
     wait_for_speech(app)
 
     assert [(row.time, row.kind, row.text) for row in app.rows()] == [
         (SIX_PM, Kind.START, start_text(AYSE)),
-        (SEVEN_PM, Kind.END, end_text(AYSE)),
-        (SEVEN_PM, Kind.START, start_text(AYSE)),
-        (SEVEN_PM, Kind.START, start_text(MEHMET)),
-        (EIGHT_PM, Kind.END, end_text(AYSE)),
-        (EIGHT_PM, Kind.END, end_text(MEHMET)),
+        (FIVE_TO_SEVEN, Kind.END, end_text(AYSE)),
+        (FIVE_TO_SEVEN, Kind.START, start_text(AYSE)),
+        (FIVE_TO_SEVEN, Kind.START, start_text(MEHMET)),
+        (datetime.time(19, 50), Kind.END, end_text(AYSE)),
+        (datetime.time(19, 50), Kind.END, end_text(MEHMET)),
     ]
     app.start()
     clock.now = at(18)
     wait_for(app, lambda: statuses(app)[0] is Status.PLAYED)
-    clock.now = at(19)
+    clock.now = at(18, 55)
     wait_for(app, lambda: statuses(app)[1:4] == [Status.PLAYED] * 3)
 
     assert heard(output)[2:] == [
@@ -231,7 +233,7 @@ def test_end_and_start_in_the_same_minute_follow_one_chime_the_end_first(
         start_text(MEHMET),
     ]
     assert app.last_announcement == LastAnnouncement(
-        at(19),
+        at(18, 55),
         ((Kind.END, AYSE), (Kind.START, AYSE), (Kind.START, MEHMET)),
         Status.PLAYED,
     )
@@ -254,11 +256,11 @@ def test_end_of_a_session_is_not_announced_while_switched_off(
     app.start()
     clock.now = at(18)
     wait_for(app, lambda: statuses(app) == [Status.PLAYED] * 2)
-    clock.now = at(19)
+    clock.now = at(18, 55)
     let_time_pass(app)
     assert len(output.played) == 3
 
-    clock.now = at(19, 1)
+    clock.now = at(18, 56)
     app.set_end_announcements(True)
 
     assert not app.generating  # its speech was kept
@@ -274,21 +276,21 @@ def test_custom_announcement_in_the_minute_of_an_end_is_read_after_it(
     app: App, schedule: Path, output: FakeOutput, clock: FakeClock
 ) -> None:
     app.choose_schedule(schedule)
-    app.save_announcement(WATER)
+    app.save_announcement(CustomAnnouncement(WATER.text, FIVE_TO_SEVEN))
     wait_for_speech(app)
 
     assert app.timetable.conflicts == ()
     assert [(row.time, row.kind) for row in app.rows()] == [
         (SIX_PM, Kind.START),
         (SIX_PM, Kind.START),
-        (SEVEN_PM, Kind.END),
-        (SEVEN_PM, Kind.END),
-        (SEVEN_PM, Kind.CUSTOM),
+        (FIVE_TO_SEVEN, Kind.END),
+        (FIVE_TO_SEVEN, Kind.END),
+        (FIVE_TO_SEVEN, Kind.CUSTOM),
     ]
     app.start()
     clock.now = at(18)
     wait_for(app, lambda: statuses(app)[:2] == [Status.PLAYED] * 2)
-    clock.now = at(19)
+    clock.now = at(18, 55)
     wait_for(app, lambda: statuses(app) == [Status.PLAYED] * 5)
 
     assert heard(output)[3:] == [
@@ -298,8 +300,46 @@ def test_custom_announcement_in_the_minute_of_an_end_is_read_after_it(
         WATER.text,
     ]
     assert app.last_announcement == LastAnnouncement(
-        at(19),
+        at(18, 55),
         ((Kind.END, AYSE), (Kind.END, MEHMET), (Kind.CUSTOM, WATER.text)),
+        Status.PLAYED,
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "due", "sentence"),
+    [(Kind.START, at(18, 5), start_text), (Kind.END, at(19), end_text)],
+    ids=["start", "end"],
+)
+def test_start_or_end_delayed_into_the_minute_of_a_custom_announcement_is_read_with_it(
+    app: App,
+    schedule: Path,
+    output: FakeOutput,
+    clock: FakeClock,
+    kind: Kind,
+    due: datetime.datetime,
+    sentence: Callable[[str], str],
+) -> None:
+    app.choose_schedule(schedule)
+    app.set_start_delay(5)
+    app.set_end_delay(5)
+    app.save_announcement(CustomAnnouncement(WATER.text, due.time()))
+    wait_for_speech(app)
+
+    assert app.timetable.conflicts == ()
+    assert [row.kind for row in app.rows() if row.time == due.time()] == [
+        kind,
+        kind,
+        Kind.CUSTOM,
+    ]
+    app.start()
+    clock.now = due
+    wait_for(app, lambda: status_of(app, Kind.CUSTOM) is Status.PLAYED)
+
+    assert heard(output) == [CHIME, sentence(AYSE), sentence(MEHMET), WATER.text]
+    assert app.last_announcement == LastAnnouncement(
+        due,
+        ((kind, AYSE), (kind, MEHMET), (Kind.CUSTOM, WATER.text)),
         Status.PLAYED,
     )
 
@@ -465,7 +505,7 @@ def test_athletes_keep_both_old_templates_until_both_new_ones_have_speech(
 
     assert (app.spoken_template, app.spoken_end_template) == (NEW_START, NEW_END)
     assert statuses(app)[:2] == [Status.PLAYED] * 2
-    clock.now = at(19)
+    clock.now = at(18, 55)
     wait_for(app, lambda: statuses(app)[2:] == [Status.PLAYED] * 2)
     assert heard(output)[3:] == [
         CHIME,
@@ -537,7 +577,9 @@ def test_restart_within_the_minute_of_a_delayed_announcement_does_not_repeat_it(
     output: FakeOutput,
     clock: FakeClock,
 ) -> None:
-    save_settings(Settings(schedule_path=schedule, delay=1), settings_file)
+    save_settings(
+        Settings(schedule_path=schedule, start_delay=1, end_delay=1), settings_file
+    )
     first = make_app()
     first.start()
     wait_for_speech(first)
@@ -553,7 +595,7 @@ def test_restart_within_the_minute_of_a_delayed_announcement_does_not_repeat_it(
 
     assert len(output.played) == played
     assert statuses(app) == [Status.PASSED] * 2 + [Status.NEXT] * 2
-    clock.now = at(19, 1)
+    clock.now = at(18, 56)
     wait_for(app, lambda: statuses(app)[2:] == [Status.PLAYED] * 2)
     assert heard(output)[played:] == [CHIME, end_text(AYSE), end_text(MEHMET)]
 
@@ -565,7 +607,7 @@ def test_restart_in_the_minute_that_a_delayed_announcement_was_set_for_keeps_it(
     output: FakeOutput,
     clock: FakeClock,
 ) -> None:
-    save_settings(Settings(schedule_path=schedule, delay=1), settings_file)
+    save_settings(Settings(schedule_path=schedule, start_delay=1), settings_file)
     first = make_app()
     first.start()
     wait_for_speech(first)
@@ -632,15 +674,15 @@ def test_skipped_session_is_announced_neither_at_its_start_nor_at_its_end(
     ]
     assert load_changes(app.changes_file, MONDAY) == (
         Change(MONDAY, at(18), Kind.START, AYSE, skipped=True),
-        Change(MONDAY, at(19), Kind.END, AYSE, skipped=True),
+        Change(MONDAY, at(18, 55), Kind.END, AYSE, skipped=True),
         Change(MONDAY, at(18), Kind.START, MEHMET, skipped=True),
-        Change(MONDAY, at(19), Kind.END, MEHMET, skipped=True),
+        Change(MONDAY, at(18, 55), Kind.END, MEHMET, skipped=True),
     )
     clock.now = at(18)
     let_time_pass(app)
-    clock.now = at(19)
+    clock.now = at(18, 55)
     let_time_pass(app)
-    clock.now = at(19, 1)
+    clock.now = at(18, 56)
 
     assert output.played == []
     assert statuses(app) == [Status.SKIPPED] * 4
@@ -665,13 +707,13 @@ def test_athlete_skipped_leaves_the_other_of_the_same_minute_to_be_read(
     ]
     assert app.changes == (
         Change(MONDAY, at(18), Kind.START, AYSE, skipped=True),
-        Change(MONDAY, at(19), Kind.END, AYSE, skipped=True),
+        Change(MONDAY, at(18, 55), Kind.END, AYSE, skipped=True),
     )
     clock.now = at(18)
     wait_for(app, lambda: status_of(app, Kind.START, MEHMET) is Status.PLAYED)
-    clock.now = at(19)
+    clock.now = at(18, 55)
     wait_for(app, lambda: status_of(app, Kind.END, MEHMET) is Status.PLAYED)
-    clock.now = at(19, 1)
+    clock.now = at(18, 56)
 
     assert heard(output) == [CHIME, start_text(MEHMET), CHIME, end_text(MEHMET)]
     assert statuses(app) == [
@@ -681,7 +723,7 @@ def test_athlete_skipped_leaves_the_other_of_the_same_minute_to_be_read(
         Status.PLAYED,
     ]
     assert app.last_announcement == LastAnnouncement(
-        at(19), ((Kind.END, MEHMET),), Status.PLAYED
+        at(18, 55), ((Kind.END, MEHMET),), Status.PLAYED
     )
 
 
@@ -758,7 +800,7 @@ def test_end_can_be_skipped_and_brought_back_by_itself(
     app.start()
     clock.now = at(18)
     wait_for(app, lambda: statuses(app)[:2] == [Status.PLAYED] * 2)
-    clock.now = at(19)
+    clock.now = at(18, 55)
     wait_for(app, lambda: status_of(app, Kind.END, MEHMET) is Status.PLAYED)
     assert heard(output)[3:] == [CHIME, end_text(MEHMET)]
 
@@ -857,7 +899,7 @@ def test_start_skipped_while_ends_are_switched_off_has_its_end_skipped_when_on(
     ]
     on = app.editing(row_of(app, Kind.START, AYSE))
     assert on is not None
-    assert on.end == SEVEN_PM
+    assert on.end == FIVE_TO_SEVEN
     app.skip(row_of(app, Kind.START, AYSE), skipped=False)
     assert statuses(app) == [Status.NEXT] * 2 + [Status.WAITING] * 2
 
@@ -903,7 +945,8 @@ def test_row_moved_to_another_time_is_announced_then_and_only_then(
     app: App, schedule: Path, output: FakeOutput, clock: FakeClock
 ) -> None:
     app.choose_schedule(schedule)
-    app.set_delay(1)
+    app.set_start_delay(1)
+    app.set_end_delay(2)
     wait_for_speech(app)
     app.start()
     editing = app.editing(row_of(app, Kind.START, AYSE))
@@ -911,7 +954,7 @@ def test_row_moved_to_another_time_is_announced_then_and_only_then(
     assert (editing.planned, editing.time, editing.end) == (
         datetime.time(18, 1),
         datetime.time(18, 1),
-        datetime.time(19, 1),
+        datetime.time(18, 57),
     )
 
     app.edit(row_of(app, Kind.START, AYSE), datetime.time(18, 30), editing.text)
@@ -920,8 +963,8 @@ def test_row_moved_to_another_time_is_announced_then_and_only_then(
     assert [(row.time, row.kind, name_of(row), row.edited) for row in app.rows()] == [
         (datetime.time(18, 1), Kind.START, MEHMET, False),
         (datetime.time(18, 30), Kind.START, AYSE, True),
-        (datetime.time(19, 1), Kind.END, AYSE, False),
-        (datetime.time(19, 1), Kind.END, MEHMET, False),
+        (datetime.time(18, 57), Kind.END, AYSE, False),
+        (datetime.time(18, 57), Kind.END, MEHMET, False),
     ]
     assert load_changes(app.changes_file, MONDAY) == (
         Change(MONDAY, at(18), Kind.START, AYSE, time=datetime.time(18, 30)),
@@ -1064,7 +1107,7 @@ def test_new_sentence_of_one_athlete_is_used_once_its_speech_is_made_and_is_read
     clock.now = at(18)
     wait_for(app, lambda: statuses(app)[:2] == [Status.PLAYED] * 2)
     assert heard(output) == [CHIME, render(NEW_START, AYSE), start_text(MEHMET)]
-    clock.now = at(19)
+    clock.now = at(18, 55)
     wait_for(app, lambda: statuses(app)[2:] == [Status.PLAYED] * 2)
     assert heard(output)[3:] == [CHIME, end_text(AYSE), end_text(MEHMET)]
 
@@ -1078,13 +1121,13 @@ def test_sentence_of_an_athlete_may_leave_the_name_out(
     goodbye = "Görüşmek üzere."
     speak_ahead(app, [goodbye])
 
-    app.edit(row_of(app, Kind.END, MEHMET), SEVEN_PM, goodbye)
+    app.edit(row_of(app, Kind.END, MEHMET), FIVE_TO_SEVEN, goodbye)
 
     assert [row.text for row in app.rows() if row.kind is Kind.END] == [
         end_text(AYSE),
         goodbye,
     ]
-    clock.now = at(19)
+    clock.now = at(18, 55)
     wait_for(app, lambda: statuses(app)[2:] == [Status.PLAYED] * 2)
     assert heard(output) == [CHIME, end_text(AYSE), goodbye]
 
@@ -1180,8 +1223,8 @@ def test_change_back_to_the_plan_is_no_change(app: App, schedule: Path) -> None:
     assert [(row.time, row.text, row.edited) for row in app.rows()] == [
         (SIX_PM, start_text(AYSE), False),
         (SIX_PM, start_text(MEHMET), False),
-        (SEVEN_PM, end_text(AYSE), False),
-        (SEVEN_PM, end_text(MEHMET), False),
+        (FIVE_TO_SEVEN, end_text(AYSE), False),
+        (FIVE_TO_SEVEN, end_text(MEHMET), False),
     ]
 
 
@@ -1244,15 +1287,15 @@ def test_skipped_row_moved_to_another_time_stays_skipped(
         Change(
             MONDAY, at(18), Kind.START, AYSE, skipped=True, time=datetime.time(18, 30)
         ),
-        Change(MONDAY, at(19), Kind.END, AYSE, skipped=True),
+        Change(MONDAY, at(18, 55), Kind.END, AYSE, skipped=True),
     }
     clock.now = at(18)
     wait_for(app, lambda: status_of(app, Kind.START, MEHMET) is Status.PLAYED)
     clock.now = at(18, 30)
     let_time_pass(app)
-    clock.now = at(19)
+    clock.now = at(18, 55)
     wait_for(app, lambda: status_of(app, Kind.END, MEHMET) is Status.PLAYED)
-    clock.now = at(19, 1)
+    clock.now = at(18, 56)
     assert heard(output) == [CHIME, start_text(MEHMET), CHIME, end_text(MEHMET)]
     assert [(row.kind, name_of(row), row.status) for row in app.rows()] == [
         (Kind.START, MEHMET, Status.PLAYED),
@@ -1281,7 +1324,7 @@ def test_skipping_and_bringing_back_a_start_keeps_what_was_changed_about_it(
     ] == [
         (SIX_PM, Kind.START, MEHMET, Status.NEXT, False),
         (datetime.time(18, 30), Kind.START, AYSE, Status.WAITING, True),
-        (SEVEN_PM, Kind.END, MEHMET, Status.WAITING, False),
+        (FIVE_TO_SEVEN, Kind.END, MEHMET, Status.WAITING, False),
         (datetime.time(19, 15), Kind.END, AYSE, Status.WAITING, True),
     ]
     clock.now = at(18)
@@ -1310,7 +1353,7 @@ def test_start_skipped_or_changed_keeps_what_was_changed_about_its_end(
         ),
         Change(
             MONDAY,
-            at(19),
+            at(18, 55),
             Kind.END,
             AYSE,
             skipped=True,
@@ -1322,7 +1365,7 @@ def test_start_skipped_or_changed_keeps_what_was_changed_about_its_end(
     assert [(row.time, row.kind, row.text, row.status) for row in app.rows()] == [
         (SIX_PM, Kind.START, start_text(MEHMET), Status.NEXT),
         (datetime.time(18, 30), Kind.START, start_text(AYSE), Status.SKIPPING),
-        (SEVEN_PM, Kind.END, end_text(MEHMET), Status.WAITING),
+        (FIVE_TO_SEVEN, Kind.END, end_text(MEHMET), Status.WAITING),
         (datetime.time(19, 15), Kind.END, render(NEW_END, AYSE), Status.SKIPPING),
     ]
 
@@ -1356,10 +1399,38 @@ def test_start_changed_after_its_end_came_leaves_that_end_alone(
     )
     assert [(row.time, row.kind, row.text) for row in app.rows()] == [
         (SIX_PM, Kind.START, start_text(MEHMET)),
-        (SEVEN_PM, Kind.END, end_text(AYSE)),
-        (SEVEN_PM, Kind.END, end_text(MEHMET)),
+        (FIVE_TO_SEVEN, Kind.END, end_text(AYSE)),
+        (FIVE_TO_SEVEN, Kind.END, end_text(MEHMET)),
         (datetime.time(19, 30), Kind.START, render(NEW_START, AYSE)),
     ]
+
+
+def test_start_skipped_while_a_delay_holds_back_its_end_has_that_end_skipped_too(
+    app: App, schedule: Path, output: FakeOutput, clock: FakeClock
+) -> None:
+    app.choose_schedule(schedule)
+    app.set_end_delay(10)
+    wait_for_speech(app)
+    app.start()
+    app.edit(row_of(app, Kind.START, AYSE), datetime.time(19, 30), start_text(AYSE))
+    clock.now = at(19)
+    editing = app.editing(row_of(app, Kind.START, AYSE))
+    assert editing is not None
+    assert editing.end == datetime.time(19, 5)
+
+    app.skip(row_of(app, Kind.START, AYSE))
+
+    assert set(load_changes(app.changes_file, MONDAY)) == {
+        Change(
+            MONDAY, at(18), Kind.START, AYSE, skipped=True, time=datetime.time(19, 30)
+        ),
+        Change(MONDAY, at(18, 55), Kind.END, AYSE, skipped=True),
+    }
+    end = row_of(app, Kind.END, AYSE)
+    assert (end.time, end.status) == (datetime.time(19, 5), Status.SKIPPING)
+    clock.now = at(19, 5)
+    wait_for(app, lambda: status_of(app, Kind.END, MEHMET) is Status.PLAYED)
+    assert heard(output) == [CHIME, end_text(MEHMET)]
 
 
 def test_editing_tells_what_one_athlete_and_a_custom_announcement_are_told(
@@ -1375,10 +1446,16 @@ def test_editing_tells_what_one_athlete_and_a_custom_announcement_are_told(
         start_text(MEHMET),
         start_text(MEHMET),
         MEHMET,
-        SEVEN_PM,
+        FIVE_TO_SEVEN,
     )
     assert app.editing(row_of(app, Kind.END, AYSE)) == Editing(
-        Kind.END, SEVEN_PM, SEVEN_PM, end_text(AYSE), end_text(AYSE), AYSE, None
+        Kind.END,
+        FIVE_TO_SEVEN,
+        FIVE_TO_SEVEN,
+        end_text(AYSE),
+        end_text(AYSE),
+        AYSE,
+        None,
     )
     assert app.editing(row_of(app, Kind.CUSTOM)) == Editing(
         Kind.CUSTOM, SEVEN_PM, SEVEN_PM, WATER.text, WATER.text, "", None
@@ -1732,6 +1809,6 @@ def test_unreadable_changes_are_copied_and_the_first_change_replaces_them(
     assert not app.changes_unreadable
     assert load_changes(changes_file, MONDAY) == (
         Change(MONDAY, at(18), Kind.START, AYSE, skipped=True),
-        Change(MONDAY, at(19), Kind.END, AYSE, skipped=True),
+        Change(MONDAY, at(18, 55), Kind.END, AYSE, skipped=True),
     )
     assert backup_copy(changes_file).read_text(encoding="utf-8") == "{ not json"

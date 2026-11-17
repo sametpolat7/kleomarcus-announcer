@@ -34,7 +34,7 @@ from support import (
 )
 
 OFF_THE_SCREEN = "+5000+5000"
-WATER = CustomAnnouncement("Su içmeyi unutmayın.", datetime.time(19, 0))
+WATER = CustomAnnouncement("Su içmeyi unutmayın.", datetime.time(18, 55))
 CLOSING = CustomAnnouncement("Salon kapanıyor.", datetime.time(9, 30), frozenset({5}))
 # Their sessions start at 18:00 on the schedule's Monday, in this order.
 AYSE, MEHMET = "Ayşe Yılmaz", "Mehmet Demir"
@@ -53,7 +53,7 @@ def start_row(name: str) -> tuple[str, ...]:
 
 
 def end_row(name: str) -> tuple[str, ...]:
-    return ("Pazartesi", "19:00", "Bitiş", goodbye(name))
+    return ("Pazartesi", "18:55", "Bitiş", goodbye(name))
 
 
 @pytest.fixture
@@ -227,9 +227,10 @@ def test_fresh_window_asks_for_a_schedule(window: MainWindow) -> None:
     assert window.end_template.get() == DEFAULT_END_TEMPLATE
     assert (
         window.speed_box.get(),
-        window.delay_box.get(),
+        window.start_delay_box.get(),
+        window.end_delay_box.get(),
         window.end_box.get(),
-    ) == ("1.0× (Normal)", "Yok", "Açık")
+    ) == ("1.0× (Normal)", "Yok", "Yok", "Açık")
     assert window.stop_button.instate(["disabled"])
     assert window.instant_button.instate(["!disabled"])
     assert warnings(window).startswith("• Sporcu listesi seçilmedi.")
@@ -257,9 +258,9 @@ def test_athletes_of_a_minute_have_a_row_each_in_the_order_of_the_schedule(
     window: MainWindow, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rows = [
-        ("Zeynep Kaya", "Pazartesi", "18:00"),
+        ("Zeynep Kaya", "Pazartesi", "17:55"),
         ("Elif Şahin", "Pazartesi", "17:00"),
-        ("Ali Kara", "Pazartesi", "18:00"),
+        ("Ali Kara", "Pazartesi", "17:55"),
     ]
 
     choose(window, write_schedule(tmp_path / "order.xlsx", rows), monkeypatch)
@@ -267,11 +268,11 @@ def test_athletes_of_a_minute_have_a_row_each_in_the_order_of_the_schedule(
     # Those whose session ends are said goodbye to before the next are welcomed.
     assert [values[1:4] for values in today(window)] == [
         ("17:00", "Başlangıç", welcome("Elif Şahin")),
-        ("18:00", "Bitiş", goodbye("Elif Şahin")),
-        ("18:00", "Başlangıç", welcome("Zeynep Kaya")),
-        ("18:00", "Başlangıç", welcome("Ali Kara")),
-        ("19:00", "Bitiş", goodbye("Zeynep Kaya")),
-        ("19:00", "Bitiş", goodbye("Ali Kara")),
+        ("17:55", "Bitiş", goodbye("Elif Şahin")),
+        ("17:55", "Başlangıç", welcome("Zeynep Kaya")),
+        ("17:55", "Başlangıç", welcome("Ali Kara")),
+        ("18:50", "Bitiş", goodbye("Zeynep Kaya")),
+        ("18:50", "Bitiş", goodbye("Ali Kara")),
     ]
 
 
@@ -316,7 +317,7 @@ def test_saved_schedule_file_is_shown_by_itself(
     pump(window, lambda: len(today(window)) == 6)
     assert today(window)[4:] == [
         ("Pazartesi", "20:30", "Başlangıç", welcome("Elif Şahin"), "Bekliyor"),
-        ("Pazartesi", "21:30", "Bitiş", goodbye("Elif Şahin"), "Bekliyor"),
+        ("Pazartesi", "21:25", "Bitiş", goodbye("Elif Şahin"), "Bekliyor"),
     ]
     assert window.loaded.get() == "Son Yüklenme Tarihi: 09.11.2026 09:15:00"
 
@@ -339,7 +340,7 @@ def test_status_follows_the_clock(
 
     assert today(window) == [
         ("Salı", "20:00", "Başlangıç", welcome("Zeynep Kaya"), "Sıradaki"),
-        ("Salı", "21:00", "Bitiş", goodbye("Zeynep Kaya"), "Bekliyor"),
+        ("Salı", "20:55", "Bitiş", goodbye("Zeynep Kaya"), "Bekliyor"),
     ]
 
 
@@ -635,7 +636,7 @@ def test_table_stays_where_it_is_while_a_row_is_read_again(
     assert seen == []
 
     output.endless = True  # the chime goes on, so the next ones stay queued
-    clock.now = at(19)  # the day moves on to the next announcements
+    clock.now = at(18, 55)  # the day moves on to the next announcements
     pump(window, lambda: statuses(window)[2:] == ["Sırada"] * 3)
     # The whole minute: its last row, then its first.
     assert seen == ["4", "2"]
@@ -685,7 +686,7 @@ def test_table_follows_the_next_row_when_the_first_athlete_of_its_minute_is_skip
     assert seen == ["1", "1", "1", "0"]
 
 
-def test_table_follows_the_next_minute_when_a_change_of_the_delay_moves_it(
+def test_table_follows_the_next_minute_when_a_change_of_the_start_delay_moves_it(
     window: MainWindow,
     app: App,
     schedule: Path,
@@ -695,9 +696,9 @@ def test_table_follows_the_next_minute_when_a_change_of_the_delay_moves_it(
     window.root.update()
     seen = brought_into_view(window, monkeypatch)
 
-    pick(window.delay_box, "2 dk")
+    pick(window.start_delay_box, "2 dk")
 
-    assert [values[1] for values in today(window)] == ["18:02"] * 2 + ["19:02"] * 2
+    assert [values[1] for values in today(window)] == ["18:02"] * 2 + ["18:55"] * 2
     assert statuses(window)[:2] == ["Sıradaki"] * 2
     assert seen == ["1", "0"]
 
@@ -827,14 +828,14 @@ def test_selection_stays_with_its_row_when_a_start_and_an_end_share_a_minute(
 ) -> None:
     twice = [
         ("Ayşe Yılmaz", "Pazartesi", "18:00"),
-        ("Ayşe Yılmaz", "Pazartesi", "19:00"),
+        ("Ayşe Yılmaz", "Pazartesi", "18:55"),
     ]
     choose(window, write_schedule(tmp_path / "twice.xlsx", twice), monkeypatch)
     assert [values[1:4] for values in today(window)] == [
         ("18:00", "Başlangıç", welcome(AYSE)),
-        ("19:00", "Bitiş", goodbye(AYSE)),
-        ("19:00", "Başlangıç", welcome(AYSE)),
-        ("20:00", "Bitiş", goodbye(AYSE)),
+        ("18:55", "Bitiş", goodbye(AYSE)),
+        ("18:55", "Başlangıç", welcome(AYSE)),
+        ("19:50", "Bitiş", goodbye(AYSE)),
     ]
     select(window, "2")
 
@@ -978,7 +979,12 @@ def test_instant_button_has_what_is_typed_read_at_once(
 
 
 def test_scrolling_over_a_setting_does_not_change_it(window: MainWindow) -> None:
-    for box in (window.speed_box, window.delay_box, window.end_box):
+    for box in (
+        window.speed_box,
+        window.start_delay_box,
+        window.end_delay_box,
+        window.end_box,
+    ):
         scrolling = [
             sequence
             for sequence in box.bind_class("TCombobox")
@@ -1043,22 +1049,46 @@ def test_selected_row_stays_selected_when_the_table_changes(
     assert window.today.selection() == ("2",)
 
 
-def test_choosing_a_delay_moves_todays_announcements(
+def test_choosing_a_start_delay_moves_only_todays_starts(
     window: MainWindow, app: App, schedule: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     choose(window, schedule, monkeypatch)
+    app.save_announcement(WATER)
 
-    pick(window.delay_box, "2 dk")
+    pick(window.start_delay_box, "2 dk")
 
-    assert app.settings.delay == 2
+    assert (app.settings.start_delay, app.settings.end_delay) == (2, 0)
+    assert window.end_delay_box.get() == "Yok"
     assert today(window) == [
         ("Pazartesi", "18:02", "Başlangıç", welcome(AYSE), "Sıradaki"),
         ("Pazartesi", "18:02", "Başlangıç", welcome(MEHMET), "Sıradaki"),
-        ("Pazartesi", "19:02", "Bitiş", goodbye(AYSE), "Bekliyor"),
-        ("Pazartesi", "19:02", "Bitiş", goodbye(MEHMET), "Bekliyor"),
+        (*end_row(AYSE), "Bekliyor"),
+        (*end_row(MEHMET), "Bekliyor"),
+        ("Pazartesi", "18:55", "Özel", WATER.text, "Bekliyor"),
     ]
-    pick(window.delay_box, "Yok")
-    assert [values[1] for values in today(window)] == ["18:00"] * 2 + ["19:00"] * 2
+    pick(window.start_delay_box, "Yok")
+    assert [values[1] for values in today(window)] == ["18:00"] * 2 + ["18:55"] * 3
+
+
+def test_choosing_an_end_delay_moves_only_todays_ends(
+    window: MainWindow, app: App, schedule: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    choose(window, schedule, monkeypatch)
+    app.save_announcement(WATER)
+
+    pick(window.end_delay_box, "5 dk")
+
+    assert (app.settings.start_delay, app.settings.end_delay) == (0, 5)
+    assert window.start_delay_box.get() == "Yok"
+    assert today(window) == [
+        (*start_row(AYSE), "Sıradaki"),
+        (*start_row(MEHMET), "Sıradaki"),
+        ("Pazartesi", "18:55", "Özel", WATER.text, "Bekliyor"),
+        ("Pazartesi", "19:00", "Bitiş", goodbye(AYSE), "Bekliyor"),
+        ("Pazartesi", "19:00", "Bitiş", goodbye(MEHMET), "Bekliyor"),
+    ]
+    pick(window.end_delay_box, "Yok")
+    assert [values[1] for values in today(window)] == ["18:00"] * 2 + ["18:55"] * 3
 
 
 def test_end_announcements_can_be_switched_off_and_on(
@@ -1107,26 +1137,34 @@ def test_settings_show_what_is_stored_and_stay_when_they_cannot_be_saved(
     window: MainWindow, app: App, settings_file: Path, alerts: list[str]
 ) -> None:
     app.set_speed(1.1)
-    app.set_delay(5)
+    app.set_start_delay(5)
+    app.set_end_delay(2)
     app.set_end_announcements(False)
     window.show()
-    boxes = (window.speed_box, window.delay_box, window.end_box)
-    assert [box.get() for box in boxes] == ["1.1×", "5 dk", "Kapalı"]
+    boxes = (
+        window.speed_box,
+        window.start_delay_box,
+        window.end_delay_box,
+        window.end_box,
+    )
+    assert [box.get() for box in boxes] == ["1.1×", "5 dk", "2 dk", "Kapalı"]
     settings_file.unlink()
     settings_file.mkdir()
 
     pick(window.speed_box, "0.8×")
-    pick(window.delay_box, "10 dk")
+    pick(window.start_delay_box, "10 dk")
+    pick(window.end_delay_box, "3 dk")
     pick(window.end_box, "Açık")
 
-    assert alerts == ["Değişiklik kaydedilemedi. Ayrıntılar kayıt dosyasındadır."] * 3
-    assert [box.get() for box in boxes] == ["1.1×", "5 dk", "Kapalı"]
+    assert alerts == ["Değişiklik kaydedilemedi. Ayrıntılar kayıt dosyasındadır."] * 4
+    assert [box.get() for box in boxes] == ["1.1×", "5 dk", "2 dk", "Kapalı"]
     settings = app.settings
-    assert (settings.speed, settings.delay, settings.end_announcements) == (
-        1.1,
-        5,
-        False,
-    )
+    assert (
+        settings.speed,
+        settings.start_delay,
+        settings.end_delay,
+        settings.end_announcements,
+    ) == (1.1, 5, 2, False)
 
 
 def test_speech_that_cannot_be_generated_is_shown_as_a_warning(
@@ -1316,7 +1354,7 @@ def test_custom_announcements_are_listed_by_time(window: MainWindow, app: App) -
 
     assert announcements(window) == [
         ("09:30", "Cumartesi", "Salon kapanıyor."),
-        ("19:00", "Her gün", "Su içmeyi unutmayın."),
+        ("18:55", "Her gün", "Su içmeyi unutmayın."),
     ]
     window.announcements.focus("1")
     window.show()
@@ -1346,7 +1384,7 @@ def test_delete_asks_first(
     window.delete_button.invoke()
     assert app.settings.custom_announcements == (WATER,)
     assert questions == ["“Salon kapanıyor.” anonsu silinsin mi?"] * 2
-    assert announcements(window) == [("19:00", "Her gün", "Su içmeyi unutmayın.")]
+    assert announcements(window) == [("18:55", "Her gün", "Su içmeyi unutmayın.")]
     assert window.delete_button.instate(["disabled"])
 
 
@@ -1829,7 +1867,12 @@ def test_pointer_is_a_hand_over_what_can_be_pressed(window: MainWindow) -> None:
 
     assert str(pressable.cget("cursor")) == theme.POINTER
     assert not str(disabled.cget("cursor"))
-    for box in (window.speed_box, window.delay_box, window.end_box):
+    for box in (
+        window.speed_box,
+        window.start_delay_box,
+        window.end_delay_box,
+        window.end_box,
+    ):
         assert str(box.cget("cursor")) == theme.POINTER
 
 
@@ -1840,7 +1883,7 @@ def test_choice_drops_its_list_at_one_click_and_keeps_its_text_when_it_is_closed
     window: MainWindow, app: App
 ) -> None:
     window.root.deiconify()
-    box = window.delay_box
+    box = window.start_delay_box
     popdown = str(box.tk.call("ttk::combobox::PopdownWindow", box))
     choices = f"{popdown}.f.l"
 
@@ -1861,7 +1904,7 @@ def test_choice_drops_its_list_at_one_click_and_keeps_its_text_when_it_is_closed
     box.tk.call(choices, "selection", "set", 2)
     assert not dropped_after(choices, "<ButtonRelease-1>")
     assert box.get() == "2 dk"
-    assert app.settings.delay == 2
+    assert app.settings.start_delay == 2
     assert box.instate(["!pressed"])
 
     assert dropped_after(*click)
@@ -2078,7 +2121,7 @@ def test_change_dialog_fills_in_the_plan_again_without_saving_it(
     assert (dialog.hour.get(), dialog.minute.get()) == ("18", "30")
     assert dialog.text.get() == "Merhaba Ayşe Yılmaz."
     assert (
-        "Bu sporcunun 19:00 bitiş anonsu bu değişiklikten etkilenmez; "
+        "Bu sporcunun 18:55 bitiş anonsu bu değişiklikten etkilenmez; "
         "gerekirse onu da ayrıca düzenleyin."
     ) in labels(dialog)
     dialog.text.set("Selam {ad_soyad}.")
@@ -2098,8 +2141,8 @@ def test_change_dialog_of_an_end_shows_the_end_sentence_and_fills_it_in_again(
     app.set_templates(DEFAULT_TEMPLATE, "Güle güle, {ad_soyad}.")
     wait_for(app, lambda: not app.generating)
     dialog = make_change_dialog(3)
-    assert heading(dialog) == "Bitiş anonsu · Mehmet Demir · planlanan saat 19:00"
-    assert (dialog.hour.get(), dialog.minute.get()) == ("19", "00")
+    assert heading(dialog) == "Bitiş anonsu · Mehmet Demir · planlanan saat 18:55"
+    assert (dialog.hour.get(), dialog.minute.get()) == ("18", "55")
     assert dialog.text.get() == "Güle güle, Mehmet Demir."
     # Only the start of a session has an end to tell about.
     assert not [text for text in labels(dialog) if "etkilenmez" in text]
@@ -2108,7 +2151,7 @@ def test_change_dialog_of_an_end_shows_the_end_sentence_and_fills_it_in_again(
 
     dialog.reset()
 
-    assert (dialog.hour.get(), dialog.minute.get()) == ("19", "00")
+    assert (dialog.hour.get(), dialog.minute.get()) == ("18", "55")
     assert dialog.text.get() == "Güle güle, Mehmet Demir."
     assert not app.changes
 
@@ -2209,7 +2252,7 @@ def test_change_dialog_rewords_a_custom_announcement_for_today_only(
     app.save_announcement(WATER)
     wait_for(app, lambda: not app.generating)
     dialog = make_change_dialog(0)
-    assert heading(dialog) == "Özel anons · planlanan saat 19:00"
+    assert heading(dialog) == "Özel anons · planlanan saat 18:55"
     assert dialog.text.get() == WATER.text
     dialog.text.set("  Bol su içiniz.  ")
 
@@ -2227,7 +2270,7 @@ def test_change_dialog_rewords_a_custom_announcement_for_today_only(
     assert app.settings.custom_announcements == (WATER,)
     window.show()
     assert today(window) == [
-        ("Pazartesi", "19:00", "Özel", "Bol su içiniz.", "Sıradaki (düzenlendi)")
+        ("Pazartesi", "18:55", "Özel", "Bol su içiniz.", "Sıradaki (düzenlendi)")
     ]
 
 

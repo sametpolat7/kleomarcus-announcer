@@ -256,7 +256,8 @@ class MainWindow:
         self.last_announcement.set(texts.last_announcement(app.last_announcement))
         self.activity.set(texts.activity(app.generating, app.test_status))
         self.speed_box.current(SPEEDS.index(app.settings.speed))
-        self.delay_box.current(DELAYS.index(app.settings.delay))
+        self.start_delay_box.current(DELAYS.index(app.settings.start_delay))
+        self.end_delay_box.current(DELAYS.index(app.settings.end_delay))
         self.end_box.current(0 if app.settings.end_announcements else 1)
         self._show_today(now)
         self._show_announcements()
@@ -394,12 +395,23 @@ class MainWindow:
         self.speed_box = self._choice(
             body, 0, "Ses hızı", map(texts.speed, SPEEDS), self.choose_speed
         )
-        self.delay_box = self._choice(
-            body, 1, "Gecikme süresi", map(texts.delay, DELAYS), self.choose_delay
+        self.start_delay_box = self._choice(
+            body,
+            1,
+            "Başlangıç gecikme süresi",
+            map(texts.delay, DELAYS),
+            self.choose_start_delay,
+        )
+        self.end_delay_box = self._choice(
+            body,
+            2,
+            "Bitiş gecikme süresi",
+            map(texts.delay, DELAYS),
+            self.choose_end_delay,
         )
         self.end_box = self._choice(
             body,
-            2,
+            3,
             "Bitiş anonsu",
             map(texts.switch, (True, False)),
             self.choose_end_announcements,
@@ -920,10 +932,15 @@ class MainWindow:
         if speed != self._app.settings.speed:
             self._change(self._app.set_speed, speed)
 
-    def choose_delay(self) -> None:
-        delay = DELAYS[self.delay_box.current()]
-        if delay != self._app.settings.delay:
-            self._change(self._app.set_delay, delay)
+    def choose_start_delay(self) -> None:
+        delay = DELAYS[self.start_delay_box.current()]
+        if delay != self._app.settings.start_delay:
+            self._change(self._app.set_start_delay, delay)
+
+    def choose_end_delay(self) -> None:
+        delay = DELAYS[self.end_delay_box.current()]
+        if delay != self._app.settings.end_delay:
+            self._change(self._app.set_end_delay, delay)
 
     def choose_end_announcements(self) -> None:
         on = self.end_box.current() == 0

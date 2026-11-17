@@ -6,7 +6,7 @@ from enum import Enum
 from announcer.models import Kind
 from announcer.player import Heard, Playback
 from announcer.scheduler import LATE
-from announcer.timetable import Part, PartId, Timetable, delayed, set_for
+from announcer.timetable import Part, PartId, Timetable, set_for
 
 
 class Status(Enum):
@@ -67,7 +67,7 @@ class Instant:
 
 @dataclass(frozen=True)
 class Row:
-    time: datetime.time  # when it is announced, so with the delay
+    time: datetime.time  # when it is announced, so with its delay
     kind: Kind
     text: str  # what is read
     status: Status
@@ -170,9 +170,10 @@ def todays_rows(
             )
     for conflict in timetable.conflicts:
         announcement = conflict.announcement
-        weekday, time = delayed(conflict.weekday, announcement.time, timetable.delay)
-        if weekday == now.weekday():
-            rows.append(Row(time, Kind.CUSTOM, announcement.text, Status.CONFLICT))
+        if conflict.weekday == now.weekday():
+            rows.append(
+                Row(announcement.time, Kind.CUSTOM, announcement.text, Status.CONFLICT)
+            )
     for instant in instants:
         if instant.asked_at.date() == now.date():
             status = outcomes.get(instant.key, Status.PREPARING)
@@ -186,5 +187,6 @@ def todays_rows(
                     in_group=instant.key in playing,
                 )
             )
-    # The sort is stable, so a skipped announcement follows the slot that won.
+    # The sort is stable, so a skipped announcement follows the slot that won,
+    # unless a delay moved that to a later minute.
     return tuple(sorted(rows, key=lambda row: row.time))
