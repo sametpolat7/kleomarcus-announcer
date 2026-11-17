@@ -103,9 +103,10 @@ fictional names.
 - **Templates.** `{ad_soyad}` stands for the athlete's name and may be moved
   anywhere in the sentence. New templates, and a new speed, are used once all
   of their speech has been generated.
-- **End of a session.** A session lasts 55 minutes. When one ends in the
-  minute that another starts, both are announced after a single chime, the
-  end first.
+- **End of a session.** A session lasts 55 minutes.
+- **Same minute.** Whatever is due in the same minute is announced after a
+  single chime: the ends first, then the starts, then the custom
+  announcements.
 - **Delays.** **Başlangıç gecikme süresi** moves the starts by 1 to 10
   minutes and **Bitiş gecikme süresi** the ends; each is set on its own.
   Custom announcements are read at their own time. Today's table shows the
@@ -116,10 +117,10 @@ fictional names.
   start leaves its end where it is. A new sentence is saved once its speech
   has been generated. The schedule file and the custom announcements are not
   changed.
-- **Conflicts.** A custom announcement may not be set for the minute of the
-  start of a session or of another custom announcement; the window says
-  which one is left out. A start or an end that a delay moves into its
-  minute is read with it, after a single chime.
+- **Starting over.** **Tüm Veriyi Temizle** asks first and then removes the
+  custom announcements, the templates, the settings, today's changes and the
+  stored speech, and forgets which schedule file was chosen. The Excel file
+  itself is not touched. Uninstalling the app does not remove any of this.
 - **Timing.** An announcement is made within the first 30 seconds of its
   minute, by an app that was running when the minute began. The app does not
   keep the computer awake.
