@@ -17,8 +17,8 @@
 A desktop app that makes the lobby announcements of
 [Kleomarcus Spor Akademi](https://www.kleomarcus.com). It reads the weekly
 training schedule from an Excel file and, when a session starts and again when
-it ends an hour later, plays a chime and calls each athlete by name through the
-computer's speakers.
+it ends 55 minutes later, plays a chime and calls each athlete by name through
+the computer's speakers.
 
 <p align="center">
   <img src="docs/screenshot.png" width="860" alt="The main window, showing today's announcements">
@@ -29,8 +29,8 @@ computer's speakers.
 - **Schedule from Excel.** One row per session. A saved file is read again
   automatically.
 - **Start and end of a session.** Each athlete is welcomed when the session
-  starts and seen off an hour later, each with a template of its own. The end
-  can be switched off.
+  starts and seen off 55 minutes later, each with a template of its own. The
+  end can be switched off.
 - **Custom announcements.** Free text at a fixed time, every day or on chosen
   weekdays, such as a closing reminder.
 - **Today at a glance.** One row per announcement, with the sentence that is
@@ -38,8 +38,8 @@ computer's speakers.
   for today only; one whose time has come can be read again.
 - **Read now, stop.** A sentence typed in is read at once, and whatever is
   being read can be cut off.
-- **Speed and delay.** Slower or faster speech, and every announcement up to
-  ten minutes after its time, for athletes who arrive late.
+- **Speed and delays.** Slower or faster speech, and the starts and the ends
+  each up to ten minutes after their time, for athletes who arrive late.
 - **Turkish speech, kept on the computer.** Each sentence is generated once
   and played from disk, so only new sentences need a connection.
 - **No late announcements.** One missed during a restart or a sleep is shown
@@ -103,20 +103,23 @@ fictional names.
 - **Templates.** `{ad_soyad}` stands for the athlete's name and may be moved
   anywhere in the sentence. New templates, and a new speed, are used once all
   of their speech has been generated.
-- **End of a session.** A session lasts an hour. When one ends in the minute
-  that another starts, both are announced after a single chime, the end
-  first.
-- **Delay.** **Gecikme süresi** moves every announcement by 1 to 10 minutes,
-  the ends too. Today's table shows the time at which each one is made.
+- **End of a session.** A session lasts 55 minutes. When one ends in the
+  minute that another starts, both are announced after a single chime, the
+  end first.
+- **Delays.** **Başlangıç gecikme süresi** moves the starts by 1 to 10
+  minutes and **Bitiş gecikme süresi** the ends; each is set on its own.
+  Custom announcements are read at their own time. Today's table shows the
+  time at which each announcement is made.
 - **Changes for today.** **Atla** and **Düzenle…** act on the selected row
   until two seconds before its time, and are kept if the app is restarted
   that day. Skipping a start skips the end of that session too; moving a
   start leaves its end where it is. A new sentence is saved once its speech
   has been generated. The schedule file and the custom announcements are not
   changed.
-- **Conflicts.** A custom announcement may not share its minute with the
-  start of a session or with another custom announcement; the window says
-  which one is left out.
+- **Conflicts.** A custom announcement may not be set for the minute of the
+  start of a session or of another custom announcement; the window says
+  which one is left out. A start or an end that a delay moves into its
+  minute is read with it, after a single chime.
 - **Timing.** An announcement is made within the first 30 seconds of its
   minute, by an app that was running when the minute began. The app does not
   keep the computer awake.
