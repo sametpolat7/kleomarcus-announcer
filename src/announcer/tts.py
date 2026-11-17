@@ -77,16 +77,29 @@ class AudioCache:
         self._directory = directory
         self._provider = provider
         self._voice = voice
+        self._closed = False
 
     def find(self, text: str, speed: float = NORMAL_SPEED) -> Path | None:
         path = self._path(text, speed)
         return path if path.is_file() else None
 
+    def close(self) -> None:
+        self._closed = True
+
+    def clear(self) -> None:
+        if self._directory.is_dir():
+            for path in self._directory.iterdir():
+                path.unlink(missing_ok=True)
+
     def ensure(self, text: str, speed: float = NORMAL_SPEED) -> Path:
         """Raises ``TtsError`` if the speech cannot be generated or stored."""
         path = self._path(text, speed)
         if not path.is_file():
+            if self._closed:
+                raise TtsError("The cache is closed")
             audio = self._provider.synthesize(text, self._voice, speed)
+            if self._closed:
+                raise TtsError("The cache was closed meanwhile")
             try:
                 write_atomically(path, audio)
             except OSError as error:

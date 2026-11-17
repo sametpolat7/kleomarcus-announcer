@@ -147,6 +147,66 @@ def test_ensure_all_generates_several_sentences_at_a_time(tmp_path: Path) -> Non
     assert all(cache.find(text) is not None for text in texts)
 
 
+def test_clear_removes_every_stored_speech_so_that_it_is_generated_again(
+    tmp_path: Path, cache: AudioCache, provider: FakeProvider
+) -> None:
+    ahmet = "tr-TR-AhmetNeural"
+    other = AudioCache(tmp_path / "audio", provider, ahmet)
+    cache.ensure(HELLO)
+    cache.ensure(BYE, 0.9)
+    other.ensure(HELLO)
+
+    cache.clear()
+
+    assert list((tmp_path / "audio").iterdir()) == []
+    assert (cache.find(HELLO), cache.find(BYE, 0.9), other.find(HELLO)) == (
+        None,
+        None,
+        None,
+    )
+    assert cache.ensure(HELLO).read_bytes() == f"{VOICE}|{HELLO}".encode()
+    assert provider.calls == [
+        (HELLO, VOICE),
+        (BYE, VOICE),
+        (HELLO, ahmet),
+        (HELLO, VOICE),
+    ]
+
+
+def test_clear_does_nothing_when_no_speech_was_ever_stored(
+    tmp_path: Path, cache: AudioCache
+) -> None:
+    cache.clear()
+
+    assert not (tmp_path / "audio").exists()
+    assert cache.ensure(HELLO).is_file()
+
+
+def test_closed_cache_stores_neither_what_is_being_generated_nor_what_is_asked_later(
+    tmp_path: Path,
+    cache: AudioCache,
+    provider: FakeProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stored = cache.ensure("Hoş geldiniz.")
+    synthesize = provider.synthesize
+
+    def closed_meanwhile(text: str, voice: str, speed: float) -> bytes:
+        cache.close()
+        return synthesize(text, voice, speed)
+
+    monkeypatch.setattr(provider, "synthesize", closed_meanwhile)
+    monkeypatch.setattr(AudioCache, "_WORKERS", 1)
+
+    assert cache.ensure_all([HELLO, BYE]) == (HELLO, BYE)
+
+    assert list((tmp_path / "audio").iterdir()) == [stored]
+    assert provider.calls == [("Hoş geldiniz.", VOICE), (HELLO, VOICE)]
+    assert cache.find("Hoş geldiniz.") == stored
+    with pytest.raises(TtsError):
+        cache.ensure(BYE)
+
+
 class FakeCommunicate:
     """Set ``chunks`` or ``error``."""
 

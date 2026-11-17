@@ -12,7 +12,6 @@ from announcer.loader import (
 )
 from announcer.models import ALL_WEEKDAYS, NORMAL_SPEED, SESSION, WEEKDAY_NAMES, Kind
 from announcer.template import PLACEHOLDER
-from announcer.timetable import Conflict, SlotHolder
 from announcer.today import Row, Status
 
 SLEEP_NOTICE = (
@@ -21,6 +20,14 @@ SLEEP_NOTICE = (
 NO_ROWS = "Bugün için anons yok."
 NO_ANNOUNCEMENTS = "Özel anons yok."
 CLOSE_QUESTION = "Uygulama kapatılırsa anonslar okunmaz. Kapatılsın mı?"
+CLEAR = "Tüm Veriyi Temizle"
+CLEAR_QUESTION = (
+    "Özel anonslar, anons şablonları, anons ayarları, bugün yapılan değişiklikler "
+    "ve hazırlanmış ses dosyaları silinir; sporcu listesi seçimi kaldırılır. "
+    "Excel dosyası silinmez.\n\n"
+    "Bu işlem geri alınamaz. Tüm veri temizlensin mi?"
+)
+CANNOT_CLEAR = "Veriler temizlenemedi. Ayrıntılar kayıt dosyasındadır."
 ALREADY_RUNNING = "Uygulama zaten çalışıyor."
 TEMPLATE_HINT = (
     f"“{PLACEHOLDER}” yerine sporcunun adı soyadı okunur. "
@@ -59,7 +66,6 @@ STATUS: dict[Status, str] = {
     Status.NO_SPEECH: "Atlandı (ses yok)",
     Status.ASLEEP: "Atlandı (uyku modu)",
     Status.NO_OUTPUT: "Hata (ses çıkışı)",
-    Status.CONFLICT: "Atlandı (çakışma)",
     Status.SKIPPING: "Atlanacak",
     Status.SKIPPED: "Atlandı",
     Status.STOPPED: "Durduruldu",
@@ -105,11 +111,6 @@ _ROW_PROBLEMS: dict[RowProblem, str] = {
     RowProblem.MISSING_NAME: "ad soyad boş",
     RowProblem.UNKNOWN_DAY: "gün tanınmadı",
     RowProblem.INVALID_TIME: "saat geçersiz",
-}
-
-_HOLDERS: dict[SlotHolder, str] = {
-    SlotHolder.ATHLETES: "sporcu anonsu",
-    SlotHolder.CUSTOM_ANNOUNCEMENT: "başka bir özel anons",
 }
 
 _MONTHS = (
@@ -199,15 +200,6 @@ def schedule_error(error: ScheduleFileError) -> str:
     return "Sporcu listesi okunamadı. Geçerli bir Excel (.xlsx) dosyası olmalıdır."
 
 
-def conflict_alert(conflicts: Iterable[Conflict]) -> str:
-    lines = [
-        f"• {WEEKDAY_NAMES[conflict.weekday]} {conflict.announcement.time:%H:%M}: "
-        f"{_HOLDERS[conflict.holder]} var"
-        for conflict in conflicts
-    ]
-    return "\n".join(["Bu saat dolu olduğu için anons kaydedilemedi:", *lines])
-
-
 def warnings(app: App) -> list[str]:
     """The most basic warning comes first."""
     lines: list[str] = []
@@ -246,13 +238,6 @@ def warnings(app: App) -> list[str]:
     for skipped in app.skipped_rows:
         problems = ", ".join(_ROW_PROBLEMS[problem] for problem in skipped.problems)
         lines.append(f"Sporcu listesinde {skipped.row}. satır atlandı: {problems}.")
-    for conflict in app.timetable.conflicts:
-        announcement = conflict.announcement
-        lines.append(
-            f"“{announcement.text}” özel anonsu {WEEKDAY_NAMES[conflict.weekday]} "
-            f"{announcement.time:%H:%M} için atlanıyor: aynı saatte "
-            f"{_HOLDERS[conflict.holder]} var."
-        )
     if app.unspoken:
         lines.append(
             f"{len(app.unspoken)} anonsun sesi oluşturulamadı. İnternet bağlantısını "

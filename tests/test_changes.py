@@ -21,7 +21,10 @@ EDITED = Change(
     time=datetime.time(19, 5),
     text="{ad_soyad}, görüşmek üzere.",
 )
-CUSTOM = Change(MONDAY, SEVEN_PM, Kind.CUSTOM, text="Su içmeyi unutmayın lütfen.")
+DRINK = "Su içmeyi unutmayın."
+CUSTOM = Change(
+    MONDAY, SEVEN_PM, Kind.CUSTOM, DRINK, text="Su içmeyi unutmayın lütfen."
+)
 
 # Each unusable change below differs from this one in one way.
 USABLE = {
@@ -44,12 +47,18 @@ def test_saved_changes_load_again(path: Path) -> None:
     assert "görüşmek" in path.read_text(encoding="utf-8")
 
 
-def test_each_change_is_saved_with_the_athlete_it_is_for(path: Path) -> None:
+def test_each_change_is_saved_with_the_athlete_or_the_custom_text_it_is_for(
+    path: Path,
+) -> None:
     save_changes((SKIPPED, EDITED, CUSTOM), path)
 
     stored = json.loads(path.read_text(encoding="utf-8"))["changes"]
 
-    assert [change["name"] for change in stored] == ["Ayşe Yılmaz", "Mehmet Demir", ""]
+    assert [change["name"] for change in stored] == [
+        "Ayşe Yılmaz",
+        "Mehmet Demir",
+        DRINK,
+    ]
     assert all("left_out" not in change for change in stored)
 
 
@@ -62,13 +71,13 @@ def test_changes_of_two_athletes_of_the_same_minute_are_kept_apart(
     assert load_changes(path, MONDAY) == (SKIPPED, other)
 
 
-def test_custom_change_saved_without_a_name_loads(path: Path) -> None:
-    stored = {"day": "2026-11-09", "set_for": "2026-11-09 19:00", "kind": "custom"}
-    path.write_text(json.dumps({"changes": [{**stored, "skipped": True}]}))
+def test_changes_of_two_custom_announcements_of_the_same_minute_are_kept_apart(
+    path: Path,
+) -> None:
+    other = Change(MONDAY, SEVEN_PM, Kind.CUSTOM, "Salon kapanıyor.", skipped=True)
+    save_changes((CUSTOM, other), path)
 
-    assert load_changes(path, MONDAY) == (
-        Change(MONDAY, SEVEN_PM, Kind.CUSTOM, skipped=True),
-    )
+    assert load_changes(path, MONDAY) == (CUSTOM, other)
 
 
 def test_no_file_means_no_changes(path: Path) -> None:
@@ -108,7 +117,9 @@ def test_unreadable_file_is_an_error(path: Path, content: bytes) -> None:
         {**USABLE, "name": ""},
         {**USABLE, "kind": "end", "name": ""},
         {**USABLE, "name": 3},
-        {**USABLE, "kind": "custom"},
+        {key: value for key, value in USABLE.items() if key != "name"}
+        | {"kind": "custom"},
+        {**USABLE, "kind": "custom", "name": ""},
     ],
     ids=[
         "not an object",
@@ -123,7 +134,8 @@ def test_unreadable_file_is_an_error(path: Path, content: bytes) -> None:
         "start with an empty name",
         "end with an empty name",
         "name not a text",
-        "custom with a name",
+        "custom without a name",
+        "custom with an empty name",
     ],
 )
 def test_unusable_change_is_left_out(path: Path, stored: object) -> None:

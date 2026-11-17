@@ -35,7 +35,6 @@ _PROBLEMS = frozenset(
         Status.NO_SPEECH,
         Status.ASLEEP,
         Status.NO_OUTPUT,
-        Status.CONFLICT,
     }
 )
 # Over, and nothing to act on.
@@ -568,8 +567,10 @@ class MainWindow:
         ttk.Label(footer, textvariable=self.activity, style="Window.TLabel").grid(
             row=0, column=1, sticky="e", padx=_PAD
         )
+        self.clear_button = ttk.Button(footer, text=texts.CLEAR, command=self.clear)
+        self.clear_button.grid(row=0, column=2, padx=(0, 8))
         self.log_button = ttk.Button(footer, text="Kayıtlar", command=self.open_log)
-        self.log_button.grid(row=0, column=2)
+        self.log_button.grid(row=0, column=3)
         return footer
 
     def _widest(self, values: Iterable[str]) -> int:
@@ -984,6 +985,23 @@ class MainWindow:
         self.announcements.selection_set()
         self.show()
 
+    def clear(self) -> None:
+        if not messagebox.askyesno(
+            texts.CLEAR, texts.CLEAR_QUESTION, default="no", parent=self.root
+        ):
+            return
+        try:
+            self._app.clear()
+        except OSError:
+            _log.exception("Cannot clear the data")
+            self._alert(texts.CLEAR, texts.CANNOT_CLEAR)
+        else:
+            self.template.set(self._app.settings.template)
+            self.end_template.set(self._app.settings.end_template)
+            self.today.selection_set()
+            self.announcements.selection_set()
+        self.show()
+
     def open_log(self) -> None:
         if self._log_file.is_file():
             open_file(self._log_file)
@@ -1008,6 +1026,4 @@ class MainWindow:
 
 def _same(row: Row, other: Row) -> bool:
     """Whether two rows are of the same announcement, whatever became of it."""
-    if row.key is not None or other.key is not None:
-        return row.key == other.key
-    return (row.time, row.kind, row.text) == (other.time, other.kind, other.text)
+    return row.key == other.key

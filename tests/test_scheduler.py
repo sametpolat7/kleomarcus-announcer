@@ -23,10 +23,11 @@ FIVE_TO_SEVEN = datetime.time(18, 55)
 SEVEN_PM = datetime.time(19, 0)
 
 DRINK = "Su içmeyi unutmayın."
+CLOSING = "Salon kapanıyor."
 AYSE_STARTS = Part(Kind.START, "Ayşe Yılmaz, hoş geldiniz.", "Ayşe Yılmaz")
 ZEYNEP_STARTS = Part(Kind.START, "Zeynep Kaya, hoş geldiniz.", "Zeynep Kaya")
 ZEYNEP_ENDS = Part(Kind.END, "Zeynep Kaya, görüşmek üzere.", "Zeynep Kaya")
-REMINDER = Part(Kind.CUSTOM, DRINK)
+REMINDER = Part(Kind.CUSTOM, DRINK, custom_text=DRINK)
 
 MONDAY_SIX = Slot(0, SIX_PM, (AYSE_STARTS,))
 MONDAY_SIX_OH_ONE = Slot(0, datetime.time(18, 1), (REMINDER,))
@@ -308,7 +309,8 @@ def test_slot_added_early_in_the_running_minute_is_reported() -> None:
     clock.now = at(12, 30, 5)
     scheduler.check()
 
-    added = Slot(0, datetime.time(12, 30), (Part(Kind.CUSTOM, "Yeni duyuru"),))
+    new = Part(Kind.CUSTOM, "Yeni duyuru", custom_text="Yeni duyuru")
+    added = Slot(0, datetime.time(12, 30), (new,))
     scheduler.set_timetable(Timetable((added, *TIMETABLE.slots)))
     clock.now = at(12, 30, 6)
     scheduler.check()
@@ -322,7 +324,8 @@ def test_slot_added_late_in_the_running_minute_is_not_reported() -> None:
     clock.now = at(12, 30, 40)
     scheduler.check()
 
-    added = Slot(0, datetime.time(12, 30), (Part(Kind.CUSTOM, "Yeni duyuru"),))
+    new = Part(Kind.CUSTOM, "Yeni duyuru", custom_text="Yeni duyuru")
+    added = Slot(0, datetime.time(12, 30), (new,))
     scheduler.set_timetable(Timetable((added, *TIMETABLE.slots)))
     clock.now = at(12, 30, 41)
     scheduler.check()
@@ -351,7 +354,7 @@ def test_part_added_to_a_minute_that_already_fired_is_handed_over_alone() -> Non
 def test_skipped_part_is_not_announced_while_the_rest_of_its_slot_is() -> None:
     timetable = planned(
         Change(MONDAY, at(18, 55), Kind.END, "Ayşe Yılmaz", skipped=True),
-        Change(MONDAY, at(18, 56), Kind.CUSTOM, skipped=True),
+        Change(MONDAY, at(18, 56), Kind.CUSTOM, DRINK, skipped=True),
     )
     clock = FakeClock(at(18, 54, 59))
     scheduler, due, missed = make_scheduler(clock, timetable)
@@ -366,7 +369,7 @@ def test_skipped_part_is_not_announced_while_the_rest_of_its_slot_is() -> None:
 def test_skipped_part_is_not_reported_missed_while_the_rest_of_its_slot_is() -> None:
     timetable = planned(
         Change(MONDAY, at(18, 55), Kind.END, "Ayşe Yılmaz", skipped=True),
-        Change(MONDAY, at(18, 56), Kind.CUSTOM, skipped=True),
+        Change(MONDAY, at(18, 56), Kind.CUSTOM, DRINK, skipped=True),
     )
     clock = FakeClock(at(18, 54, 30))
     scheduler, due, missed = make_scheduler(clock, timetable)
@@ -660,6 +663,48 @@ def test_new_sentence_for_an_athlete_already_announced_does_not_repeat_it() -> N
         scheduler.check()
 
     assert (said(due), missed) == ([(SEVEN_PM, (ZEYNEP_COMES, MEHMET_COMES))], [])
+
+
+def reminders_at_seven(*changes: Change) -> Timetable:
+    return build_timetable(
+        [],
+        [
+            CustomAnnouncement(text, SEVEN_PM, frozenset({0}))
+            for text in (DRINK, CLOSING)
+        ],
+        "{ad_soyad}, hoş geldiniz.",
+        changes=changes,
+    )
+
+
+def test_custom_announcement_that_fired_leaves_the_other_of_the_minute_due() -> None:
+    timetable = reminders_at_seven()
+    slot = timetable.slot_at(MONDAY, SEVEN_PM)
+    assert slot is not None
+    _, closing = slot.parts
+    drink_fired = {(at(19, 0), Kind.CUSTOM, DRINK)}
+    closing_alone = Slot(0, SEVEN_PM, (closing,))
+
+    assert untaken(MONDAY, slot, drink_fired) == closing_alone
+    assert due_slot(timetable, at(19, 0, 5), drink_fired) == closing_alone
+
+
+def test_reworded_custom_announcement_that_was_read_is_not_repeated() -> None:
+    clock = FakeClock(at(18, 59, 59))
+    scheduler, due, missed = make_scheduler(clock, reminders_at_seven())
+    clock.now = at(19, 0, 1)
+    scheduler.check()
+
+    scheduler.set_timetable(
+        reminders_at_seven(
+            Change(MONDAY, at(19, 0), Kind.CUSTOM, DRINK, text="Yeni cümle.")
+        )
+    )
+    for moment in every_second(at(19, 0, 2), at(19, 1)):
+        clock.now = moment
+        scheduler.check()
+
+    assert (said(due), missed) == ([(SEVEN_PM, (DRINK, CLOSING))], [])
 
 
 def test_background_thread_reports_a_due_slot_with_its_date_and_stops() -> None:

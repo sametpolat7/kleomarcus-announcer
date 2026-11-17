@@ -10,6 +10,7 @@ import logging
 import queue
 import shutil
 import threading
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
@@ -45,13 +46,11 @@ from announcer.settings import (
 )
 from announcer.template import PLACEHOLDER, is_valid_template, render
 from announcer.timetable import (
-    Conflict,
     Part,
     PartId,
     Slot,
     Timetable,
     build_timetable,
-    find_conflicts,
     part_id,
     said,
     set_for,
@@ -77,14 +76,9 @@ _REREADS = 3  # how often a changed schedule file that cannot be read is retried
 # file that could not be read.
 _RETRY = datetime.timedelta(minutes=5)
 _DAY = datetime.timedelta(days=1)
+_RELEASE = 2.0  # seconds that the audio output may take to let go of a file
 
 _log = logging.getLogger(__name__)
-
-
-class SlotTakenError(Exception):
-    def __init__(self, conflicts: tuple[Conflict, ...]) -> None:
-        super().__init__("The slot is already taken")
-        self.conflicts = conflicts
 
 
 class ChangeProblem(Enum):
@@ -274,14 +268,17 @@ class App:
         self._wanted: queue.SimpleQueue[_Wanted] = queue.SimpleQueue()
         self._speaking = False  # the thread that makes that speech runs
         self._numbers = itertools.count(1)
+        self._cleared_before = 0
         self._numbers_lock = threading.Lock()  # the scheduler's thread takes some
 
-        self._cache = AudioCache(cache_directory, provider, self.settings.voice)
+        self._cache_directory = cache_directory
+        self._provider = provider
+        self._cache = self._new_cache()
         self._scheduler = Scheduler(
             self.timetable, self._on_due, self._on_missed, clock, interval
         )
         self._player = Player(
-            self._cache.find,
+            lambda text, speed: self._cache.find(text, speed),
             output,
             self._on_played,
             on_started=lambda tag: self._events.put(_Started(tag)),
@@ -389,21 +386,8 @@ class App:
     def save_announcement(
         self, announcement: CustomAnnouncement, replacing: int | None = None
     ) -> None:
-        """Raises ``SlotTakenError`` if the announcement would share its minute
-        with the start of a session or with another custom announcement, and
-        ``OSError`` if it cannot be saved; nothing changes then.
-        """
+        """Raises ``OSError`` if it cannot be saved; nothing changes then."""
         announcements = list(self.settings.custom_announcements)
-        others = [
-            item for index, item in enumerate(announcements) if index != replacing
-        ]
-        conflicts = find_conflicts(announcement, self._entries, others)
-        if conflicts:
-            _log.info(
-                "Custom announcement not saved, its slot is taken: %s",
-                _described(announcement),
-            )
-            raise SlotTakenError(conflicts)
         replaced = None if replacing is None else announcements[replacing]
         if replacing is None:
             announcements.append(announcement)
@@ -430,6 +414,61 @@ class App:
         self._forget_changes(deleted)
         _log.info("Custom announcement deleted: %s", _described(deleted))
         self._rebuild()
+
+    def clear(self) -> None:
+        self.cut()
+        self._player.silence()
+        for group in self._playing.values():
+            for key, _ in group.parts:
+                self._outcomes[key] = Status.STOPPED
+        self._playing.clear()
+        self._cleared_before = self._number()
+        self._cache.close()
+        self._cache = self._new_cache()
+        try:
+            self._clear_speech()
+            for file in (self.settings_file, self.changes_file):
+                file.unlink(missing_ok=True)
+                backup_copy(file).unlink(missing_ok=True)
+        except OSError:
+            self._rebuild()
+            raise
+        self.settings = Settings()
+        self.settings_unreadable = self.settings_backed_up = False
+        self.dropped_announcements = 0
+        self.spoken_template = self.settings.template
+        self.spoken_end_template = self.settings.end_template
+        self.spoken_speed = self.settings.speed
+        self.changes = ()
+        self.changes_unreadable = self.changes_backed_up = False
+        self._entries = ()
+        self.skipped_rows = ()
+        self.schedule_error = None
+        self.refreshed_at = None
+        self._read_file = self._seen_file = None
+        self._rereads = 0
+        self.unspoken = ()
+        self.last_announcement = None
+        self.test_status = None
+        self.instants = ()
+        self._outcomes = {}
+        self._cache = self._new_cache()
+        _log.info("All data cleared by the operator")
+        self._rebuild()
+
+    def _new_cache(self) -> AudioCache:
+        return AudioCache(self._cache_directory, self._provider, self.settings.voice)
+
+    def _clear_speech(self) -> None:
+        latest = time.monotonic() + _RELEASE
+        while True:
+            try:
+                self._cache.clear()
+                return
+            except OSError:
+                if time.monotonic() > latest:
+                    raise
+                time.sleep(0.05)
 
     def test(self, template: str) -> None:
         """Raises ``ValueError`` if the template has no place for the name."""
@@ -473,7 +512,7 @@ class App:
             _log.info('Instant announcement asked for again: "%s"', row.key.text)
             self._prepare(row.key)
             return True
-        found = None if row.key is None else self._part(row.key)
+        found = self._part(row.key)
         if found is None:
             return False
         slot, part = found
@@ -643,6 +682,8 @@ class App:
             if isinstance(event, _FileSeen):
                 changed = self._follow(event.path, event.state) or changed
                 continue
+            if self._cleared(event):
+                continue
             changed = True
             match event:
                 case _Due(group):
@@ -686,6 +727,10 @@ class App:
                         self._generate()
                 case _Spoken(wanted, spoken):
                     self._spoken(wanted, spoken)
+
+    def _cleared(self, event: _Event) -> bool:
+        tag = event.group if isinstance(event, _Due) else getattr(event, "tag", None)
+        return isinstance(tag, _Group | _Test) and tag.number < self._cleared_before
 
     def _played(self, group: _Group, playback: Playback) -> None:
         if self._sounding == group:
@@ -839,6 +884,7 @@ class App:
             if not (
                 change.kind is Kind.CUSTOM
                 and change.set_for.time() == announcement.time
+                and change.name == announcement.text
             )
         ]
         if len(kept) == len(self.changes):
@@ -986,20 +1032,9 @@ class App:
         self._generate()
 
     def _build(self) -> None:
-        known = self.timetable.conflicts
         self.timetable = self._timetable(
             self.spoken_template, self.spoken_end_template, self.spoken_speed
         )
-        for conflict in self.timetable.conflicts:
-            if conflict not in known:
-                _log.warning(
-                    'Custom announcement "%s" is skipped on %s at %s: '
-                    "the slot is taken by %s",
-                    conflict.announcement.text,
-                    WEEKDAY_NAMES[conflict.weekday],
-                    f"{conflict.announcement.time:%H:%M}",
-                    conflict.holder.value,
-                )
         self._scheduler.set_timetable(self.timetable)
 
     def _timetable(self, template: str, end_template: str, speed: float) -> Timetable:
@@ -1081,18 +1116,22 @@ class App:
         self.generating = True
         threading.Thread(
             target=self._generate_all,
-            args=(templates, speed, texts),
+            args=(templates, speed, texts, self._cache),
             name="speech",
             daemon=True,
         ).start()
 
     def _generate_all(
-        self, templates: tuple[str, str], speed: float, texts: tuple[str, ...]
+        self,
+        templates: tuple[str, str],
+        speed: float,
+        texts: tuple[str, ...],
+        cache: AudioCache,
     ) -> None:
         """Runs on a thread."""
         unspoken = texts
         try:
-            unspoken = self._cache.ensure_all(texts, speed)
+            unspoken = cache.ensure_all(texts, speed)
             _log.info("Speech generated; %d sentence(s) without speech", len(unspoken))
         except Exception:
             _log.exception("Generating speech failed")

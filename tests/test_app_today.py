@@ -37,12 +37,14 @@ from support import (
 
 SIX_PM, SEVEN_PM = (datetime.time(hour) for hour in (18, 19))
 FIVE_TO_SEVEN = datetime.time(18, 55)
+HALF_PAST_SEVEN = datetime.time(19, 30)
 DAY = datetime.timedelta(days=1)
 TUESDAY = MONDAY + DAY
 # The athletes of ``ROWS``, in its order.
 AYSE, MEHMET, ZEYNEP = "Ayşe Yılmaz", "Mehmet Demir", "Zeynep Kaya"
 NEW_START, NEW_END = "Hoş geldiniz, {ad_soyad}.", "Güle güle, {ad_soyad}."
 WATER = CustomAnnouncement("Su içmeyi unutmayın.", SEVEN_PM)
+TOWELS = CustomAnnouncement("Havlunuzu unutmayın.", SEVEN_PM)
 CLOSING = "Salon kapanıyor."  # a new text for a custom announcement
 CHIME = "chime"  # what ``heard`` shows for the chime
 
@@ -54,7 +56,8 @@ def let_time_pass(app: App) -> None:
 
 
 def name_of(row: Row) -> str:
-    """The athlete whom the row is for; empty for any other row."""
+    """The athlete whom the row is for, or the text that a custom announcement
+    has in the settings; empty for an instant one."""
     return row.key[2] if isinstance(row.key, tuple) else ""
 
 
@@ -279,7 +282,6 @@ def test_custom_announcement_in_the_minute_of_an_end_is_read_after_it(
     app.save_announcement(CustomAnnouncement(WATER.text, FIVE_TO_SEVEN))
     wait_for_speech(app)
 
-    assert app.timetable.conflicts == ()
     assert [(row.time, row.kind) for row in app.rows()] == [
         (SIX_PM, Kind.START),
         (SIX_PM, Kind.START),
@@ -306,6 +308,60 @@ def test_custom_announcement_in_the_minute_of_an_end_is_read_after_it(
     )
 
 
+def test_custom_announcement_in_the_minute_of_a_start_is_read_after_its_athletes(
+    app: App, schedule: Path, output: FakeOutput, clock: FakeClock
+) -> None:
+    app.choose_schedule(schedule)
+    app.save_announcement(CustomAnnouncement(WATER.text, SIX_PM))
+    wait_for_speech(app)
+
+    assert [(row.time, row.kind) for row in app.rows()] == [
+        (SIX_PM, Kind.START),
+        (SIX_PM, Kind.START),
+        (SIX_PM, Kind.CUSTOM),
+        (FIVE_TO_SEVEN, Kind.END),
+        (FIVE_TO_SEVEN, Kind.END),
+    ]
+    app.start()
+    clock.now = at(18)
+    wait_for(app, lambda: statuses(app)[:3] == [Status.PLAYED] * 3)
+
+    assert heard(output) == [
+        CHIME,
+        start_text(AYSE),
+        start_text(MEHMET),
+        WATER.text,
+    ]
+    assert app.last_announcement == LastAnnouncement(
+        at(18),
+        ((Kind.START, AYSE), (Kind.START, MEHMET), (Kind.CUSTOM, WATER.text)),
+        Status.PLAYED,
+    )
+
+
+def test_custom_announcements_of_a_minute_follow_one_chime_in_the_order_of_the_settings(
+    app: App, output: FakeOutput, clock: FakeClock
+) -> None:
+    app.save_announcement(WATER)
+    app.save_announcement(TOWELS)
+    wait_for_speech(app)
+
+    assert [(row.time, row.kind, row.text) for row in app.rows()] == [
+        (SEVEN_PM, Kind.CUSTOM, WATER.text),
+        (SEVEN_PM, Kind.CUSTOM, TOWELS.text),
+    ]
+    app.start()
+    clock.now = at(19)
+    wait_for(app, lambda: statuses(app) == [Status.PLAYED] * 2)
+
+    assert heard(output) == [CHIME, WATER.text, TOWELS.text]
+    assert app.last_announcement == LastAnnouncement(
+        at(19),
+        ((Kind.CUSTOM, WATER.text), (Kind.CUSTOM, TOWELS.text)),
+        Status.PLAYED,
+    )
+
+
 @pytest.mark.parametrize(
     ("kind", "due", "sentence"),
     [(Kind.START, at(18, 5), start_text), (Kind.END, at(19), end_text)],
@@ -326,7 +382,6 @@ def test_start_or_end_delayed_into_the_minute_of_a_custom_announcement_is_read_w
     app.save_announcement(CustomAnnouncement(WATER.text, due.time()))
     wait_for_speech(app)
 
-    assert app.timetable.conflicts == ()
     assert [row.kind for row in app.rows() if row.time == due.time()] == [
         kind,
         kind,
@@ -1188,7 +1243,7 @@ def test_custom_announcement_reworded_with_a_placeholder_is_read_as_typed(
     app.edit(row_of(app, Kind.CUSTOM), SEVEN_PM, typed)
 
     assert load_changes(app.changes_file, MONDAY) == (
-        Change(MONDAY, at(19), Kind.CUSTOM, text=typed),
+        Change(MONDAY, at(19), Kind.CUSTOM, WATER.text, text=typed),
     )
     custom = row_of(app, Kind.CUSTOM)
     assert (custom.text, custom.edited) == (typed, True)
@@ -1198,6 +1253,85 @@ def test_custom_announcement_reworded_with_a_placeholder_is_read_as_typed(
     clock.now = at(19)
     wait_for(app, lambda: statuses(app) == [Status.PLAYED])
     assert heard(output) == [CHIME, typed]
+
+
+def skipped(app: App, row: Row) -> None:
+    app.skip(row)
+
+
+def moved(app: App, row: Row) -> None:
+    app.edit(row, HALF_PAST_SEVEN, row.text)
+
+
+def reworded(app: App, row: Row) -> None:
+    speak_ahead(app, [CLOSING])
+    app.edit(row, row.time, CLOSING)
+
+
+@pytest.mark.parametrize(
+    ("change", "stored", "listed", "read"),
+    [
+        (
+            skipped,
+            Change(MONDAY, at(19), Kind.CUSTOM, WATER.text, skipped=True),
+            [
+                (SEVEN_PM, WATER.text, Status.SKIPPING, False),
+                (SEVEN_PM, TOWELS.text, Status.NEXT, False),
+            ],
+            [CHIME, TOWELS.text],
+        ),
+        (
+            moved,
+            Change(MONDAY, at(19), Kind.CUSTOM, WATER.text, time=HALF_PAST_SEVEN),
+            [
+                (SEVEN_PM, TOWELS.text, Status.NEXT, False),
+                (HALF_PAST_SEVEN, WATER.text, Status.WAITING, True),
+            ],
+            [CHIME, TOWELS.text, CHIME, WATER.text],
+        ),
+        (
+            reworded,
+            Change(MONDAY, at(19), Kind.CUSTOM, WATER.text, text=CLOSING),
+            [
+                (SEVEN_PM, CLOSING, Status.NEXT, True),
+                (SEVEN_PM, TOWELS.text, Status.NEXT, False),
+            ],
+            [CHIME, CLOSING, TOWELS.text],
+        ),
+    ],
+    ids=["skipped", "moved", "reworded"],
+)
+def test_custom_announcement_changed_for_today_leaves_the_other_of_its_minute_as_it_was(
+    make_app: Callable[[], App],
+    output: FakeOutput,
+    clock: FakeClock,
+    change: Callable[[App, Row], None],
+    stored: Change,
+    listed: list[tuple[datetime.time, str, Status, bool]],
+    read: list[str],
+) -> None:
+    def shown_of(app: App) -> list[tuple[datetime.time, str, Status, bool]]:
+        return [(row.time, row.text, row.status, row.edited) for row in app.rows()]
+
+    first = make_app()
+    first.save_announcement(WATER)
+    first.save_announcement(TOWELS)
+    wait_for_speech(first)
+
+    change(first, row_of(first, Kind.CUSTOM, WATER.text))
+
+    assert shown_of(first) == listed
+    assert load_changes(first.changes_file, MONDAY) == (stored,)
+    first.stop()
+    app = make_app()
+    app.start()
+    wait_for_speech(app)
+    assert (app.changes, shown_of(app)) == ((stored,), listed)
+    clock.now = at(19)
+    wait_for(app, lambda: status_of(app, Kind.CUSTOM, TOWELS.text) is Status.PLAYED)
+    clock.now = at(19, 30)
+    wait_for(app, lambda: all(row.replayable for row in app.rows()))
+    assert heard(output) == read
 
 
 def test_change_back_to_the_plan_is_no_change(app: App, schedule: Path) -> None:
@@ -1511,6 +1645,38 @@ def test_custom_announcement_given_a_new_text_or_deleted_loses_todays_change(
     assert heard(output) == [CHIME, "Kapılar kapanıyor."]
 
 
+@pytest.mark.parametrize(
+    "put_in_its_place", [replaced, deleted_and_added], ids=["replaced", "deleted"]
+)
+def test_only_the_custom_announcement_given_a_new_text_or_deleted_loses_todays_change(
+    app: App,
+    output: FakeOutput,
+    clock: FakeClock,
+    put_in_its_place: Callable[[App, CustomAnnouncement], None],
+) -> None:
+    app.save_announcement(WATER)
+    app.save_announcement(TOWELS)
+    wait_for_speech(app)
+    app.start()
+    speak_ahead(app, [CLOSING])
+    app.edit(row_of(app, Kind.CUSTOM, WATER.text), SEVEN_PM, CLOSING)
+    app.skip(row_of(app, Kind.CUSTOM, TOWELS.text))
+    doors = CustomAnnouncement("Kapılar kapanıyor.", SEVEN_PM)
+
+    put_in_its_place(app, doors)
+    wait_for_speech(app)
+
+    kept = (Change(MONDAY, at(19), Kind.CUSTOM, TOWELS.text, skipped=True),)
+    assert (app.changes, load_changes(app.changes_file, MONDAY)) == (kept, kept)
+    assert {(row.text, row.status, row.edited) for row in app.rows()} == {
+        (doors.text, Status.NEXT, False),
+        (TOWELS.text, Status.SKIPPING, False),
+    }
+    clock.now = at(19)
+    wait_for(app, lambda: status_of(app, Kind.CUSTOM, doors.text) is Status.PLAYED)
+    assert heard(output) == [CHIME, doors.text]
+
+
 def test_custom_announcement_given_other_days_keeps_todays_change(app: App) -> None:
     app.save_announcement(WATER)
     app.skip(row_of(app, Kind.CUSTOM))
@@ -1519,7 +1685,9 @@ def test_custom_announcement_given_other_days_keeps_todays_change(app: App) -> N
         CustomAnnouncement(WATER.text, SEVEN_PM, frozenset({0, 2})), replacing=0
     )
 
-    assert app.changes == (Change(MONDAY, at(19), Kind.CUSTOM, skipped=True),)
+    assert app.changes == (
+        Change(MONDAY, at(19), Kind.CUSTOM, WATER.text, skipped=True),
+    )
     assert statuses(app) == [Status.SKIPPING]
 
 

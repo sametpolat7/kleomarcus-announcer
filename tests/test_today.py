@@ -61,6 +61,11 @@ def evening(
     )
 
 
+def reminders_at_seven(changes: Iterable[Change] = ()) -> Timetable:
+    closing = CustomAnnouncement("Salon kapanıyor.", SEVEN_PM)
+    return build_timetable([], [WATER, closing], "{ad_soyad}", changes=changes)
+
+
 def statuses(
     now: datetime.datetime,
     outcomes: Mapping[OutcomeKey, Status] | None = None,
@@ -102,7 +107,7 @@ def test_rows_list_todays_slots_in_time_order() -> None:
             Kind.CUSTOM,
             REMINDER,
             Status.WAITING,
-            (at(19), Kind.CUSTOM, ""),
+            (at(19), Kind.CUSTOM, REMINDER),
             editable=True,
             skippable=True,
         ),
@@ -138,7 +143,7 @@ def test_each_athlete_of_a_minute_is_a_row_of_its_own_with_its_kind() -> None:
         (at(18, 55), Kind.END, MEHMET.name),
         (at(18, 55), Kind.START, ZEYNEP.name),
         (at(19, 50), Kind.END, ZEYNEP.name),
-        (at(19, 50), Kind.CUSTOM, ""),
+        (at(19, 50), Kind.CUSTOM, "Salon kapanıyor."),
     ]
 
 
@@ -229,9 +234,9 @@ def test_start_or_end_delayed_into_a_custom_announcements_minute_shares_it() -> 
     ]
     assert [row.key for row in rows] == [
         (at(18), Kind.START, AYSE.name),
-        (at(18, 5), Kind.CUSTOM, ""),
+        (at(18, 5), Kind.CUSTOM, REMINDER),
         (at(18, 55), Kind.END, AYSE.name),
-        (at(19), Kind.CUSTOM, ""),
+        (at(19), Kind.CUSTOM, "Salon kapanıyor."),
     ]
 
 
@@ -384,7 +389,7 @@ def test_rows_can_be_changed_and_skipped_until_shortly_before_their_minute() -> 
     )
 
 
-def test_passed_known_and_conflicting_rows_can_neither_be_changed_nor_skipped() -> None:
+def test_passed_and_known_rows_can_neither_be_changed_nor_skipped() -> None:
     reminder = CustomAnnouncement("Salon kapanıyor.", SIX_PM)
     later = AthleteEntry("Zeynep Kaya", 0, SEVEN_PM)
     # The start delay went up after Zeynep was queued, so her minute is ahead.
@@ -396,12 +401,12 @@ def test_passed_known_and_conflicting_rows_can_neither_be_changed_nor_skipped() 
     rows = todays_rows(timetable, at(19, 0, 1), outcomes)
 
     assert listed(rows) == [
-        (SIX_PM, Kind.CUSTOM, "Salon kapanıyor.", Status.CONFLICT),
+        (SIX_PM, Kind.CUSTOM, "Salon kapanıyor.", Status.PASSED),
         (datetime.time(18, 10), Kind.START, "Ayşe Yılmaz", Status.PASSED),
         (datetime.time(19, 10), Kind.START, "Zeynep Kaya", Status.QUEUED),
     ]
     assert [(row.editable, row.skippable) for row in rows] == [(False, False)] * 3
-    assert rows[0].key is None
+    assert rows[0].key == (at(18), Kind.CUSTOM, "Salon kapanıyor.")
     unknown = todays_rows(timetable, at(19, 0, 1), {})[2]
     assert (unknown.status, unknown.editable, unknown.skippable) == (
         Status.NEXT,
@@ -483,7 +488,7 @@ def test_row_tells_whether_the_operator_changed_it_for_today() -> None:
         [
             Change(MONDAY, at(18), Kind.START, AYSE.name, time=datetime.time(18, 5)),
             Change(MONDAY, at(18, 55), Kind.END, MEHMET.name, text="Yarın görüşürüz."),
-            Change(MONDAY, at(19, 50), Kind.CUSTOM, skipped=True),
+            Change(MONDAY, at(19, 50), Kind.CUSTOM, CLOSING.text, skipped=True),
             Change(
                 MONDAY + DAY, at(18, 55) + DAY, Kind.START, ZEYNEP.name, skipped=True
             ),
@@ -584,20 +589,90 @@ def test_part_is_for_its_athlete_or_for_the_text_of_its_announcement() -> None:
     assert who(Part(Kind.CUSTOM, REMINDER)) == REMINDER
 
 
-def test_custom_announcement_that_lost_todays_slot_is_listed_after_the_winner() -> None:
+def test_custom_announcement_in_the_minute_of_a_start_has_a_row_after_its_row() -> None:
     reminder = CustomAnnouncement("Salon kapanıyor.", SIX_PM, frozenset({0, 2}))
     timetable = build_timetable([AYSE], [reminder], "{ad_soyad}")
 
     rows = todays_rows(timetable, at(8), {})
     assert listed(rows) == [
         (SIX_PM, Kind.START, "Ayşe Yılmaz", Status.NEXT),
-        (SIX_PM, Kind.CUSTOM, "Salon kapanıyor.", Status.CONFLICT),
+        (SIX_PM, Kind.CUSTOM, "Salon kapanıyor.", Status.NEXT),
     ]
-    assert rows[1] == Row(SIX_PM, Kind.CUSTOM, "Salon kapanıyor.", Status.CONFLICT)
+    assert rows[1] == Row(
+        SIX_PM,
+        Kind.CUSTOM,
+        "Salon kapanıyor.",
+        Status.NEXT,
+        (at(18), Kind.CUSTOM, "Salon kapanıyor."),
+        editable=True,
+        skippable=True,
+    )
     wednesday = at(8) + 2 * DAY
     assert listed(todays_rows(timetable, wednesday, {})) == [
         (SIX_PM, Kind.CUSTOM, "Salon kapanıyor.", Status.NEXT),
     ]
+
+
+def test_custom_announcements_of_a_minute_have_a_row_and_a_key_each() -> None:
+    rows = todays_rows(reminders_at_seven(), at(8), {})
+
+    assert listed(rows) == [
+        (SEVEN_PM, Kind.CUSTOM, REMINDER, Status.NEXT),
+        (SEVEN_PM, Kind.CUSTOM, "Salon kapanıyor.", Status.NEXT),
+    ]
+    assert [row.key for row in rows] == [
+        (at(19), Kind.CUSTOM, REMINDER),
+        (at(19), Kind.CUSTOM, "Salon kapanıyor."),
+    ]
+
+
+def test_skip_or_edit_of_one_custom_announcement_leaves_the_other_alone() -> None:
+    skip = Change(MONDAY, at(19), Kind.CUSTOM, REMINDER, skipped=True)
+    edit = Change(MONDAY, at(19), Kind.CUSTOM, REMINDER, text="Bol su için.")
+
+    skipped = todays_rows(reminders_at_seven([skip]), at(8), {})
+    edited = todays_rows(reminders_at_seven([edit]), at(8), {})
+
+    assert [(row.text, row.status, row.edited) for row in skipped] == [
+        (REMINDER, Status.SKIPPING, False),
+        ("Salon kapanıyor.", Status.NEXT, False),
+    ]
+    assert [(row.text, row.status, row.edited) for row in edited] == [
+        ("Bol su için.", Status.NEXT, True),
+        ("Salon kapanıyor.", Status.NEXT, False),
+    ]
+    assert [row.key for row in edited] == [
+        (at(19), Kind.CUSTOM, REMINDER),
+        (at(19), Kind.CUSTOM, "Salon kapanıyor."),
+    ]
+
+
+def test_each_custom_announcement_of_a_minute_shows_what_happened_to_it() -> None:
+    closing = (at(19), Kind.CUSTOM, "Salon kapanıyor.")
+    outcomes: dict[OutcomeKey, Status] = {closing: Status.PLAYING}
+
+    rows = todays_rows(reminders_at_seven(), at(19, 0, 5), outcomes, playing={closing})
+
+    assert [(row.text, row.status, row.in_group) for row in rows] == [
+        (REMINDER, Status.NEXT, False),
+        ("Salon kapanıyor.", Status.PLAYING, True),
+    ]
+    assert statuses(at(19, 30), {closing: Status.PLAYED}, reminders_at_seven()) == [
+        Status.PASSED,
+        Status.PLAYED,
+    ]
+
+
+def test_outcome_of_a_reworded_custom_announcement_goes_by_what_it_says() -> None:
+    edit = Change(MONDAY, at(19), Kind.CUSTOM, REMINDER, text="Bol su için.")
+    timetable = reminders_at_seven([edit])
+    said: dict[OutcomeKey, Status] = {
+        (at(19), Kind.CUSTOM, "Bol su için."): Status.PLAYED
+    }
+    set_as: dict[OutcomeKey, Status] = {(at(19), Kind.CUSTOM, REMINDER): Status.PLAYED}
+
+    assert statuses(at(19, 30), said, timetable) == [Status.PLAYED, Status.PASSED]
+    assert statuses(at(19, 30), set_as, timetable) == [Status.PASSED, Status.PASSED]
 
 
 def test_custom_announcement_in_a_minute_where_sessions_only_end_is_kept() -> None:
@@ -625,7 +700,7 @@ def test_rows_show_when_a_delayed_announcement_is_made() -> None:
     assert listed(rows) == [
         # From Sunday night, and the scheduler was not there for it.
         (datetime.time(0, 1), Kind.START, "Mehmet Demir", Status.PASSED),
-        (SIX_PM, Kind.CUSTOM, "Salon kapanıyor.", Status.CONFLICT),
+        (SIX_PM, Kind.CUSTOM, "Salon kapanıyor.", Status.PASSED),
         (datetime.time(18, 3), Kind.START, "Ayşe Yılmaz", Status.NEXT),
     ]
     assert rows[0].key == (at(23, 58) - DAY, Kind.START, "Mehmet Demir")
@@ -640,7 +715,7 @@ def test_rows_show_when_a_delayed_announcement_is_made() -> None:
     ]
 
 
-def test_what_lost_a_slot_stays_on_its_day_when_the_winner_is_delayed_past_it() -> None:
+def test_custom_announcement_stays_on_its_day_when_a_start_is_delayed_past_it() -> None:
     late = AthleteEntry("Ayşe Yılmaz", 6, datetime.time(23, 58))
     reminder = CustomAnnouncement("Salon kapandı.", late.time, frozenset({6}))
     timetable = build_timetable([late], [reminder], "{ad_soyad}", start_delay=5)
@@ -650,7 +725,7 @@ def test_what_lost_a_slot_stays_on_its_day_when_the_winner_is_delayed_past_it() 
     ]
     sunday = at(8) + 6 * DAY
     assert listed(todays_rows(timetable, sunday, {})) == [
-        (late.time, Kind.CUSTOM, "Salon kapandı.", Status.CONFLICT),
+        (late.time, Kind.CUSTOM, "Salon kapandı.", Status.NEXT),
     ]
 
 
@@ -692,7 +767,6 @@ REPLAYABLE = {
     Status.NO_SPEECH: True,
     Status.ASLEEP: True,
     Status.NO_OUTPUT: True,
-    Status.CONFLICT: False,
     Status.SKIPPING: False,
     Status.SKIPPED: True,
     Status.STOPPED: True,
@@ -703,7 +777,7 @@ REPLAYABLE = {
 def test_only_an_announcement_whose_time_has_come_can_be_replayed(
     status: Status,
 ) -> None:
-    row = Row(SIX_PM, Kind.START, hello(AYSE), status)
+    row = Row(SIX_PM, Kind.START, hello(AYSE), status, (at(18), Kind.START, AYSE.name))
 
     assert row.replayable is REPLAYABLE[status]
 
@@ -712,7 +786,8 @@ def test_only_an_announcement_whose_time_has_come_can_be_replayed(
 def test_row_whose_minute_is_still_being_read_cannot_be_replayed(
     status: Status,
 ) -> None:
-    row = Row(SIX_PM, Kind.START, hello(AYSE), status, in_group=True)
+    key = (at(18), Kind.START, AYSE.name)
+    row = Row(SIX_PM, Kind.START, hello(AYSE), status, key, in_group=True)
 
     assert not row.replayable
 

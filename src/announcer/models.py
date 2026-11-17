@@ -68,7 +68,8 @@ class Change:
     day: datetime.date  # the day that it is announced on
     set_for: datetime.datetime
     kind: Kind
-    name: str = ""  # the athlete's; empty for a custom announcement
+    # The athlete's; for a custom announcement, its text in the settings.
+    name: str = ""
     skipped: bool = False
     time: datetime.time | None = None  # when it is announced that day instead
     text: str | None = None  # what is said instead

@@ -859,6 +859,83 @@ def test_cut_while_nothing_sounds_spares_the_next_group(
     assert outcomes[0].cut == ()
 
 
+def test_silence_cuts_the_group_that_sounds_and_drops_only_those_queued_before_it(
+    player: Player,
+    output: FakeOutput,
+    outcomes: list[Playback],
+    started: list[Hashable | None],
+) -> None:
+    def silence_during_mehmet(path: Path) -> None:
+        if path == MEHMET:
+            player.silence()
+            player.enqueue(["Ayşe"], "after the silence")
+
+    output.while_playing = silence_during_mehmet
+    player.enqueue(["Ayşe", "Mehmet", "Zeynep"], "first")
+    player.enqueue(["Zeynep"], "second")
+    player.enqueue(["Can", "Zeynep"], "third")
+
+    run_queue(player, outcomes, expected=2)
+
+    assert output.played == [CHIME, AYSE, MEHMET, CHIME, AYSE]
+    assert started == ["first", "after the silence"]
+    assert outcomes == [
+        Playback(
+            ("Ayşe", "Mehmet", "Zeynep"),
+            missing=(),
+            late=(),
+            failed=False,
+            tag="first",
+            cut=("Mehmet", "Zeynep"),
+            heard=(YES, CUT, CUT),
+        ),
+        Playback(
+            ("Ayşe",),
+            missing=(),
+            late=(),
+            failed=False,
+            tag="after the silence",
+            heard=(YES,),
+        ),
+    ]
+    assert output.closed == 2
+
+
+def test_silence_while_nothing_sounds_or_is_queued_spares_the_next_group(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    player.silence()
+    player.enqueue(["Ayşe"], "first")
+
+    run_queue(player, outcomes, expected=1)
+
+    assert output.played == [CHIME, AYSE]
+    assert outcomes == [
+        Playback(
+            ("Ayşe",), missing=(), late=(), failed=False, tag="first", heard=(YES,)
+        )
+    ]
+
+
+def test_play_announces_in_full_after_a_silence_cut_off_the_one_before(
+    player: Player, output: FakeOutput, outcomes: list[Playback]
+) -> None:
+    def silence_during_the_chime(path: Path) -> None:
+        if output.played == [CHIME]:
+            player.silence()
+
+    output.while_playing = silence_during_the_chime
+
+    player.play(["Can", "Ayşe"], "first")
+    player.play(["Mehmet", "Zeynep"], "second")
+
+    assert output.played == [CHIME, CHIME, MEHMET, ZEYNEP]
+    assert [(playback.tag, playback.heard) for playback in outcomes] == [
+        ("first", (NO_SPEECH, CUT)),
+        ("second", (YES, YES)),
+    ]
+
+
 def test_stop_drops_what_is_still_queued(
     player: Player, output: FakeOutput, outcomes: list[Playback]
 ) -> None:
